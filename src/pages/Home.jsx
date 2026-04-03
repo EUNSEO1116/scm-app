@@ -109,11 +109,9 @@ async function loadRemoteEvents() {
     const res = await fetch(`${CALENDAR_API}?action=calendarRead`);
     if (!res.ok) return null;
     const remote = await res.json();
-    // 로컬과 원격 병합 (로컬 우선, 원격에만 있는 것 추가)
-    const local = loadCachedEvents();
-    const merged = mergeEvents(local, remote);
-    localStorage.setItem(STORAGE_KEY_FBC, JSON.stringify(merged));
-    return merged;
+    // 원격 데이터를 기준으로 사용 (스프레드시트 삭제 반영)
+    localStorage.setItem(STORAGE_KEY_FBC, JSON.stringify(remote));
+    return remote;
   } catch { return null; }
 }
 
