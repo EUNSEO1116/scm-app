@@ -477,7 +477,7 @@ export default function SoldOut() {
             if (!prevSoldout.has(barcode) && currentReasons[barcode] && !protected_.has(barcode)) {
               delete currentReasons[barcode];
               changed = true;
-              deleteReasonFromSheet(barcode);
+              // 스프레드시트에서는 삭제하지 않음 (기록 유지)
             }
           }
           if (changed) {
