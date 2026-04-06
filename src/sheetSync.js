@@ -5,30 +5,9 @@ const CSV_URL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=
 
 const SOLDOUT_REASONS_KEY = 'soldout_reasons_v2';
 const SOLDOUT_HISTORY_KEY = 'soldout_history';
-const SAVE_TIMESTAMPS_KEY = 'soldout_save_timestamps';
-const PROTECT_MINUTES = 30; // 저장 후 30분간 시트 덮어쓰기 방지
-
-// 로컬 저장 타임스탬프 기록 (barcode → timestamp)
-export function markLocalSave(barcodes) {
-  try {
-    const ts = JSON.parse(localStorage.getItem(SAVE_TIMESTAMPS_KEY) || '{}');
-    const now = Date.now();
-    for (const bc of barcodes) ts[bc] = now;
-    localStorage.setItem(SAVE_TIMESTAMPS_KEY, JSON.stringify(ts));
-  } catch {}
-}
-
-export function getProtectedBarcodes() {
-  try {
-    const ts = JSON.parse(localStorage.getItem(SAVE_TIMESTAMPS_KEY) || '{}');
-    const cutoff = Date.now() - PROTECT_MINUTES * 60 * 1000;
-    const protected_ = new Set();
-    for (const [bc, t] of Object.entries(ts)) {
-      if (t > cutoff) protected_.add(bc);
-    }
-    return protected_;
-  } catch { return new Set(); }
-}
+// 하위호환용 (사용하지 않지만 import 에러 방지)
+export function markLocalSave() {}
+export function getProtectedBarcodes() { return new Set(); }
 
 function parseCsvRow(line) {
   const result = [];
@@ -81,17 +60,15 @@ export async function fetchFromSheet() {
       reasons[barcode] = { reason, date };
     }
 
-    // localStorage에 동기화 (최근 로컬 저장 항목은 보호)
-    const protected_ = getProtectedBarcodes();
+    // localStorage 우선: 로컬에 있는 건 유지, 시트에만 있는 건 추가
     const localReasons = JSON.parse(localStorage.getItem(SOLDOUT_REASONS_KEY) || '{}');
     const localHistory = JSON.parse(localStorage.getItem(SOLDOUT_HISTORY_KEY) || '{}');
 
-    // 시트 데이터를 기본으로 하되, 보호 대상은 로컬 데이터 유지
-    const mergedReasons = { ...reasons };
+    const mergedReasons = { ...reasons, ...localReasons };
     const mergedHistory = { ...history };
-    for (const bc of protected_) {
-      if (localReasons[bc]) mergedReasons[bc] = localReasons[bc];
-      if (localHistory[bc]) mergedHistory[bc] = localHistory[bc];
+    for (const [bc, entries] of Object.entries(localHistory)) {
+      if (!mergedHistory[bc]) mergedHistory[bc] = entries;
+      else if (entries.length > mergedHistory[bc].length) mergedHistory[bc] = entries;
     }
 
     localStorage.setItem(SOLDOUT_REASONS_KEY, JSON.stringify(mergedReasons));
