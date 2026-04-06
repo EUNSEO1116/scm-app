@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
 import * as XLSX from 'xlsx';
-import { fetchFromSheet, saveReasonsToSheet, deleteReasonFromSheet, markLocalSave } from '../sheetSync.js';
+import { fetchFromSheet, saveReasonsToSheet, deleteReasonFromSheet, markLocalSave, getProtectedBarcodes } from '../sheetSync.js';
 
 const SHEET_ID = '1NXhW_gG0b-gXuVqrhbY9ErWi8uO_7pXIy-NTo4FbE1I';
 const TSV_CALC = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=tsv&gid=1349677364`;
@@ -464,19 +464,20 @@ export default function SoldOut() {
       const parsed = parseData(calcTsv, dataTsv, orderSkus, skuArrival);
 
       // 재진입 품절 사유 자동 삭제: 이전에 품절 아니었다가 다시 품절된 항목
+      // 단, 최근 저장한 항목(보호 기간)은 삭제하지 않음
       const currentSoldout = new Set(parsed.filter(r => r.riskLevel === '품절').map(r => r.barcode));
       try {
         const prevRaw = localStorage.getItem(PREV_SOLDOUT_KEY);
         if (prevRaw !== null) {
-          // 이전 데이터가 있을 때만 비교 (최초 실행 시에는 삭제하지 않음)
           const prevSoldout = new Set(JSON.parse(prevRaw));
+          const protected_ = getProtectedBarcodes();
           const currentReasons = loadSoldoutReasons();
           let changed = false;
           for (const barcode of currentSoldout) {
-            if (!prevSoldout.has(barcode) && currentReasons[barcode]) {
+            if (!prevSoldout.has(barcode) && currentReasons[barcode] && !protected_.has(barcode)) {
               delete currentReasons[barcode];
               changed = true;
-              deleteReasonFromSheet(barcode); // fire-and-forget
+              deleteReasonFromSheet(barcode);
             }
           }
           if (changed) {

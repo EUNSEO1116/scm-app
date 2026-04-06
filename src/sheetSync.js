@@ -6,7 +6,7 @@ const CSV_URL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=
 const SOLDOUT_REASONS_KEY = 'soldout_reasons_v2';
 const SOLDOUT_HISTORY_KEY = 'soldout_history';
 const SAVE_TIMESTAMPS_KEY = 'soldout_save_timestamps';
-const PROTECT_MINUTES = 10; // 저장 후 10분간 시트 덮어쓰기 방지
+const PROTECT_MINUTES = 30; // 저장 후 30분간 시트 덮어쓰기 방지
 
 // 로컬 저장 타임스탬프 기록 (barcode → timestamp)
 export function markLocalSave(barcodes) {
@@ -18,7 +18,7 @@ export function markLocalSave(barcodes) {
   } catch {}
 }
 
-function getProtectedBarcodes() {
+export function getProtectedBarcodes() {
   try {
     const ts = JSON.parse(localStorage.getItem(SAVE_TIMESTAMPS_KEY) || '{}');
     const cutoff = Date.now() - PROTECT_MINUTES * 60 * 1000;
@@ -110,8 +110,14 @@ const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbx1PHUwqLsAaceI
 export async function saveReasonsToSheet(items) {
   if (!APPS_SCRIPT_URL) return false;
   try {
-    const url = `${APPS_SCRIPT_URL}?action=saveReasons&data=${encodeURIComponent(JSON.stringify(items))}`;
-    await fetch(url);
+    // GET URL 길이 제한 방지: 3개씩 배치 전송
+    const BATCH = 3;
+    for (let i = 0; i < items.length; i += BATCH) {
+      const batch = items.slice(i, i + BATCH);
+      const url = `${APPS_SCRIPT_URL}?action=saveReasons&data=${encodeURIComponent(JSON.stringify(batch))}`;
+      const res = await fetch(url);
+      if (!res.ok) console.error('Sheet save batch failed:', i);
+    }
     return true;
   } catch (e) {
     console.error('Sheet sync save error:', e);
