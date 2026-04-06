@@ -135,7 +135,7 @@ export default function Incoming() {
         }
 
         // 각 바코드별로 센터 결정 + 쿠팡입고 vs 박스히어로 판단
-        // 기준: (쿠팡재고 + 입고예정 + 투입수량)이 5.5주가 되는 만큼만 쿠팡
+        // 기준: (쿠팡재고 + 입고예정 + 투입수량)이 6주가 되는 만큼만 쿠팡
         const skuDecisionMap = {};
         for (const [sku, totalQty] of Object.entries(skuQtyMap)) {
           const center = centerMap[sku] || '';
