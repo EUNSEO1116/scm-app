@@ -141,7 +141,8 @@ export default function Incoming() {
           const weeklySales = stock.weeklySales;
 
           if (weeklySales <= 0) {
-            skuDecisionMap[sku] = { center, qty: totalQty, coupangQty: totalQty, boxheroQty: 0 };
+            // 판매량 없으면 무조건 박스히어로
+            skuDecisionMap[sku] = { center, qty: totalQty, coupangQty: 0, boxheroQty: totalQty };
             continue;
           }
 
@@ -295,8 +296,13 @@ export default function Incoming() {
         for (let c = range.s.c; c <= range.e.c; c++) {
           const ref = XLSX_STYLE.utils.encode_cell({ r, c });
           if (!ws[ref]) ws[ref] = { v: '', t: 's' };
-          // 숫자 셀도 문자열로 강제 변환하여 폰트 확실히 적용
-          if (ws[ref].t === 'n') {
+          // 출고수량(E=4), 합계:출고수량(J=9) 열은 숫자 강제 (엑셀 합계 표시용)
+          if (c === 4 || c === 9) {
+            if (r > 1 && ws[ref].v !== '' && ws[ref].v != null) {
+              ws[ref].v = Number(ws[ref].v) || 0;
+              ws[ref].t = 'n';
+            }
+          } else if (ws[ref].t === 'n') {
             ws[ref].v = String(ws[ref].v);
             ws[ref].t = 's';
           }
