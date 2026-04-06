@@ -93,16 +93,18 @@ export default function Incoming() {
           const cols = lines[i].split('\t');
           const barcode = (cols[2] || '').trim();
           if (!barcode) continue;
-          const coupangStock = safeNum(cols[6]);      // 쿠팡재고
-          const incoming = safeNum(cols[7]);           // 그로스 입고예정
+          const coupangStock = safeNum(cols[6]);      // 쿠팡재고 (G열)
+          const grossIncoming = safeNum(cols[7]);     // 그로스 입고예정 (H열)
+          const incomingQty = safeNum(cols[8]);        // 입고 (I열)
           const weeksCI = safeNum(cols[21]);           // 쿠팡재고+입고예정 예상판매주
-          const stockPlusIncoming = coupangStock + incoming;
-          // 주간 판매량 역산: (재고+입고예정) / 예상판매주
-          const weeklySales = weeksCI > 0 ? stockPlusIncoming / weeksCI : 0;
+          const stockAll = coupangStock + grossIncoming + incomingQty;
+          // 주간 판매량 역산: (재고+그로스입고예정+입고) / 예상판매주
+          const weeklySales = weeksCI > 0 ? stockAll / weeksCI : 0;
           stockMap[barcode] = {
             coupangStock,
-            incoming,
-            stockPlusIncoming,
+            grossIncoming,
+            incomingQty,
+            stockAll,
             weeksCI,
             weeklySales,
           };
@@ -137,7 +139,7 @@ export default function Incoming() {
         const skuDecisionMap = {};
         for (const [sku, totalQty] of Object.entries(skuQtyMap)) {
           const center = centerMap[sku] || '';
-          const stock = stockMap[sku] || { coupangStock: 0, incoming: 0, stockPlusIncoming: 0, weeksCI: 0, weeklySales: 0 };
+          const stock = stockMap[sku] || { coupangStock: 0, grossIncoming: 0, incomingQty: 0, stockAll: 0, weeksCI: 0, weeklySales: 0 };
           const weeklySales = stock.weeklySales;
 
           if (weeklySales <= 0) {
@@ -148,7 +150,7 @@ export default function Incoming() {
 
           // 5.5주 맞추려면 필요한 총 재고
           const targetStock = TARGET_WEEKS * weeklySales;
-          const needed = Math.max(0, Math.ceil(targetStock - stock.stockPlusIncoming));
+          const needed = Math.max(0, Math.ceil(targetStock - stock.stockAll));
           const coupangQty = Math.min(needed, totalQty);
 
           skuDecisionMap[sku] = {
