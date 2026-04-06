@@ -206,7 +206,7 @@ export default function Home() {
         for (let i = 1; i < orderLines.length; i++) {
           const cols = parseCsvRow(orderLines[i]);
           const sku = (cols[2] || '').trim();
-          const cnStatus = (cols[9] || '').trim();
+          const cnStatus = (cols[8] || '').trim();
 
           if (!specialSkus.has(sku)) continue;
           const isCnArrived = cnStatus.includes('CN 창고도착') || cnStatus.includes('작업 대기');
