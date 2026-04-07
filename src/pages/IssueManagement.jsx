@@ -45,6 +45,15 @@ function saveLocalSpecial(list) {
   dbStoreSet('issue_special_items', list).catch(() => {});
 }
 
+const PENDING_ALERTS_KEY = 'pending_sync_alerts';
+
+function loadPendingAlerts() {
+  try { return JSON.parse(localStorage.getItem(PENDING_ALERTS_KEY) || '[]'); } catch { return []; }
+}
+function savePendingAlerts(list) {
+  localStorage.setItem(PENDING_ALERTS_KEY, JSON.stringify(list));
+}
+
 export default function IssueManagement() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -65,7 +74,7 @@ export default function IssueManagement() {
     }).catch(() => {});
   }, []);
   const [newItem, setNewItem] = useState({ barcode: '', oneTime: '', orderUnit: '', sewing: '', fbcItem: '', priceNote: '', memo: '' });
-  const [syncAlerts, setSyncAlerts] = useState([]);
+  const [syncAlerts, setSyncAlerts] = useState(loadPendingAlerts);
   const [expandedCell, setExpandedCell] = useState(null);
 
   const fetchData = useCallback(async () => {
@@ -104,11 +113,22 @@ export default function IssueManagement() {
       }
       setData(results);
 
-      // 동기화 알림: localStorage에 있는데 스프레드시트에도 바코드가 존재하면 알림
+      // 동기화 알림: localStorage에 있는데 스프레드시트에도 바코드가 존재하면 알림 등록
       const sheetBarcodes = new Set(results.map(r => r.barcode));
       const local = loadLocalSpecial();
-      const alerts = local.filter(item => sheetBarcodes.has(item.barcode));
-      setSyncAlerts(alerts);
+      const newAlerts = local.filter(item => sheetBarcodes.has(item.barcode));
+
+      // 새로 감지된 항목을 영구 알림 목록에 추가 (적용완료 누를 때까지 유지)
+      const saved = loadPendingAlerts();
+      const savedBarcodes = new Set(saved.map(a => a.barcode));
+      let updated = [...saved];
+      for (const item of newAlerts) {
+        if (!savedBarcodes.has(item.barcode)) {
+          updated.push({ ...item, detectedDate: new Date().toISOString().slice(0, 10) });
+        }
+      }
+      savePendingAlerts(updated);
+      setSyncAlerts(updated);
     } catch (e) {
       setError(e.message);
     } finally {
@@ -177,7 +197,10 @@ export default function IssueManagement() {
   };
 
   const dismissAlert = (barcode) => {
-    // 동기화 완료 = localStorage에서 제거
+    // 적용 완료: 영구 알림 목록에서 제거 + 미등록 항목에서도 제거
+    const updatedAlerts = syncAlerts.filter(a => a.barcode !== barcode);
+    savePendingAlerts(updatedAlerts);
+    setSyncAlerts(updatedAlerts);
     deleteLocalItem(barcode);
   };
 
@@ -220,7 +243,7 @@ export default function IssueManagement() {
       {syncAlerts.length > 0 && (
         <div style={{ marginBottom: 16, background: '#fff3e0', border: '1px solid #ffb74d', borderRadius: 12, padding: 16 }}>
           <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 8, color: '#e65100' }}>
-            📢 스프레드시트에 적어주세요 ({syncAlerts.length}건)
+            📢 스프레드시트에 적어주세요 ({syncAlerts.length}건) — 적용완료 누를 때까지 유지됩니다
           </div>
           {syncAlerts.map(item => (
             <div key={item.barcode} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '6px 0', borderBottom: '1px solid #ffe0b2' }}>

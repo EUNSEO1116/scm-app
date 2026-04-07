@@ -197,11 +197,10 @@ export default function Home() {
 
         setAlerts(prev => ({ ...prev, checkCount }));
 
-        // 이슈관리 동기화 알림: 미등록 항목이 스프레드시트에 등록된 수
+        // 이슈관리 동기화 알림: 영구 알림 목록 카운트
         try {
-          const localItems = JSON.parse(localStorage.getItem('local_special_items') || '[]');
-          const synced = localItems.filter(item => item.barcode && allSheetBarcodes.has(item.barcode));
-          setAlerts(prev => ({ ...prev, syncCount: synced.length }));
+          const pendingAlerts = JSON.parse(localStorage.getItem('pending_sync_alerts') || '[]');
+          setAlerts(prev => ({ ...prev, syncCount: pendingAlerts.length }));
         } catch {}
       }
     } catch (e) { /* ignore */ }
