@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
 import * as XLSX from 'xlsx';
-import { fetchFromSheet, saveReasonsToSheet, deleteReasonFromSheet, markLocalSave, getProtectedBarcodes } from '../sheetSync.js';
+import { fetchFromSheet, saveReasonsToSheet, deleteReasonFromSheet, markLocalSave } from '../sheetSync.js';
+import { dbStoreGet, dbStoreSet } from '../utils/dbApi';
 
 const SHEET_ID = '1NXhW_gG0b-gXuVqrhbY9ErWi8uO_7pXIy-NTo4FbE1I';
 const TSV_CALC = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=tsv&gid=1349677364`;
@@ -102,6 +103,7 @@ function loadStockTracker() {
 }
 function saveStockTracker(data) {
   localStorage.setItem(NEW_PRODUCT_STOCK_KEY, JSON.stringify(data));
+  dbStoreSet('new_product_stock', data).catch(() => {});
 }
 // tracker: { [barcode]: { records: [{date, stock}], firstSeen: 'YYYY-MM-DD' } }
 function updateStockTracker(newProducts) {

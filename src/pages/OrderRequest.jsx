@@ -5,8 +5,7 @@ const SHEET_ID = '1NXhW_gG0b-gXuVqrhbY9ErWi8uO_7pXIy-NTo4FbE1I';
 const TSV_CALC = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=tsv&gid=1349677364`;
 const CSV_BARCODE = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent('쿠팡바코드')}`;
 const CSV_ORDER_FORM = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent('발주서 양식')}`;
-const APPS_SCRIPT = 'https://script.google.com/macros/s/AKfycbx1PHUwqLsAaceIBpTZFu8DAKrRaVeHqwIeTO4NYMxqvnBdsxDhc3dYQEsTY8PzCGgpvA/exec';
-const TSV_SPECIAL = `${APPS_SCRIPT}?sheet=${encodeURIComponent('특별 관리 상품')}`;
+const CSV_SPECIAL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent('특별 관리 상품')}`;
 
 // 브랜드 → 코드 매핑
 const BRAND_CODE = {
@@ -102,7 +101,7 @@ export default function OrderRequest() {
     setLoading(true);
     setError(null);
     try {
-      const [calcRes, barcodeRes, formRes, specialRes] = await Promise.all([fetch(TSV_CALC), fetch(CSV_BARCODE), fetch(CSV_ORDER_FORM), fetch(TSV_SPECIAL)]);
+      const [calcRes, barcodeRes, formRes, specialRes] = await Promise.all([fetch(TSV_CALC), fetch(CSV_BARCODE), fetch(CSV_ORDER_FORM), fetch(CSV_SPECIAL)]);
 
       // 쿠팡바코드: barcode → { brand, center }
       const barcodeMap = {};
@@ -135,22 +134,17 @@ export default function OrderRequest() {
       // 특별관리 상품: SKU → { sewing, fbcItem, oneTime }
       const specialMap = {};
       if (specialRes.ok) {
-        const spTsv = await specialRes.text();
-        const spLines = spTsv.split('\n');
-        let spRow = '';
-        for (const line of spLines) {
-          spRow += (spRow ? '\n' : '') + line;
-          if (spRow.split('\t').length >= 10) {
-            const cols = spRow.split('\t');
-            const sku = (cols[0] || '').trim();
-            if (sku && sku !== '바코드') {
-              specialMap[sku] = {
-                sewing: (cols[5] || '').trim(),
-                fbcItem: (cols[6] || '').trim(),
-                oneTime: (cols[8] || '').trim(),
-              };
-            }
-            spRow = '';
+        const spCsv = await specialRes.text();
+        const spRows = parseCsvRows(spCsv);
+        for (let i = 1; i < spRows.length; i++) {
+          const cols = spRows[i];
+          const sku = (cols[0] || '').trim();
+          if (sku) {
+            specialMap[sku] = {
+              sewing: (cols[5] || '').trim(),
+              fbcItem: (cols[6] || '').trim(),
+              oneTime: (cols[8] || '').trim(),
+            };
           }
         }
       }

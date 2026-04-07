@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
+import { dbStoreGet, dbStoreSet } from '../utils/dbApi';
 
 const SHEET_ID = '1NXhW_gG0b-gXuVqrhbY9ErWi8uO_7pXIy-NTo4FbE1I';
 const TSV_CALC = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=tsv&gid=1349677364`;
@@ -32,6 +33,7 @@ function loadSnapshots() {
 
 function saveSnapshots(data) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  dbStoreSet('soldout_rate', data).catch(() => {});
 }
 
 function shouldExclude(status) {
@@ -116,6 +118,17 @@ export default function SoldOutRate() {
   const [todayData, setTodayData] = useState(null);
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
   const [hoveredBar, setHoveredBar] = useState(null);
+  const [dbLoaded, setDbLoaded] = useState(false);
+
+  // 1단계: DB에서 초기 데이터 로드
+  useEffect(() => {
+    dbStoreGet('soldout_rate').then(data => {
+      if (data && typeof data === 'object' && Object.keys(data).length > 0) {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+        setSnapshots(data);
+      }
+    }).catch(() => {}).finally(() => setDbLoaded(true));
+  }, []);
 
   const fetchAndSave = useCallback(async () => {
     setLoading(true);
@@ -130,7 +143,7 @@ export default function SoldOutRate() {
       const snapshot = calcTodaySnapshot(calcTsv, dataTsv);
       setTodayData(snapshot);
 
-      // 저장 (같은 날짜에 이미 데이터가 있으면 오전 첫 기록 유지)
+      // 저장 (같은 날짜에 이미 DB에 데이터가 있으면 첫 기록 유지)
       const existing = loadSnapshots();
       if (!existing[snapshot.date]) {
         const updated = { ...existing, [snapshot.date]: snapshot };
@@ -155,7 +168,8 @@ export default function SoldOutRate() {
     }
   }, []);
 
-  useEffect(() => { fetchAndSave(); }, [fetchAndSave]);
+  // 2단계: DB 로드 완료 후에 fetchAndSave 실행
+  useEffect(() => { if (dbLoaded) fetchAndSave(); }, [dbLoaded, fetchAndSave]);
 
   // 월별 집계
   const monthlyData = useMemo(() => {

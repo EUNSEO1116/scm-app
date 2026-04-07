@@ -82,9 +82,8 @@ export default function Incoming() {
         }
       }
 
-      // 재고계산기: barcode(col3) → { totalStock, weeksTotalStock, avg7d }
-      // 재고계산기: barcode(col3) → { stock, incoming, weeksStockIncoming }
-      // col7=재고, col8=입고예정, col22=쿠팡재고+입고예정 예상판매주
+      // 재고계산기: barcode(col2) → { stock, incoming, ipgo, weeksCI }
+      // col6=쿠팡재고, col7=그로스입고예정, col8=입고, col21=쿠팡재고+입고예정 예상판매주
       const stockMap = {};
       if (calcRes.ok) {
         const tsv = await calcRes.text();
@@ -93,17 +92,17 @@ export default function Incoming() {
           const cols = lines[i].split('\t');
           const barcode = (cols[2] || '').trim();
           if (!barcode) continue;
-          const coupangStock = safeNum(cols[6]);      // 쿠팡재고 (G열)
-          const grossIncoming = safeNum(cols[7]);     // 그로스 입고예정 (H열)
-          const incomingQty = safeNum(cols[8]);        // 입고 (I열)
+          const coupangStock = safeNum(cols[6]);      // 쿠팡재고
+          const incoming = safeNum(cols[7]);           // 그로스 입고예정
+          const ipgo = safeNum(cols[8]);               // 입고
           const weeksCI = safeNum(cols[21]);           // 쿠팡재고+입고예정 예상판매주
-          const stockAll = coupangStock + grossIncoming + incomingQty;
-          // 주간 판매량 역산: (재고+그로스입고예정+입고) / 예상판매주
+          // 스프레드시트의 예상판매주는 재고+입고예정+입고를 모두 포함하여 계산됨
+          const stockAll = coupangStock + incoming + ipgo;
           const weeklySales = weeksCI > 0 ? stockAll / weeksCI : 0;
           stockMap[barcode] = {
             coupangStock,
-            grossIncoming,
-            incomingQty,
+            incoming,
+            ipgo,
             stockAll,
             weeksCI,
             weeklySales,
@@ -139,7 +138,7 @@ export default function Incoming() {
         const skuDecisionMap = {};
         for (const [sku, totalQty] of Object.entries(skuQtyMap)) {
           const center = centerMap[sku] || '';
-          const stock = stockMap[sku] || { coupangStock: 0, grossIncoming: 0, incomingQty: 0, stockAll: 0, weeksCI: 0, weeklySales: 0 };
+          const stock = stockMap[sku] || { coupangStock: 0, incoming: 0, ipgo: 0, stockAll: 0, weeksCI: 0, weeklySales: 0 };
           const weeklySales = stock.weeklySales;
 
           if (weeklySales <= 0) {
@@ -148,7 +147,7 @@ export default function Incoming() {
             continue;
           }
 
-          // 5.5주 맞추려면 필요한 총 재고
+          // 6주 맞추려면 필요한 총 재고
           const targetStock = TARGET_WEEKS * weeklySales;
           const needed = Math.max(0, Math.ceil(targetStock - stock.stockAll));
           const coupangQty = Math.min(needed, totalQty);

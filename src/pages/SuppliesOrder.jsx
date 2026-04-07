@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
+import { dbStoreGet, dbStoreSet } from '../utils/dbApi';
 
 const STORAGE_KEY = 'supplies_orders';
 const SHEET_ID = '1NXhW_gG0b-gXuVqrhbY9ErWi8uO_7pXIy-NTo4FbE1I';
@@ -11,6 +12,7 @@ function loadOrders() {
 
 function saveOrders(orders) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(orders));
+  dbStoreSet('supplies_orders', orders).catch(() => {});
 }
 
 function today() {
@@ -49,6 +51,16 @@ export default function SuppliesOrder() {
   const [qty, setQty] = useState('');
   const [eta, setEta] = useState('');
   const [search, setSearch] = useState('');
+
+  // DB에서 초기 데이터 로드
+  useEffect(() => {
+    dbStoreGet('supplies_orders').then(data => {
+      if (data && Array.isArray(data) && data.length > 0) {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+        setOrders(data);
+      }
+    }).catch(() => {});
+  }, []);
 
   // Load barcode list from sheet
   useEffect(() => {

@@ -1,5 +1,6 @@
-import { useState, useMemo, useRef } from 'react';
+import { useState, useMemo, useRef, useEffect } from 'react';
 import * as XLSX from 'xlsx';
+import { dbStoreGet, dbStoreSet } from '../utils/dbApi';
 import './FbcCalculator.css';
 
 const MONTHS_KR = ['1월', '2월', '3월', '4월', '5월', '6월', '7월', '8월', '9월', '10월', '11월', '12월'];
@@ -27,6 +28,7 @@ function loadHistory() {
 
 function saveHistory(history) {
   localStorage.setItem('fbc_savings_history', JSON.stringify(history));
+  dbStoreSet('fbc_savings', history).catch(() => {});
 }
 
 const PALLET_WORK_COST = 35000;
@@ -176,6 +178,16 @@ export default function Dashboard() {
   const chartRef = useRef();
 
   const refresh = () => setHistory(loadHistory());
+
+  // DB에서 초기 데이터 로드
+  useEffect(() => {
+    dbStoreGet('fbc_savings').then(data => {
+      if (data && Array.isArray(data) && data.length > 0) {
+        localStorage.setItem('fbc_savings_history', JSON.stringify(data));
+        setHistory(data);
+      }
+    }).catch(() => {});
+  }, []);
 
   // ── Stats ──────────────────────────────────────────────────────────────────
   const stats = useMemo(() => {

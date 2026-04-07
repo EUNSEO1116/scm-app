@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
 import { useLocation } from 'react-router-dom';
+import { dbStoreGet, dbStoreSet } from '../utils/dbApi';
 
 const SHEET_ID = '1NXhW_gG0b-gXuVqrhbY9ErWi8uO_7pXIy-NTo4FbE1I';
 const CSV_URL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent('발주장부')}`;
@@ -258,6 +259,7 @@ function loadNotes() {
 }
 function saveNotes(notes) {
   localStorage.setItem(NOTES_KEY, JSON.stringify(notes));
+  dbStoreSet('orderbook_notes', notes).catch(() => {});
 }
 
 function todayStr() {
@@ -280,6 +282,16 @@ export default function OrderBook() {
   const [editingNote, setEditingNote] = useState(null); // colT key
   const [noteInput, setNoteInput] = useState('');
   const [arrivalInput, setArrivalInput] = useState('');
+
+  // DB에서 초기 데이터 로드
+  useEffect(() => {
+    dbStoreGet('orderbook_notes').then(data => {
+      if (data && typeof data === 'object') {
+        localStorage.setItem(NOTES_KEY, JSON.stringify(data));
+        setNotes(data);
+      }
+    }).catch(() => {});
+  }, []);
 
   const saveNote = (colT) => {
     if (!colT) return;

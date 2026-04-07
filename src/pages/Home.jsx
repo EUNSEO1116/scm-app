@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { dbSaveCalendar, dbGetCalendar } from '../utils/dbApi';
 
 const SHEET_ID = '1NXhW_gG0b-gXuVqrhbY9ErWi8uO_7pXIy-NTo4FbE1I';
 const CSV_ORDER = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent('발주장부')}`;
@@ -73,53 +74,24 @@ const NAV_SHORTCUTS = [
   { label: '입고신청', path: '/inventory/incoming', icon: '🚛' },
 ];
 
-const CALENDAR_API = 'https://script.google.com/macros/s/AKfycbx1PHUwqLsAaceIBpTZFu8DAKrRaVeHqwIeTO4NYMxqvnBdsxDhc3dYQEsTY8PzCGgpvA/exec';
 const STORAGE_KEY_FBC = 'fbc_calendar_events';
 
 function loadCachedEvents() {
   try { return JSON.parse(localStorage.getItem(STORAGE_KEY_FBC) || '{}'); } catch { return {}; }
 }
 
-// 두 이벤트 맵을 병합 (같은 발주번호+상품명 중복 제거)
-function mergeEvents(a, b) {
-  const merged = {};
-  // a 먼저 넣기
-  for (const [key, items] of Object.entries(a)) {
-    merged[key] = [...items];
-  }
-  // b에서 없는 것만 추가
-  for (const [key, items] of Object.entries(b)) {
-    if (!merged[key]) merged[key] = [];
-    for (const item of items) {
-      const exists = Object.values(merged).some(dayItems =>
-        dayItems.some(e => e.orderNo === item.orderNo && e.productName === item.productName)
-      );
-      if (!exists) merged[key].push(item);
-    }
-  }
-  // 빈 키 제거
-  for (const key of Object.keys(merged)) {
-    if (merged[key].length === 0) delete merged[key];
-  }
-  return merged;
-}
-
 async function loadRemoteEvents() {
   try {
-    const res = await fetch(`${CALENDAR_API}?action=calendarRead`);
-    if (!res.ok) return null;
-    const remote = await res.json();
-    // 원격 데이터를 기준으로 사용 (스프레드시트 삭제 반영)
-    localStorage.setItem(STORAGE_KEY_FBC, JSON.stringify(remote));
-    return remote;
+    const remote = await dbGetCalendar();
+    const events = remote && typeof remote === 'object' && !Array.isArray(remote) ? remote : {};
+    localStorage.setItem(STORAGE_KEY_FBC, JSON.stringify(events));
+    return events;
   } catch { return null; }
 }
 
 function saveEvents(events) {
   localStorage.setItem(STORAGE_KEY_FBC, JSON.stringify(events));
-  // GET으로 시트에 저장
-  const url = `${CALENDAR_API}?action=calendarWrite&data=${encodeURIComponent(JSON.stringify(events))}`;
-  fetch(url).catch(() => {});
+  dbSaveCalendar(events).catch(() => {});
 }
 
 export default function Home() {

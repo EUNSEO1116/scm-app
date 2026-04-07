@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect } from 'react';
 import XLSX_STYLE from 'xlsx-js-style';
 import { fetchFromSheet } from '../sheetSync.js';
+import { dbStoreGet, dbStoreSet } from '../utils/dbApi';
 
 const SOLDOUT_HISTORY_KEY = 'soldout_history';
 const SOLDOUT_REASONS_KEY = 'soldout_reasons_v2';
@@ -23,6 +24,7 @@ function loadExcludes() {
 }
 function saveExcludes(list) {
   localStorage.setItem(EXCLUDE_KEY, JSON.stringify(list));
+  dbStoreSet('soldout_exclude', list).catch(() => {});
 }
 function todayStr() {
   const d = new Date();

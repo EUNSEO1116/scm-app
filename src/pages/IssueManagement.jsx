@@ -1,7 +1,8 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
+import { dbStoreGet, dbStoreSet } from '../utils/dbApi';
 
-const APPS_SCRIPT = 'https://script.google.com/macros/s/AKfycbx1PHUwqLsAaceIBpTZFu8DAKrRaVeHqwIeTO4NYMxqvnBdsxDhc3dYQEsTY8PzCGgpvA/exec';
-const TSV_URL = `${APPS_SCRIPT}?sheet=${encodeURIComponent('특별 관리 상품')}`;
+const SHEET_ID = '1NXhW_gG0b-gXuVqrhbY9ErWi8uO_7pXIy-NTo4FbE1I';
+const TSV_URL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent('특별 관리 상품')}`;
 
 function parseCSV(text) {
   const result = [];
@@ -41,6 +42,7 @@ function loadLocalSpecial() {
 }
 function saveLocalSpecial(list) {
   localStorage.setItem(LOCAL_SPECIAL_KEY, JSON.stringify(list));
+  dbStoreSet('issue_special_items', list).catch(() => {});
 }
 
 export default function IssueManagement() {
@@ -52,6 +54,16 @@ export default function IssueManagement() {
   const [sortDir, setSortDir] = useState('asc');
   const [localItems, setLocalItems] = useState(loadLocalSpecial);
   const [showAddForm, setShowAddForm] = useState(false);
+
+  // DB에서 초기 데이터 로드
+  useEffect(() => {
+    dbStoreGet('issue_special_items').then(data => {
+      if (data && Array.isArray(data) && data.length > 0) {
+        localStorage.setItem(LOCAL_SPECIAL_KEY, JSON.stringify(data));
+        setLocalItems(data);
+      }
+    }).catch(() => {});
+  }, []);
   const [newItem, setNewItem] = useState({ barcode: '', oneTime: '', orderUnit: '', sewing: '', fbcItem: '', priceNote: '', memo: '' });
   const [syncAlerts, setSyncAlerts] = useState([]);
   const [expandedCell, setExpandedCell] = useState(null);
@@ -63,20 +75,8 @@ export default function IssueManagement() {
       const res = await fetch(TSV_URL);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const text = await res.text();
-      // TSV 파싱: 10컬럼 기준으로 줄바꿈 포함 셀 처리
-      const rawLines = text.split('\n');
-      const lines = [];
-      let currentRow = '';
-      for (const line of rawLines) {
-        currentRow += (currentRow ? '\n' : '') + line;
-        if (currentRow.split('\t').length >= 10) {
-          lines.push(currentRow.split('\t').slice(0, 10));
-          currentRow = '';
-        }
-      }
-      if (currentRow.trim() && currentRow.split('\t').length >= 10) {
-        lines.push(currentRow.split('\t').slice(0, 10));
-      }
+      // CSV 파싱
+      const lines = parseCSV(text);
       if (lines.length < 2) throw new Error('데이터가 없습니다');
 
       const results = [];

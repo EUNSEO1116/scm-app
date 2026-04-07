@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback } from 'react';
 import * as XLSX from 'xlsx';
+import { dbStoreSet } from '../utils/dbApi';
 import './FbcCalculator.css';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -336,6 +337,7 @@ export default function FbcCalculator() {
       });
     }
     localStorage.setItem('fbc_savings_history', JSON.stringify(history));
+    dbStoreSet('fbc_savings', history).catch(() => {});
   };
 
   const updateTruckCost = (id, newCost) => {

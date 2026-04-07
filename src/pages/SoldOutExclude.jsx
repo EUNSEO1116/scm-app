@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
+import { dbStoreGet, dbStoreSet } from '../utils/dbApi';
 
 const SHEET_ID = '1NXhW_gG0b-gXuVqrhbY9ErWi8uO_7pXIy-NTo4FbE1I';
 const TSV_CALC = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=tsv&gid=1349677364`;
@@ -24,6 +25,7 @@ function loadExcludes() {
 
 function saveExcludes(list) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(list));
+  dbStoreSet('soldout_exclude', list).catch(() => {});
 }
 
 function shouldExclude(status) {
@@ -65,6 +67,16 @@ export default function SoldOutExclude() {
   const [excludes, setExcludes] = useState(loadExcludes);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
+
+  // DB에서 초기 데이터 로드
+  useEffect(() => {
+    dbStoreGet('soldout_exclude').then(data => {
+      if (data && Array.isArray(data) && data.length > 0) {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+        setExcludes(data);
+      }
+    }).catch(() => {});
+  }, []);
 
   // 다중 선택
   const [selected, setSelected] = useState(new Set());
