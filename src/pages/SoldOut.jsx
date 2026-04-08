@@ -98,17 +98,41 @@ const NEW_PRODUCT_STOCK_KEY = 'new_product_stock_tracker';
 const PREV_SOLDOUT_KEY = 'soldout_prev_barcodes';
 
 // 신규 상품 재고 추적: 7일간 G열 기록
-function loadStockTracker() {
+function loadStockTrackerLocal() {
   try { return JSON.parse(localStorage.getItem(NEW_PRODUCT_STOCK_KEY)) || {}; } catch { return {}; }
+}
+async function loadStockTracker() {
+  const local = loadStockTrackerLocal();
+  try {
+    const db = await dbStoreGet('new_product_stock');
+    if (!db) return local;
+    // DB와 localStorage 병합: 바코드별로 records 합치고 중복 날짜는 로컬 우선
+    const merged = { ...db };
+    for (const [barcode, entry] of Object.entries(local)) {
+      if (!merged[barcode]) {
+        merged[barcode] = entry;
+      } else {
+        const dateMap = {};
+        for (const r of merged[barcode].records) dateMap[r.date] = r;
+        for (const r of entry.records) dateMap[r.date] = r; // 로컬 우선
+        merged[barcode].records = Object.values(dateMap);
+        merged[barcode].firstSeen = merged[barcode].firstSeen < entry.firstSeen
+          ? merged[barcode].firstSeen : entry.firstSeen;
+      }
+    }
+    return merged;
+  } catch {
+    return local;
+  }
 }
 function saveStockTracker(data) {
   localStorage.setItem(NEW_PRODUCT_STOCK_KEY, JSON.stringify(data));
   dbStoreSet('new_product_stock', data).catch(() => {});
 }
 // tracker: { [barcode]: { records: [{date, stock}], firstSeen: 'YYYY-MM-DD' } }
-function updateStockTracker(newProducts) {
+async function updateStockTracker(newProducts, preloadedTracker) {
   // newProducts: [{ barcode, stock }]  — 신규 상태 상품들
-  const tracker = loadStockTracker();
+  const tracker = preloadedTracker || await loadStockTracker();
   const today = todayStr();
   const sevenDaysAgo = new Date();
   sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
@@ -239,7 +263,7 @@ function parseOrderBook(csv) {
   return { skuMap, skuArrival };
 }
 
-function parseData(calcTsv, dataTsv, orderSkus, skuArrival) {
+async function parseData(calcTsv, dataTsv, orderSkus, skuArrival, preloadedTracker) {
   // 데이터 입력 시트에서 옵션ID → 상품등급 매핑
   const statusMap = {};
   if (dataTsv) {
@@ -279,7 +303,7 @@ function parseData(calcTsv, dataTsv, orderSkus, skuArrival) {
       newProducts.push({ barcode, stock: safeNum(cols[6]) });
     }
   }
-  const stockTracker = updateStockTracker(newProducts);
+  const stockTracker = await updateStockTracker(newProducts, preloadedTracker);
 
   for (let i = 1; i < lines.length; i++) {
     const cols = lines[i].split('\t');
@@ -319,12 +343,7 @@ function parseData(calcTsv, dataTsv, orderSkus, skuArrival) {
 
     // 신규 상품: 7일간 재고 추적 결과 한 번도 재고 > 0이 된 적 없으면 품절 아님
     // 단, 수동 예외 목록은 신규 조건 무시 (재고 이력 확인된 상품)
-    const NEW_EXCEPTION_SKUS = [
-      'S0037157621657','S0037207400051','S0037140296354',
-      'S0037151526274','S0037151215409','S0037151215412',
-    ];
-    if (status.includes('신규') && stock === 0 && !hadStockBefore(stockTracker, barcode)
-        && !NEW_EXCEPTION_SKUS.includes(barcode)) continue;
+    if (status.includes('신규') && stock === 0 && !hadStockBefore(stockTracker, barcode)) continue;
 
     if (stock === 0) {
       riskLevel = '품절';
@@ -463,7 +482,8 @@ export default function SoldOut() {
       const dataTsv = dataRes.ok ? await dataRes.text() : null;
       const orderCsv = orderRes.ok ? await orderRes.text() : null;
       const { skuMap: orderSkus, skuArrival } = parseOrderBook(orderCsv);
-      const parsed = parseData(calcTsv, dataTsv, orderSkus, skuArrival);
+      const preloadedTracker = await loadStockTracker();
+      const parsed = await parseData(calcTsv, dataTsv, orderSkus, skuArrival, preloadedTracker);
 
       // 재진입 품절 사유 자동 삭제: 이전에 품절 아니었다가 다시 품절된 항목
       // 단, 최근 저장한 항목(보호 기간)은 삭제하지 않음
