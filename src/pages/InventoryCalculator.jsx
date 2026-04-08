@@ -359,7 +359,7 @@ export default function InventoryCalculator() {
         >
           <div className="label">긴급</div>
           <div className="value">{fmt(stats.emergency)}</div>
-          <div className="sub">총재고 14일치 미만<br/>※ 판매없는 품절은 제외</div>
+          <div className="sub">총재고 14일치 미만 (판매0 제외)</div>
         </div>
         <div
           className={`stat-card warning clickable${quickFilter === 'needOrder' ? ' selected' : ''}`}
