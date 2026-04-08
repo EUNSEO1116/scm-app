@@ -144,6 +144,19 @@ export default function IssueManagement() {
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
+  const handleImgPaste = async (e) => {
+    if (!imgModal) return;
+    const items = Array.from(e.clipboardData?.items || []);
+    const imageFiles = items.filter(i => i.type.startsWith('image/')).map(i => i.getAsFile()).filter(Boolean);
+    if (!imageFiles.length) return;
+    e.preventDefault();
+    const remaining = 3 - imgModalImages.length;
+    if (remaining <= 0) return;
+    const toAdd = imageFiles.slice(0, remaining);
+    const resized = await Promise.all(toAdd.map(f => resizeImage(f)));
+    await saveImages(imgModal.barcode, [...imgModalImages, ...resized]);
+  };
+
   const handleImgDelete = async (idx) => {
     if (!imgModal) return;
     const updated = imgModalImages.filter((_, i) => i !== idx);
@@ -562,7 +575,7 @@ export default function IssueManagement() {
           <div style={{
             background: '#fff', borderRadius: 12, padding: 24, minWidth: 400, maxWidth: 600,
             maxHeight: '80vh', overflow: 'auto',
-          }} onClick={e => e.stopPropagation()}>
+          }} onClick={e => e.stopPropagation()} onPaste={handleImgPaste} tabIndex={0}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
               <div>
                 <div style={{ fontWeight: 600, fontSize: 15 }}>상품 사진 관리</div>
@@ -615,6 +628,9 @@ export default function IssueManagement() {
                       + 사진 추가 ({imgModalImages.length}/3)
                     </button>
                   </div>
+                )}
+                {imgModalImages.length < 3 && (
+                  <div style={{ fontSize: 11, color: '#aaa', marginTop: 8 }}>Ctrl+V로 클립보드 이미지 붙여넣기 가능</div>
                 )}
                 {imgModalImages.length >= 3 && (
                   <div style={{ fontSize: 12, color: '#999' }}>최대 3장까지 등록 가능합니다</div>
