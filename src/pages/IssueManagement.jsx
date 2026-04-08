@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useCallback } from 'react';
+import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { dbStoreGet, dbStoreSet } from '../utils/dbApi';
 
 const SHEET_ID = '1NXhW_gG0b-gXuVqrhbY9ErWi8uO_7pXIy-NTo4FbE1I';
@@ -54,6 +54,29 @@ function savePendingAlerts(list) {
   localStorage.setItem(PENDING_ALERTS_KEY, JSON.stringify(list));
 }
 
+function resizeImage(file, maxDim = 800) {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        let { width, height } = img;
+        if (width > maxDim || height > maxDim) {
+          if (width > height) { height = Math.round(height * maxDim / width); width = maxDim; }
+          else { width = Math.round(width * maxDim / height); height = maxDim; }
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL('image/jpeg', 0.7));
+      };
+      img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
 export default function IssueManagement() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -76,6 +99,56 @@ export default function IssueManagement() {
   const [newItem, setNewItem] = useState({ barcode: '', oneTime: '', orderUnit: '', sewing: '', fbcItem: '', priceNote: '', memo: '' });
   const [syncAlerts, setSyncAlerts] = useState(loadPendingAlerts);
   const [expandedCell, setExpandedCell] = useState(null);
+
+  // 이미지 관련 상태
+  const [imgModal, setImgModal] = useState(null); // { barcode, productName }
+  const [imgModalImages, setImgModalImages] = useState([]);
+  const [imgLoading, setImgLoading] = useState(false);
+  const [imgCounts, setImgCounts] = useState({}); // { barcode: count }
+  const fileInputRef = useRef(null);
+
+  // 전체 이미지 카운트 로드
+  useEffect(() => {
+    dbStoreGet('issue_img_counts').then(data => {
+      if (data && typeof data === 'object') setImgCounts(data);
+    }).catch(() => {});
+  }, []);
+
+  const openImgModal = async (barcode, productName) => {
+    setImgModal({ barcode, productName });
+    setImgLoading(true);
+    try {
+      const imgs = await dbStoreGet(`issue_img_${barcode}`);
+      setImgModalImages(Array.isArray(imgs) ? imgs : []);
+    } catch { setImgModalImages([]); }
+    setImgLoading(false);
+  };
+
+  const saveImages = async (barcode, images) => {
+    setImgModalImages(images);
+    await dbStoreSet(`issue_img_${barcode}`, images);
+    const newCounts = { ...imgCounts, [barcode]: images.length };
+    if (images.length === 0) delete newCounts[barcode];
+    setImgCounts(newCounts);
+    await dbStoreSet('issue_img_counts', newCounts);
+  };
+
+  const handleImgAdd = async (e) => {
+    const files = Array.from(e.target.files || []);
+    if (!files.length || !imgModal) return;
+    const remaining = 3 - imgModalImages.length;
+    if (remaining <= 0) return;
+    const toAdd = files.slice(0, remaining);
+    const resized = await Promise.all(toAdd.map(f => resizeImage(f)));
+    await saveImages(imgModal.barcode, [...imgModalImages, ...resized]);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const handleImgDelete = async (idx) => {
+    if (!imgModal) return;
+    const updated = imgModalImages.filter((_, i) => i !== idx);
+    await saveImages(imgModal.barcode, updated);
+  };
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -395,6 +468,7 @@ export default function IssueManagement() {
                 <col style={{ width: 180 }} />
                 <col style={{ width: 250 }} />
                 <col style={{ width: 250 }} />
+                <col style={{ width: 60 }} />
               </colgroup>
               <thead>
                 <tr>
@@ -427,6 +501,7 @@ export default function IssueManagement() {
                     기타(1회성)<SortIcon col="oneTime" />
                   </th>
                   <th>메모</th>
+                  <th>사진</th>
                 </tr>
               </thead>
               <tbody>
@@ -459,6 +534,15 @@ export default function IssueManagement() {
                       <td style={cellStyle('price', 90)} onClick={() => toggle('price')}>{r.priceNote || '-'}</td>
                       <td style={cellStyle('one', 140)} onClick={() => toggle('one')}>{r.oneTime || '-'}</td>
                       <td style={cellStyle('memo', 140)} onClick={() => toggle('memo')}>{r.memo || '-'}</td>
+                      <td style={{ textAlign: 'center' }}>
+                        <span
+                          style={{ cursor: 'pointer', fontSize: 14, opacity: imgCounts[r.barcode] ? 1 : 0.4 }}
+                          onClick={() => openImgModal(r.barcode, r.productName)}
+                          title="사진 관리"
+                        >
+                          {imgCounts[r.barcode] ? `📷${imgCounts[r.barcode]}` : '📷'}
+                        </span>
+                      </td>
                     </tr>
                   );
                 })}
@@ -467,6 +551,79 @@ export default function IssueManagement() {
           </div>
         </div>
       </div>
+
+      {/* 이미지 모달 */}
+      {imgModal && (
+        <div style={{
+          position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+          background: 'rgba(0,0,0,0.5)', zIndex: 9999,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }} onClick={() => setImgModal(null)}>
+          <div style={{
+            background: '#fff', borderRadius: 12, padding: 24, minWidth: 400, maxWidth: 600,
+            maxHeight: '80vh', overflow: 'auto',
+          }} onClick={e => e.stopPropagation()}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+              <div>
+                <div style={{ fontWeight: 600, fontSize: 15 }}>상품 사진 관리</div>
+                <div style={{ fontSize: 12, color: '#666', marginTop: 2 }}>
+                  {imgModal.barcode} · {imgModal.productName || ''}
+                </div>
+              </div>
+              <span style={{ cursor: 'pointer', fontSize: 20, color: '#999' }} onClick={() => setImgModal(null)}>✕</span>
+            </div>
+
+            {imgLoading ? (
+              <div style={{ textAlign: 'center', padding: 40, color: '#999' }}>불러오는 중...</div>
+            ) : (
+              <>
+                <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 16 }}>
+                  {imgModalImages.map((src, idx) => (
+                    <div key={idx} style={{ position: 'relative', border: '1px solid #e0e0e0', borderRadius: 8, overflow: 'hidden' }}>
+                      <img src={src} alt={`사진 ${idx + 1}`} style={{ width: 160, height: 160, objectFit: 'cover', display: 'block' }} />
+                      <span
+                        onClick={() => handleImgDelete(idx)}
+                        style={{
+                          position: 'absolute', top: 4, right: 4,
+                          background: 'rgba(0,0,0,0.6)', color: '#fff', borderRadius: '50%',
+                          width: 22, height: 22, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          cursor: 'pointer', fontSize: 13,
+                        }}
+                      >✕</span>
+                    </div>
+                  ))}
+                  {imgModalImages.length === 0 && (
+                    <div style={{ color: '#999', fontSize: 13, padding: 20 }}>등록된 사진이 없습니다</div>
+                  )}
+                </div>
+
+                {imgModalImages.length < 3 && (
+                  <div>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      onChange={handleImgAdd}
+                      style={{ display: 'none' }}
+                    />
+                    <button
+                      className="btn btn-primary btn-sm"
+                      onClick={() => fileInputRef.current?.click()}
+                      style={{ fontSize: 13 }}
+                    >
+                      + 사진 추가 ({imgModalImages.length}/3)
+                    </button>
+                  </div>
+                )}
+                {imgModalImages.length >= 3 && (
+                  <div style={{ fontSize: 12, color: '#999' }}>최대 3장까지 등록 가능합니다</div>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
