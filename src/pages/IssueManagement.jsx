@@ -118,7 +118,8 @@ export default function IssueManagement() {
     setImgModal({ barcode, productName });
     setImgLoading(true);
     try {
-      const imgs = await dbStoreGet(`issue_img_${barcode}`);
+      const allData = await dbStoreGet('issue_img_data');
+      const imgs = (allData && allData[barcode]) ? allData[barcode] : [];
       setImgModalImages(Array.isArray(imgs) ? imgs : []);
     } catch { setImgModalImages([]); }
     setImgLoading(false);
@@ -126,7 +127,11 @@ export default function IssueManagement() {
 
   const saveImages = async (barcode, images) => {
     setImgModalImages(images);
-    await dbStoreSet(`issue_img_${barcode}`, images);
+    // 전체 이미지 데이터를 하나의 저장소에 저장
+    let allData = {};
+    try { const d = await dbStoreGet('issue_img_data'); if (d && typeof d === 'object') allData = d; } catch {}
+    if (images.length > 0) { allData[barcode] = images; } else { delete allData[barcode]; }
+    await dbStoreSet('issue_img_data', allData);
     const newCounts = { ...imgCounts, [barcode]: images.length };
     if (images.length === 0) delete newCounts[barcode];
     setImgCounts(newCounts);

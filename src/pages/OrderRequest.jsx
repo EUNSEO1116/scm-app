@@ -241,12 +241,12 @@ export default function OrderRequest() {
     if (withImg.length === 0) return;
     setPhotoLoading(true);
     setPhotoModal({ items: [] });
-    const items = await Promise.all(
-      withImg.map(async (r) => {
-        const images = await dbStoreGet(`issue_img_${r.sku}`).catch(() => []);
-        return { orderNo: r.orderNo, productName: r.productName, sku: r.sku, images: Array.isArray(images) ? images : [] };
-      })
-    );
+    let allData = {};
+    try { const d = await dbStoreGet('issue_img_data'); if (d && typeof d === 'object') allData = d; } catch {}
+    const items = withImg.map((r) => {
+      const images = allData[r.sku];
+      return { orderNo: r.orderNo, productName: r.productName, sku: r.sku, images: Array.isArray(images) ? images : [] };
+    });
     setPhotoModal({ items: items.filter(it => it.images.length > 0) });
     setPhotoIdx(0);
     setPhotoLoading(false);
