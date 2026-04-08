@@ -267,6 +267,59 @@ function todayStr() {
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 }
 
+// 답변 일괄입력: 텍스트에서 colT 코드 + 상태 파싱
+function parseBulkReply(text) {
+  const today = new Date();
+  const fmtDate = (d) => `${d.getMonth() + 1}/${d.getDate()}`;
+  const todayFmt = fmtDate(today);
+  const tomorrowFmt = fmtDate(new Date(today.getTime() + 86400000));
+  const dayAfterFmt = fmtDate(new Date(today.getTime() + 86400000 * 2));
+
+  // colT 패턴: AE-XX-YYMMDD-ZZZ 또는 AE-XX-YYMMDD-JJ-ZZZ
+  const codePattern = /\b(AE-[A-Z0-9]+-\d{6}(?:-[A-Z0-9]+)*-\d{3})\b/g;
+  const lines = text.split('\n');
+  const results = [];
+
+  for (const line of lines) {
+    const codes = [...line.matchAll(codePattern)].map(m => m[1]);
+    if (codes.length === 0) continue;
+
+    // 각 코드별로 뒤따르는 텍스트 파싱
+    for (let ci = 0; ci < codes.length; ci++) {
+      const code = codes[ci];
+      const codeIdx = line.indexOf(code);
+      // 이 코드 뒤, 다음 코드 전까지의 텍스트
+      const nextCodeIdx = ci + 1 < codes.length ? line.indexOf(codes[ci + 1], codeIdx + code.length) : line.length;
+      const statusText = line.slice(codeIdx + code.length, nextCodeIdx).trim();
+
+      // 날짜 결정
+      let dateStr = todayFmt;
+      if (/내일/.test(statusText)) dateStr = tomorrowFmt;
+      else if (/모레/.test(statusText)) dateStr = dayAfterFmt;
+
+      // 상태 키워드 추출
+      let status = '';
+      if (/발송/.test(statusText)) status = '발송예정';
+      else if (/도착/.test(statusText)) status = '도착예정';
+      else if (/내륙/.test(statusText) && /운송/.test(statusText)) status = '내륙운송중';
+      else if (/생산/.test(statusText)) {
+        // "생산시간 7일" 같은 케이스 → 그대로 표시
+        const prodMatch = statusText.match(/생산[^\d]*(\d+)\s*일/);
+        status = prodMatch ? `생산 ${prodMatch[1]}일` : '생산중';
+      } else if (/재고/.test(statusText)) {
+        status = statusText.replace(/[,.]?\s*$/, '');
+      } else {
+        // 기타: 원문 그대로 (공급업체 고유 답변)
+        status = statusText.replace(/[,.]?\s*$/, '').replace(/이라고\s*확인되었습니다/, '').replace(/이고$/, '').trim();
+      }
+
+      const reply = status ? `${dateStr} ${status}` : `${dateStr} 확인됨`;
+      results.push({ colT: code, reply, raw: statusText });
+    }
+  }
+  return results;
+}
+
 export default function OrderBook() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -282,6 +335,9 @@ export default function OrderBook() {
   const [editingNote, setEditingNote] = useState(null); // colT key
   const [noteInput, setNoteInput] = useState('');
   const [arrivalInput, setArrivalInput] = useState('');
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkText, setBulkText] = useState('');
+  const [bulkParsed, setBulkParsed] = useState(null); // [{colT, reply, raw, matched}]
 
   // DB에서 초기 데이터 로드
   useEffect(() => {
@@ -308,6 +364,40 @@ export default function OrderBook() {
     delete updated[colT];
     setNotes(updated);
     saveNotes(updated);
+  };
+
+  // 답변 일괄입력: 텍스트 파싱
+  const handleBulkParse = () => {
+    if (!bulkText.trim()) return;
+    const parsed = parseBulkReply(bulkText);
+    const activeColTs = new Set((data || []).map(r => r.colT).filter(Boolean));
+    const withMatch = parsed.map(p => ({
+      ...p,
+      matched: activeColTs.has(p.colT),
+      checked: activeColTs.has(p.colT),
+    }));
+    setBulkParsed(withMatch);
+  };
+
+  // 답변 일괄입력: 확인 후 저장
+  const handleBulkSave = () => {
+    if (!bulkParsed) return;
+    const toSave = bulkParsed.filter(p => p.checked && p.matched);
+    if (toSave.length === 0) { alert('저장할 항목이 없습니다.'); return; }
+
+    const lines = toSave.map(p => `${p.colT} → ${p.reply}`).join('\n');
+    if (!window.confirm(`다음 ${toSave.length}건의 답변을 저장하시겠습니까?\n\n${lines}`)) return;
+
+    const updated = { ...notes };
+    const today = todayStr();
+    for (const p of toSave) {
+      updated[p.colT] = { reply: p.reply, arrivalDate: '', savedAt: today };
+    }
+    setNotes(updated);
+    saveNotes(updated);
+    setBulkOpen(false);
+    setBulkText('');
+    setBulkParsed(null);
   };
 
   const fetchData = useCallback(async () => {
@@ -588,7 +678,88 @@ export default function OrderBook() {
           {filtered.length}건{data ? ` / 전체 ${data.length}건` : ''}
         </span>
         <button className="btn btn-outline btn-sm" onClick={fetchData}>🔄 새로고침</button>
+        {activeCard === 'remind' && (
+          <button className="btn btn-primary btn-sm" style={{ marginLeft: 8 }} onClick={() => { setBulkOpen(true); setBulkText(''); setBulkParsed(null); }}>
+            📋 답변 일괄입력
+          </button>
+        )}
       </div>
+
+      {/* 답변 일괄입력 모달 */}
+      {bulkOpen && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+          onClick={() => setBulkOpen(false)}>
+          <div style={{ background: '#fff', borderRadius: 12, padding: 24, width: 520, maxHeight: '80vh', overflow: 'auto', boxShadow: '0 8px 32px rgba(0,0,0,0.2)' }}
+            onClick={e => e.stopPropagation()}>
+            <h3 style={{ margin: '0 0 12px', fontSize: 16 }}>📋 답변 일괄입력</h3>
+            <p style={{ fontSize: 12, color: '#666', margin: '0 0 12px' }}>
+              공급업체 메시지를 붙여넣기 하세요. 발주코드와 상태를 자동 파싱합니다.
+            </p>
+            <textarea
+              style={{ width: '100%', height: 120, fontSize: 12, padding: 10, border: '1px solid #ddd', borderRadius: 8, resize: 'vertical', fontFamily: 'inherit' }}
+              placeholder={'예시:\nAE-O-260403-001 내륙운송 중이고\nAE-I-260406-002 오늘 발송 예정'}
+              value={bulkText}
+              onChange={e => { setBulkText(e.target.value); setBulkParsed(null); }}
+            />
+            <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+              <button className="btn btn-primary btn-sm" onClick={handleBulkParse} disabled={!bulkText.trim()}>파싱하기</button>
+              <button className="btn btn-outline btn-sm" onClick={() => setBulkOpen(false)}>닫기</button>
+            </div>
+
+            {bulkParsed && (
+              <div style={{ marginTop: 16 }}>
+                <h4 style={{ fontSize: 14, margin: '0 0 8px' }}>파싱 결과 ({bulkParsed.filter(p => p.matched).length}/{bulkParsed.length}건 매칭)</h4>
+                <div style={{ border: '1px solid #e0e0e0', borderRadius: 8, overflow: 'hidden' }}>
+                  <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
+                    <thead>
+                      <tr style={{ background: '#f5f5f5' }}>
+                        <th style={{ padding: '8px 6px', textAlign: 'center', width: 30 }}></th>
+                        <th style={{ padding: '8px 6px', textAlign: 'left' }}>발주코드</th>
+                        <th style={{ padding: '8px 6px', textAlign: 'left' }}>답변 내용</th>
+                        <th style={{ padding: '8px 6px', textAlign: 'center', width: 60 }}>상태</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {bulkParsed.map((p, i) => (
+                        <tr key={i} style={{ borderTop: '1px solid #eee', opacity: p.matched ? 1 : 0.5 }}>
+                          <td style={{ padding: '6px', textAlign: 'center' }}>
+                            <input type="checkbox" checked={p.checked} disabled={!p.matched}
+                              onChange={() => {
+                                const next = [...bulkParsed];
+                                next[i] = { ...next[i], checked: !next[i].checked };
+                                setBulkParsed(next);
+                              }} />
+                          </td>
+                          <td style={{ padding: '6px', fontFamily: 'monospace', fontSize: 11 }}>{p.colT}</td>
+                          <td style={{ padding: '6px' }}>{p.reply}</td>
+                          <td style={{ padding: '6px', textAlign: 'center' }}>
+                            {p.matched
+                              ? <span style={{ color: '#34a853', fontWeight: 600 }}>매칭</span>
+                              : <span style={{ color: '#999' }}>미매칭</span>}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                {bulkParsed.some(p => !p.matched) && (
+                  <p style={{ fontSize: 11, color: '#d93025', marginTop: 6 }}>
+                    ⚠ 미매칭 항목은 현재 발주장부에 해당 코드가 없습니다.
+                  </p>
+                )}
+                <button
+                  className="btn btn-primary"
+                  style={{ marginTop: 12, width: '100%' }}
+                  onClick={handleBulkSave}
+                  disabled={!bulkParsed.some(p => p.checked && p.matched)}
+                >
+                  ✅ {bulkParsed.filter(p => p.checked && p.matched).length}건 저장하기
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* 테이블 */}
       <div className="card">
