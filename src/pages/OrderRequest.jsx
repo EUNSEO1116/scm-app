@@ -214,7 +214,8 @@ export default function OrderRequest() {
   const [copiedGroup, setCopiedGroup] = useState(null);
   const [copiedAll, setCopiedAll] = useState(false);
   const [imgCounts, setImgCounts] = useState({});
-  const [photoModal, setPhotoModal] = useState(null); // { items: [{ orderNo, productName, sku, images }] }
+  const [photoModal, setPhotoModal] = useState(null); // { items: [...] }
+  const [photoIdx, setPhotoIdx] = useState(0);
   const [photoLoading, setPhotoLoading] = useState(false);
 
   // 이슈관리 이미지 카운트 로드
@@ -247,6 +248,7 @@ export default function OrderRequest() {
       })
     );
     setPhotoModal({ items: items.filter(it => it.images.length > 0) });
+    setPhotoIdx(0);
     setPhotoLoading(false);
   };
 
@@ -437,59 +439,83 @@ export default function OrderRequest() {
         </div>
       ))}
 
-      {/* 이슈관리 사진 모달 */}
-      {photoModal && (
-        <div style={{
-          position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
-          background: 'rgba(0,0,0,0.5)', zIndex: 9999,
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-        }} onClick={() => setPhotoModal(null)}>
+      {/* 이슈관리 사진 모달 — 화살표로 상품별 이동 */}
+      {photoModal && (() => {
+        const items = photoModal.items;
+        const cur = items[photoIdx] || null;
+        const total = items.length;
+        const arrowBtn = {
+          background: 'none', border: 'none', fontSize: 28, cursor: 'pointer',
+          color: '#1976d2', padding: '4px 8px', lineHeight: 1, userSelect: 'none',
+        };
+        const arrowDisabled = { ...arrowBtn, color: '#ccc', cursor: 'default' };
+        return (
           <div style={{
-            background: '#fff', borderRadius: 12, padding: 24,
-            maxWidth: 600, width: '90%', maxHeight: '80vh', overflowY: 'auto',
-            boxShadow: '0 8px 32px rgba(0,0,0,0.2)',
-          }} onClick={e => e.stopPropagation()}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-              <h3 style={{ margin: 0, fontSize: 16 }}>📷 이슈관리 등록 사진</h3>
-              <button onClick={() => setPhotoModal(null)} style={{
-                background: 'none', border: 'none', fontSize: 20, cursor: 'pointer', color: '#666',
-              }}>✕</button>
-            </div>
-            {photoLoading ? (
-              <div style={{ textAlign: 'center', padding: 32 }}>
-                <div className="spinner" />
-                <p style={{ marginTop: 8, color: '#666' }}>사진 불러오는 중...</p>
+            position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+            background: 'rgba(0,0,0,0.5)', zIndex: 9999,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }} onClick={() => setPhotoModal(null)}>
+            <div style={{
+              background: '#fff', borderRadius: 12, padding: 24,
+              maxWidth: 600, width: '90%', boxShadow: '0 8px 32px rgba(0,0,0,0.2)',
+            }} onClick={e => e.stopPropagation()}>
+              {/* 헤더 */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+                <h3 style={{ margin: 0, fontSize: 16 }}>📷 이슈관리 등록 사진</h3>
+                <button onClick={() => setPhotoModal(null)} style={{
+                  background: 'none', border: 'none', fontSize: 20, cursor: 'pointer', color: '#666',
+                }}>✕</button>
               </div>
-            ) : photoModal.items.length === 0 ? (
-              <p style={{ textAlign: 'center', color: '#999', padding: 20 }}>사진이 있는 상품이 없습니다.</p>
-            ) : (
-              photoModal.items.map((item, idx) => (
-                <div key={idx} style={{
-                  marginBottom: 20, padding: 16, background: '#f8f9fa',
-                  borderRadius: 8, border: '1px solid #e9ecef',
-                }}>
-                  <div style={{ marginBottom: 10 }}>
-                    <span style={{
-                      display: 'inline-block', background: '#1976d2', color: '#fff',
-                      padding: '2px 8px', borderRadius: 4, fontSize: 12, fontWeight: 600, marginRight: 8,
-                    }}>{item.orderNo}</span>
-                    <span style={{ fontSize: 13, color: '#333' }}>{item.productName}</span>
-                    <span style={{ fontSize: 11, color: '#999', marginLeft: 8 }}>{item.sku}</span>
-                  </div>
-                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                    {item.images.map((img, imgIdx) => (
-                      <img key={imgIdx} src={img} alt={`${item.sku}-${imgIdx}`} style={{
-                        width: 160, height: 160, objectFit: 'cover',
-                        borderRadius: 6, border: '1px solid #ddd', cursor: 'pointer',
-                      }} onClick={() => window.open(img, '_blank')} />
-                    ))}
-                  </div>
+
+              {photoLoading ? (
+                <div style={{ textAlign: 'center', padding: 32 }}>
+                  <div className="spinner" />
+                  <p style={{ marginTop: 8, color: '#666' }}>사진 불러오는 중...</p>
                 </div>
-              ))
-            )}
+              ) : total === 0 ? (
+                <p style={{ textAlign: 'center', color: '#999', padding: 20 }}>사진이 있는 상품이 없습니다.</p>
+              ) : (
+                <>
+                  {/* 상품 정보 */}
+                  <div style={{ padding: 16, background: '#f8f9fa', borderRadius: 8, border: '1px solid #e9ecef' }}>
+                    <div style={{ marginBottom: 10 }}>
+                      <span style={{
+                        display: 'inline-block', background: '#1976d2', color: '#fff',
+                        padding: '2px 8px', borderRadius: 4, fontSize: 12, fontWeight: 600, marginRight: 8,
+                      }}>{cur.orderNo}</span>
+                      <span style={{ fontSize: 13, color: '#333' }}>{cur.productName}</span>
+                      <span style={{ fontSize: 11, color: '#999', marginLeft: 8 }}>{cur.sku}</span>
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'center' }}>
+                      {cur.images.map((img, imgIdx) => (
+                        <img key={imgIdx} src={img} alt={`${cur.sku}-${imgIdx}`} style={{
+                          width: 160, height: 160, objectFit: 'cover',
+                          borderRadius: 6, border: '1px solid #ddd', cursor: 'pointer',
+                        }} onClick={() => window.open(img, '_blank')} />
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* 화살표 네비게이션 */}
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 16, marginTop: 16 }}>
+                    <button
+                      style={photoIdx > 0 ? arrowBtn : arrowDisabled}
+                      disabled={photoIdx <= 0}
+                      onClick={() => setPhotoIdx(i => i - 1)}
+                    >◀</button>
+                    <span style={{ fontSize: 13, color: '#666' }}>{photoIdx + 1} / {total}</span>
+                    <button
+                      style={photoIdx < total - 1 ? arrowBtn : arrowDisabled}
+                      disabled={photoIdx >= total - 1}
+                      onClick={() => setPhotoIdx(i => i + 1)}
+                    >▶</button>
+                  </div>
+                </>
+              )}
+            </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
     </div>
   );
 }
