@@ -28,7 +28,7 @@ export async function dbGetReasons() {
 
 export async function dbDeleteReason(barcode) {
   try {
-    const res = await fetch(`${API_BASE}/api/soldout/reasons/${encodeURIComponent(barcode)}`, {
+    const res = await fetch(`${API_BASE}/soldout/reasons/${encodeURIComponent(barcode)}`, {
       method: 'DELETE',
     });
     return (await res.json()).ok;
@@ -66,7 +66,7 @@ export async function dbGetCaution() {
 
 export async function dbRemoveCaution(barcode) {
   try {
-    const res = await fetch(`${API_BASE}/api/caution/${encodeURIComponent(barcode)}`, {
+    const res = await fetch(`${API_BASE}/caution/${encodeURIComponent(barcode)}`, {
       method: 'DELETE',
     });
     return (await res.json()).ok;
