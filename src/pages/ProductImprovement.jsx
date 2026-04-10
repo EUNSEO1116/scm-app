@@ -100,11 +100,15 @@ export default function ProductImprovement() {
   const [filterStatus, setFilterStatus] = useState('all');
   const [filterType, setFilterType] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
+  const [cardFilter, setCardFilter] = useState(null);
 
-  const emptyForm = { status: '시작전', type: '재등록', productName: '', barcode: '', issue: '', startDate: new Date().toISOString().slice(0, 10), endDate: '' };
+  const emptyForm = { status: '시작전', type: '재등록', productName: '', barcode: '', issue: '', startDate: new Date().toISOString().slice(0, 10), endDate: '', urls: ['', '', ''] };
   const [form, setForm] = useState(emptyForm);
   const [productSearch, setProductSearch] = useState('');
   const [showSuggestions, setShowSuggestions] = useState(false);
+  const [expandedId, setExpandedId] = useState(null);
+  const [formImages, setFormImages] = useState([]);
+  const formFileRef = useRef(null);
 
   const [timelineInput, setTimelineInput] = useState({});
 
@@ -117,24 +121,50 @@ export default function ProductImprovement() {
   const [excelDownloading, setExcelDownloading] = useState(false);
   const [zipDownloading, setZipDownloading] = useState(false);
 
+  // localStorage + DB 이중 저장 (DB 화이트리스트 등록 전까지 localStorage가 주 저장소)
   useEffect(() => {
+    // localStorage에서 먼저 로드
+    try {
+      const localItems = JSON.parse(localStorage.getItem('improvement_items') || 'null');
+      if (Array.isArray(localItems) && localItems.length > 0) setItems(localItems);
+      const localImgs = JSON.parse(localStorage.getItem('improvement_images') || 'null');
+      if (localImgs && typeof localImgs === 'object') setImpImages(localImgs);
+    } catch { /* ignore */ }
+    // DB에서도 시도 (성공하면 병합)
     Promise.all([
       dbStoreGet('improvement_items'),
       dbStoreGet('improvement_images'),
-    ]).then(([itemsData, imgData]) => {
-      if (Array.isArray(itemsData)) setItems(itemsData);
-      if (imgData && typeof imgData === 'object') setImpImages(imgData);
+    ]).then(([dbItems, dbImgs]) => {
+      if (Array.isArray(dbItems) && dbItems.length > 0) {
+        // DB 데이터가 있으면 localStorage와 병합 (id 기준 중복 제거)
+        setItems(prev => {
+          const ids = new Set(prev.map(i => i.id));
+          const merged = [...prev, ...dbItems.filter(i => !ids.has(i.id))];
+          localStorage.setItem('improvement_items', JSON.stringify(merged));
+          return merged;
+        });
+      }
+      if (dbImgs && typeof dbImgs === 'object' && Object.keys(dbImgs).length > 0) {
+        setImpImages(prev => {
+          const merged = { ...prev, ...dbImgs };
+          localStorage.setItem('improvement_images', JSON.stringify(merged));
+          return merged;
+        });
+      }
       setLoaded(true);
     }).catch(() => setLoaded(true));
+    setLoaded(true);
   }, []);
 
   const saveItems = useCallback((updated) => {
     setItems(updated);
+    localStorage.setItem('improvement_items', JSON.stringify(updated));
     dbStoreSet('improvement_items', updated).catch(() => {});
   }, []);
 
   const saveImagesDb = useCallback((updated) => {
     setImpImages(updated);
+    localStorage.setItem('improvement_images', JSON.stringify(updated));
     dbStoreSet('improvement_images', updated).catch(() => {});
   }, []);
 
@@ -148,13 +178,11 @@ export default function ProductImprovement() {
 
   const filtered = useMemo(() => {
     let rows = items;
-    // 카드 필터
     if (cardFilter === 'supply_wait') rows = rows.filter(r => SUPPLY_TYPES.includes(r.type) && r.status === '시작전');
     else if (cardFilter === 'supply_ing') rows = rows.filter(r => SUPPLY_TYPES.includes(r.type) && r.status === '처리중');
     else if (cardFilter === 'improve_wait') rows = rows.filter(r => IMPROVE_TYPES.includes(r.type) && r.status === '시작전');
     else if (cardFilter === 'improve_ing') rows = rows.filter(r => IMPROVE_TYPES.includes(r.type) && r.status === '처리중');
     else if (cardFilter === 'done') rows = rows.filter(r => r.status === '완료');
-    // 드롭다운 필터
     if (filterStatus !== 'all') rows = rows.filter(r => r.status === filterStatus);
     if (filterType !== 'all') rows = rows.filter(r => r.type === filterType);
     if (searchQuery) {
@@ -168,18 +196,49 @@ export default function ProductImprovement() {
     return rows;
   }, [items, cardFilter, filterStatus, filterType, searchQuery]);
 
-  const handleAdd = () => {
+  const handleAdd = async () => {
     if (!form.productName.trim() && !form.barcode.trim()) return;
+    const itemId = Date.now().toString();
     const newItem = {
       ...form,
-      id: Date.now().toString(),
+      id: itemId,
+      urls: (form.urls || []).filter(u => u.trim()),
       timeline: form.issue ? [{ date: new Date().toISOString().slice(0, 16).replace('T', ' '), text: form.issue }] : [],
       createdAt: new Date().toISOString(),
     };
     saveItems([newItem, ...items]);
+    if (formImages.length > 0) {
+      const updated = { ...impImages, [itemId]: formImages };
+      saveImagesDb(updated);
+    }
+
     setForm(emptyForm);
+    setFormImages([]);
     setProductSearch('');
     setShowForm(false);
+  };
+
+  const handleFormImgAdd = async (e) => {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+    const remaining = 5 - formImages.length;
+    if (remaining <= 0) return;
+    const toAdd = files.slice(0, remaining);
+    const resized = await Promise.all(toAdd.map(f => resizeImage(f)));
+    setFormImages(prev => [...prev, ...resized]);
+    if (formFileRef.current) formFileRef.current.value = '';
+  };
+
+  const handleFormImgPaste = async (e) => {
+    const pasteItems = Array.from(e.clipboardData?.items || []);
+    const imageFiles = pasteItems.filter(i => i.type.startsWith('image/')).map(i => i.getAsFile()).filter(Boolean);
+    if (!imageFiles.length) return;
+    e.preventDefault();
+    const remaining = 5 - formImages.length;
+    if (remaining <= 0) return;
+    const toAdd = imageFiles.slice(0, remaining);
+    const resized = await Promise.all(toAdd.map(f => resizeImage(f)));
+    setFormImages(prev => [...prev, ...resized]);
   };
 
   const handleDelete = (id) => {
@@ -347,8 +406,6 @@ export default function ProductImprovement() {
     return c;
   }, [impImages]);
 
-  const [cardFilter, setCardFilter] = useState(null); // null | 'supply_wait' | 'supply_ing' | 'improve_wait' | 'improve_ing' | 'done'
-
   const cardCounts = useMemo(() => {
     let supplyWait = 0, supplyIng = 0, improveWait = 0, improveIng = 0, done = 0;
     items.forEach(i => {
@@ -375,33 +432,27 @@ export default function ProductImprovement() {
   return (
     <div>
       {/* 요약 카드 */}
-      {(() => {
-        const cards = [
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 10, marginBottom: 16 }}>
+        {[
           { key: null, label: '전체', sub: `${productList.length}품목`, count: items.length, color: '#1a73e8' },
           { key: 'supply_wait', label: '수배 대기', sub: '재수배·업체문제', count: cardCounts.supplyWait, color: '#6a1b9a' },
           { key: 'supply_ing', label: '수배 진행중', sub: '재수배·업체문제', count: cardCounts.supplyIng, color: '#ab47bc' },
           { key: 'improve_wait', label: '개선 대기', sub: '상품문제·CS/VOC', count: cardCounts.improveWait, color: '#e65100' },
           { key: 'improve_ing', label: '개선 진행중', sub: '상품문제·CS/VOC', count: cardCounts.improveIng, color: '#fb8c00' },
           { key: 'done', label: '완료', sub: '전체', count: cardCounts.done, color: '#43a047' },
-        ];
-        return (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 10, marginBottom: 16 }}>
-            {cards.map(c => (
-              <div key={c.key ?? 'all'} onClick={() => setCardFilter(prev => prev === c.key ? null : c.key)}
-                style={{
-                  background: '#fff', border: '1px solid #e0e0e0', borderRadius: 10, padding: '12px 10px', textAlign: 'center',
-                  cursor: 'pointer', transition: 'all 0.15s',
-                  outline: cardFilter === c.key ? `2px solid ${c.color}` : 'none',
-                  boxShadow: cardFilter === c.key ? `0 0 0 1px ${c.color}22` : 'none',
-                }}>
-                <div style={{ fontSize: 20, fontWeight: 700, color: c.color }}>{c.count}</div>
-                <div style={{ fontSize: 12, fontWeight: 600, color: '#333', marginTop: 2 }}>{c.label}</div>
-                <div style={{ fontSize: 10, color: '#999', marginTop: 1 }}>{c.sub}</div>
-              </div>
-            ))}
+        ].map(c => (
+          <div key={c.key ?? 'all'} onClick={() => setCardFilter(prev => prev === c.key ? null : c.key)}
+            style={{
+              background: '#fff', border: '1px solid #e0e0e0', borderRadius: 10, padding: '12px 10px', textAlign: 'center',
+              cursor: 'pointer', transition: 'all 0.15s',
+              outline: cardFilter === c.key ? `2px solid ${c.color}` : 'none',
+            }}>
+            <div style={{ fontSize: 20, fontWeight: 700, color: c.color }}>{c.count}</div>
+            <div style={{ fontSize: 12, fontWeight: 600, color: '#333', marginTop: 2 }}>{c.label}</div>
+            <div style={{ fontSize: 10, color: '#999', marginTop: 1 }}>{c.sub}</div>
           </div>
-        );
-      })()}
+        ))}
+      </div>
 
       {/* 툴바 */}
       <div className="card" style={{ marginBottom: 16 }}>
@@ -490,8 +541,39 @@ export default function ProductImprovement() {
                 placeholder="이슈 내용을 입력하세요..." rows={3}
                 style={{ width: '100%', minWidth: 'auto', resize: 'vertical', fontFamily: 'inherit', lineHeight: 1.5 }} />
             </div>
+            <div style={{ marginBottom: 12 }}>
+              <label style={{ fontSize: 11, color: '#666', display: 'block', marginBottom: 4 }}>참고 URL (최대 3개)</label>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {(form.urls || ['', '', '']).map((url, idx) => (
+                  <input key={idx} className="search-input" value={url} placeholder={`URL ${idx + 1}`}
+                    onChange={e => { const u = [...(form.urls || ['', '', ''])]; u[idx] = e.target.value; setForm(p => ({ ...p, urls: u })); }}
+                    style={{ width: '100%', minWidth: 'auto', fontSize: 12 }} />
+                ))}
+              </div>
+            </div>
+            <div style={{ marginBottom: 12 }} onPaste={handleFormImgPaste}>
+              <label style={{ fontSize: 11, color: '#666', display: 'block', marginBottom: 4 }}>첨부 사진 (최대 5장)</label>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                {formImages.map((src, idx) => (
+                  <div key={idx} style={{ position: 'relative', border: '1px solid #e0e0e0', borderRadius: 6, overflow: 'hidden' }}>
+                    <img src={src} alt={`첨부 ${idx + 1}`} style={{ width: 80, height: 80, objectFit: 'cover', display: 'block' }} />
+                    <span onClick={() => setFormImages(prev => prev.filter((_, i) => i !== idx))}
+                      style={{ position: 'absolute', top: 2, right: 2, background: 'rgba(0,0,0,0.6)', color: '#fff', borderRadius: '50%', width: 18, height: 18, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', fontSize: 11 }}>✕</span>
+                  </div>
+                ))}
+                {formImages.length < 5 && (
+                  <div>
+                    <input ref={formFileRef} type="file" accept="image/*" multiple onChange={handleFormImgAdd} style={{ display: 'none' }} />
+                    <button type="button" className="btn btn-outline btn-sm" onClick={() => formFileRef.current?.click()} style={{ fontSize: 11, padding: '4px 10px' }}>
+                      + 사진 ({formImages.length}/5)
+                    </button>
+                  </div>
+                )}
+              </div>
+              {formImages.length < 5 && <div style={{ fontSize: 10, color: '#aaa', marginTop: 4 }}>이 영역에서 Ctrl+V로 붙여넣기 가능</div>}
+            </div>
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-              <button className="btn btn-outline" onClick={() => { setShowForm(false); setForm(emptyForm); setProductSearch(''); }}>취소</button>
+              <button className="btn btn-outline" onClick={() => { setShowForm(false); setForm(emptyForm); setFormImages([]); setProductSearch(''); }}>취소</button>
               <button className="btn btn-primary" onClick={handleAdd} disabled={!form.productName.trim() && !form.barcode.trim()}>등록</button>
             </div>
           </div>
@@ -506,55 +588,79 @@ export default function ProductImprovement() {
           </div>
         </div>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {filtered.map((item) => {
             const imgArr = impImages[item.id] || [];
+            const isOpen = expandedId === item.id;
             return (
               <div key={item.id} className="card" style={{ borderLeft: `4px solid ${STATUS_COLORS[item.status]}` }}>
-                <div className="card-body" style={{ padding: 16 }}>
-                  {/* 헤더 행 */}
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
-                    <select value={item.status} onChange={e => handleStatusChange(item.id, e.target.value)}
-                      style={{ padding: '3px 8px', fontSize: 12, fontWeight: 600, border: `2px solid ${STATUS_COLORS[item.status]}`, borderRadius: 6, color: STATUS_COLORS[item.status], background: '#fff', cursor: 'pointer' }}>
-                      {IMP_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
-                    </select>
-                    <span style={{ padding: '3px 10px', fontSize: 11, fontWeight: 600, borderRadius: 12, color: '#fff', background: TYPE_COLORS[item.type] || '#666' }}>{item.type}</span>
-                    <span style={{ fontSize: 15, fontWeight: 600, flex: 1 }}>{item.productName || '-'}</span>
-                    {item.barcode && <span style={{ fontSize: 11, fontFamily: 'monospace', color: '#888', background: '#f5f5f5', padding: '2px 8px', borderRadius: 4 }}>{item.barcode}</span>}
-                    <span style={{ fontSize: 11, color: '#999' }}>{item.startDate}{item.endDate ? ` ~ ${item.endDate}` : ''}</span>
-                    <span style={{ cursor: 'pointer', fontSize: 16, opacity: imgArr.length ? 1 : 0.4 }} onClick={() => openImpImgModal(item.id)} title="첨부 자료">
-                      {imgArr.length ? `📎${imgArr.length}` : '📎'}
-                    </span>
-                    <span style={{ cursor: 'pointer', fontSize: 14, color: '#d93025' }} onClick={() => handleDelete(item.id)} title="삭제">✕</span>
-                  </div>
+                {/* 접힌 헤더 - 항상 표시 */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 16px', cursor: 'pointer', flexWrap: 'wrap' }}
+                  onClick={() => setExpandedId(prev => prev === item.id ? null : item.id)}>
+                  <span style={{ fontSize: 14, color: '#999', transition: 'transform 0.2s', transform: isOpen ? 'rotate(90deg)' : 'rotate(0deg)' }}>&#9654;</span>
+                  <select value={item.status} onChange={e => { e.stopPropagation(); handleStatusChange(item.id, e.target.value); }}
+                    onClick={e => e.stopPropagation()}
+                    style={{ padding: '2px 6px', fontSize: 11, fontWeight: 600, border: `2px solid ${STATUS_COLORS[item.status]}`, borderRadius: 5, color: STATUS_COLORS[item.status], background: '#fff', cursor: 'pointer' }}>
+                    {IMP_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
+                  </select>
+                  <span style={{ padding: '2px 8px', fontSize: 10, fontWeight: 600, borderRadius: 10, color: '#fff', background: TYPE_COLORS[item.type] || '#666' }}>{item.type}</span>
+                  <span style={{ fontSize: 14, fontWeight: 600, flex: 1 }}>{item.productName || '-'}</span>
+                  <span style={{ fontSize: 11, color: '#999' }}>{item.startDate}</span>
+                  {(item.timeline || []).length > 0 && <span style={{ fontSize: 10, color: '#aaa', background: '#f0f0f0', padding: '1px 6px', borderRadius: 8 }}>{item.timeline.length}건</span>}
+                  {imgArr.length > 0 && <span style={{ fontSize: 12 }}>📷{imgArr.length}</span>}
+                  {(item.urls || []).length > 0 && <span style={{ fontSize: 12 }}>🔗{item.urls.length}</span>}
+                </div>
 
-                  {/* 타임라인 */}
-                  <div style={{ marginLeft: 8, borderLeft: '2px solid #e0e0e0', paddingLeft: 16 }}>
-                    {(item.timeline || []).map((entry, tIdx) => (
-                      <div key={tIdx} style={{ position: 'relative', marginBottom: 12, paddingBottom: 4 }}>
-                        <div style={{ position: 'absolute', left: -22, top: 4, width: 10, height: 10, borderRadius: '50%', background: tIdx === (item.timeline.length - 1) ? '#1a73e8' : '#bdbdbd' }} />
-                        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-                          <span style={{ fontSize: 11, color: '#999', whiteSpace: 'nowrap', minWidth: 100 }}>{entry.date}</span>
-                          <span style={{ fontSize: 13, color: '#333', lineHeight: 1.5, whiteSpace: 'pre-wrap', wordBreak: 'break-word', flex: 1 }}>{entry.text}</span>
-                          <span style={{ fontSize: 11, color: '#ccc', cursor: 'pointer', whiteSpace: 'nowrap' }} onClick={() => handleDeleteTimeline(item.id, tIdx)} title="삭제">삭제</span>
-                        </div>
+                {/* 펼친 상세 */}
+                {isOpen && (
+                  <div className="card-body" style={{ padding: '0 16px 16px', borderTop: '1px solid #f0f0f0' }}>
+                    {/* 상세 정보 */}
+                    <div style={{ display: 'flex', gap: 12, alignItems: 'center', padding: '10px 0', flexWrap: 'wrap' }}>
+                      {item.barcode && <span style={{ fontSize: 11, fontFamily: 'monospace', color: '#888', background: '#f5f5f5', padding: '2px 8px', borderRadius: 4 }}>{item.barcode}</span>}
+                      {item.endDate && <span style={{ fontSize: 11, color: '#999' }}>종료: {item.endDate}</span>}
+                      <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+                        <button className="btn btn-outline btn-sm" onClick={() => openImpImgModal(item.id)} style={{ fontSize: 11, padding: '3px 10px' }}>
+                          📷 사진 ({imgArr.length}/5)
+                        </button>
+                        <span style={{ cursor: 'pointer', fontSize: 13, color: '#d93025', padding: '3px 6px' }} onClick={() => handleDelete(item.id)} title="삭제">삭제</span>
                       </div>
-                    ))}
-                    <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', position: 'relative' }}>
-                      <div style={{ position: 'absolute', left: -22, top: 8, width: 10, height: 10, borderRadius: '50%', border: '2px solid #bdbdbd', background: '#fff' }} />
-                      <textarea
-                        className="search-input"
-                        placeholder="진행 상황 추가..."
-                        value={timelineInput[item.id] || ''}
-                        onChange={e => setTimelineInput(prev => ({ ...prev, [item.id]: e.target.value }))}
-                        onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleAddTimeline(item.id); } }}
-                        rows={1}
-                        style={{ flex: 1, minWidth: 'auto', resize: 'vertical', fontFamily: 'inherit', fontSize: 12, lineHeight: 1.5 }}
-                      />
-                      <button className="btn btn-primary btn-sm" onClick={() => handleAddTimeline(item.id)} style={{ fontSize: 11, padding: '4px 12px', whiteSpace: 'nowrap', marginTop: 2 }}>추가</button>
+                    </div>
+
+                    {/* URL 목록 */}
+                    {(item.urls || []).length > 0 && (
+                      <div style={{ marginBottom: 12 }}>
+                        {item.urls.map((url, idx) => (
+                          <div key={idx} style={{ fontSize: 12, marginBottom: 2 }}>
+                            <a href={url} target="_blank" rel="noopener noreferrer" style={{ color: '#1a73e8', wordBreak: 'break-all' }}>{url}</a>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* 타임라인 */}
+                    <div style={{ marginLeft: 8, borderLeft: '2px solid #e0e0e0', paddingLeft: 16 }}>
+                      {(item.timeline || []).map((entry, tIdx) => (
+                        <div key={tIdx} style={{ position: 'relative', marginBottom: 10 }}>
+                          <div style={{ position: 'absolute', left: -22, top: 4, width: 10, height: 10, borderRadius: '50%', background: tIdx === (item.timeline.length - 1) ? '#1a73e8' : '#bdbdbd' }} />
+                          <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+                            <span style={{ fontSize: 11, color: '#999', whiteSpace: 'nowrap', minWidth: 100 }}>{entry.date}</span>
+                            <span style={{ fontSize: 13, color: '#333', lineHeight: 1.5, whiteSpace: 'pre-wrap', wordBreak: 'break-word', flex: 1 }}>{entry.text}</span>
+                            <span style={{ fontSize: 11, color: '#ccc', cursor: 'pointer', whiteSpace: 'nowrap' }} onClick={() => handleDeleteTimeline(item.id, tIdx)}>삭제</span>
+                          </div>
+                        </div>
+                      ))}
+                      <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', position: 'relative' }}>
+                        <div style={{ position: 'absolute', left: -22, top: 8, width: 10, height: 10, borderRadius: '50%', border: '2px solid #bdbdbd', background: '#fff' }} />
+                        <textarea className="search-input" placeholder="진행 상황 추가..."
+                          value={timelineInput[item.id] || ''}
+                          onChange={e => setTimelineInput(prev => ({ ...prev, [item.id]: e.target.value }))}
+                          onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleAddTimeline(item.id); } }}
+                          rows={1} style={{ flex: 1, minWidth: 'auto', resize: 'vertical', fontFamily: 'inherit', fontSize: 12, lineHeight: 1.5 }} />
+                        <button className="btn btn-primary btn-sm" onClick={() => handleAddTimeline(item.id)} style={{ fontSize: 11, padding: '4px 12px', whiteSpace: 'nowrap', marginTop: 2 }}>추가</button>
+                      </div>
                     </div>
                   </div>
-                </div>
+                )}
               </div>
             );
           })}
