@@ -1,5 +1,7 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { dbStoreGet, dbStoreSet } from '../utils/dbApi';
+import JSZip from 'jszip';
+import { saveAs } from 'file-saver';
 
 const SHEET_ID = '1NXhW_gG0b-gXuVqrhbY9ErWi8uO_7pXIy-NTo4FbE1I';
 const TSV_URL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent('특별 관리 상품')}`;
@@ -166,6 +168,61 @@ export default function IssueManagement() {
     if (!imgModal) return;
     const updated = imgModalImages.filter((_, i) => i !== idx);
     await saveImages(imgModal.barcode, updated);
+  };
+
+  const [imgDownloading, setImgDownloading] = useState(false);
+
+  const handleDownloadAllImages = async () => {
+    if (imgDownloading) return;
+    setImgDownloading(true);
+    try {
+      const allData = await dbStoreGet('issue_img_data');
+      if (!allData || typeof allData !== 'object' || Object.keys(allData).length === 0) {
+        alert('다운로드할 사진이 없습니다.');
+        setImgDownloading(false);
+        return;
+      }
+
+      // 바코드 → 상품명 매핑 (data에서)
+      const barcodeToName = {};
+      if (data) {
+        data.forEach(r => { barcodeToName[r.barcode] = r.productName || r.barcode; });
+      }
+
+      const zip = new JSZip();
+      const usedNames = {};
+
+      for (const [barcode, images] of Object.entries(allData)) {
+        if (!Array.isArray(images) || images.length === 0) continue;
+
+        // 폴더명: 상품명 (없으면 바코드), 파일시스템 안전하게 변환
+        let folderName = (barcodeToName[barcode] || barcode).replace(/[\\/:*?"<>|]/g, '_').trim();
+        // 동일 상품명 중복 방지
+        if (usedNames[folderName]) {
+          usedNames[folderName]++;
+          folderName = `${folderName}_${usedNames[folderName]}`;
+        } else {
+          usedNames[folderName] = 1;
+        }
+
+        const folder = zip.folder(folderName);
+        images.forEach((base64Str, idx) => {
+          // data:image/jpeg;base64,... → 순수 base64 추출
+          const match = base64Str.match(/^data:image\/(\w+);base64,(.+)$/);
+          if (match) {
+            const ext = match[1] === 'jpeg' ? 'jpg' : match[1];
+            folder.file(`사진${idx + 1}.${ext}`, match[2], { base64: true });
+          }
+        });
+      }
+
+      const blob = await zip.generateAsync({ type: 'blob' });
+      saveAs(blob, `이슈관리_사진_${new Date().toISOString().slice(0, 10)}.zip`);
+    } catch (e) {
+      console.error('이미지 다운로드 실패:', e);
+      alert('다운로드 중 오류가 발생했습니다.');
+    }
+    setImgDownloading(false);
   };
 
   const fetchData = useCallback(async () => {
@@ -463,6 +520,14 @@ export default function IssueManagement() {
               <span style={{ fontSize: 13, color: '#5f6368' }}>{filtered.length} / {data.length}개</span>
               <button className="btn btn-primary" onClick={fetchData} style={{ padding: '6px 12px', fontSize: 13 }}>
                 🔄 새로고침
+              </button>
+              <button
+                className="btn btn-outline"
+                onClick={handleDownloadAllImages}
+                disabled={imgDownloading || !Object.keys(imgCounts).length}
+                style={{ padding: '6px 12px', fontSize: 13 }}
+              >
+                {imgDownloading ? '⏳ 다운로드 중...' : `📥 사진 다운로드 (${Object.keys(imgCounts).length})`}
               </button>
             </div>
           </div>
