@@ -61,7 +61,7 @@ function parseCsvRow(line) {
   return result;
 }
 
-// CSV 전체를 줄바꿈 포함하여 행 단위로 파싱
+// CSV 전체를 줄바꿈 포함하여 행 단위로 파싱 (따옴표 보존하여 parseCsvRow가 올바르게 처리)
 function parseCsvRows(text) {
   const rows = [];
   let current = '';
@@ -69,11 +69,11 @@ function parseCsvRows(text) {
   for (let i = 0; i < text.length; i++) {
     const ch = text[i];
     if (inQuotes) {
-      if (ch === '"' && text[i + 1] === '"') { current += '"'; i++; }
-      else if (ch === '"') inQuotes = false;
+      if (ch === '"' && text[i + 1] === '"') { current += '""'; i++; }
+      else if (ch === '"') { inQuotes = false; current += '"'; }
       else current += ch;
     } else {
-      if (ch === '"') inQuotes = true;
+      if (ch === '"') { inQuotes = true; current += '"'; }
       else if (ch === '\n' || (ch === '\r' && text[i + 1] === '\n')) {
         rows.push(parseCsvRow(current));
         current = '';
