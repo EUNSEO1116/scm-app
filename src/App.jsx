@@ -11,6 +11,7 @@ import Incoming from './pages/Incoming';
 import SuppliesList from './pages/SuppliesList';
 import SuppliesOrder from './pages/SuppliesOrder';
 import IssueManagement from './pages/IssueManagement';
+import ProductImprovement from './pages/ProductImprovement';
 import OrderBook from './pages/OrderBook';
 import OrderRequest from './pages/OrderRequest';
 import FbcItems from './pages/FbcItems';
@@ -38,6 +39,7 @@ function App() {
           <Route path="/soldout/exclude" element={<SoldOutExclude />} />
           <Route path="/soldout/history" element={<SoldOutHistory />} />
           <Route path="/issue" element={<IssueManagement />} />
+          <Route path="/issue/improvement" element={<ProductImprovement />} />
           <Route path="/supplies" element={<SuppliesList />} />
           <Route path="/supplies/order" element={<SuppliesOrder />} />
         </Routes>

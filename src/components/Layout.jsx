@@ -21,7 +21,10 @@ const navItems = [
     { label: '제외 품목 관리', path: '/soldout/exclude' },
     { label: '품절 기록', path: '/soldout/history' },
   ]},
-  { id: 'issue', label: '이슈관리', path: '/issue', icon: 'issue' },
+  { id: 'issue', label: '이슈관리', icon: 'issue', children: [
+    { label: '특별관리', path: '/issue' },
+    { label: '상품개선', path: '/issue/improvement' },
+  ]},
   { id: 'supplies', label: '부자재관리', icon: 'supplies', children: [
     { label: '부자재 목록', path: '/supplies' },
     { label: '부자재 발주', path: '/supplies/order' },
@@ -52,7 +55,8 @@ const pageTitles = {
   '/soldout/rate': '월별 품절률',
   '/soldout/exclude': '제외 품목 관리',
   '/soldout/history': '품절 기록',
-  '/issue': '이슈관리',
+  '/issue': '특별관리',
+  '/issue/improvement': '상품개선',
   '/supplies': '부자재 목록',
   '/supplies/order': '부자재 발주',
 };
