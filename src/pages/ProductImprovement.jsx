@@ -64,6 +64,8 @@ const IMP_TYPES = ['재등록', '재수배', '업체문제', '상품문제', 'CS
 const IMP_STATUSES = ['시작전', '처리중', '완료'];
 const STATUS_COLORS = { '시작전': '#9e9e9e', '처리중': '#fb8c00', '완료': '#43a047' };
 const TYPE_COLORS = { '재등록': '#1565c0', '재수배': '#6a1b9a', '업체문제': '#c62828', '상품문제': '#e65100', 'CSV·VOC': '#00695c' };
+const SUPPLY_TYPES = ['재수배', '업체문제'];
+const IMPROVE_TYPES = ['상품문제', 'CSV·VOC'];
 
 export default function ProductImprovement() {
   // 특별관리 품목 목록 (자동완성용)
@@ -346,9 +348,6 @@ export default function ProductImprovement() {
   }, [impImages]);
 
   const [cardFilter, setCardFilter] = useState(null); // null | 'supply_wait' | 'supply_ing' | 'improve_wait' | 'improve_ing' | 'done'
-
-  const SUPPLY_TYPES = ['재수배', '업체문제'];
-  const IMPROVE_TYPES = ['상품문제', 'CSV·VOC'];
 
   const cardCounts = useMemo(() => {
     let supplyWait = 0, supplyIng = 0, improveWait = 0, improveIng = 0, done = 0;
