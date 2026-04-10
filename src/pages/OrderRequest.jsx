@@ -108,9 +108,9 @@ export default function OrderRequest() {
       const barcodeMap = {};
       if (barcodeRes.ok) {
         const csv = await barcodeRes.text();
-        const lines = csv.split('\n').filter(l => l.trim());
-        for (let i = 1; i < lines.length; i++) {
-          const cols = parseCsvRow(lines[i]);
+        const barcodeRows = parseCsvRows(csv);
+        for (let i = 1; i < barcodeRows.length; i++) {
+          const cols = barcodeRows[i];
           const barcode = (cols[5] || '').trim();
           const brand = (cols[8] || '').trim();
           const center = (cols[11] || '').trim();
