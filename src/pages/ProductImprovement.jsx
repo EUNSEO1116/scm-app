@@ -146,6 +146,13 @@ export default function ProductImprovement() {
 
   const filtered = useMemo(() => {
     let rows = items;
+    // 카드 필터
+    if (cardFilter === 'supply_wait') rows = rows.filter(r => SUPPLY_TYPES.includes(r.type) && r.status === '시작전');
+    else if (cardFilter === 'supply_ing') rows = rows.filter(r => SUPPLY_TYPES.includes(r.type) && r.status === '처리중');
+    else if (cardFilter === 'improve_wait') rows = rows.filter(r => IMPROVE_TYPES.includes(r.type) && r.status === '시작전');
+    else if (cardFilter === 'improve_ing') rows = rows.filter(r => IMPROVE_TYPES.includes(r.type) && r.status === '처리중');
+    else if (cardFilter === 'done') rows = rows.filter(r => r.status === '완료');
+    // 드롭다운 필터
     if (filterStatus !== 'all') rows = rows.filter(r => r.status === filterStatus);
     if (filterType !== 'all') rows = rows.filter(r => r.type === filterType);
     if (searchQuery) {
@@ -157,7 +164,7 @@ export default function ProductImprovement() {
       );
     }
     return rows;
-  }, [items, filterStatus, filterType, searchQuery]);
+  }, [items, cardFilter, filterStatus, filterType, searchQuery]);
 
   const handleAdd = () => {
     if (!form.productName.trim() && !form.barcode.trim()) return;
@@ -338,10 +345,23 @@ export default function ProductImprovement() {
     return c;
   }, [impImages]);
 
-  const statusCounts = useMemo(() => {
-    const c = { '시작전': 0, '처리중': 0, '완료': 0 };
-    items.forEach(i => { if (c[i.status] !== undefined) c[i.status]++; });
-    return c;
+  const [cardFilter, setCardFilter] = useState(null); // null | 'supply_wait' | 'supply_ing' | 'improve_wait' | 'improve_ing' | 'done'
+
+  const SUPPLY_TYPES = ['재수배', '업체문제'];
+  const IMPROVE_TYPES = ['상품문제', 'CSV·VOC'];
+
+  const cardCounts = useMemo(() => {
+    let supplyWait = 0, supplyIng = 0, improveWait = 0, improveIng = 0, done = 0;
+    items.forEach(i => {
+      if (i.status === '완료') { done++; return; }
+      const isSupply = SUPPLY_TYPES.includes(i.type);
+      const isImprove = IMPROVE_TYPES.includes(i.type);
+      if (isSupply && i.status === '시작전') supplyWait++;
+      else if (isSupply && i.status === '처리중') supplyIng++;
+      else if (isImprove && i.status === '시작전') improveWait++;
+      else if (isImprove && i.status === '처리중') improveIng++;
+    });
+    return { supplyWait, supplyIng, improveWait, improveIng, done };
   }, [items]);
 
   if (!loaded || productLoading) {
@@ -356,19 +376,33 @@ export default function ProductImprovement() {
   return (
     <div>
       {/* 요약 카드 */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16 }}>
-        <div style={{ background: '#fff', border: '1px solid #e0e0e0', borderRadius: 10, padding: '14px 18px', textAlign: 'center' }}>
-          <div style={{ fontSize: 22, fontWeight: 700, color: '#1a73e8' }}>{items.length}</div>
-          <div style={{ fontSize: 12, color: '#666' }}>전체 ({productList.length}품목)</div>
-        </div>
-        {IMP_STATUSES.map(s => (
-          <div key={s} style={{ background: '#fff', border: '1px solid #e0e0e0', borderRadius: 10, padding: '14px 18px', textAlign: 'center', cursor: 'pointer', outline: filterStatus === s ? `2px solid ${STATUS_COLORS[s]}` : 'none' }}
-            onClick={() => setFilterStatus(prev => prev === s ? 'all' : s)}>
-            <div style={{ fontSize: 22, fontWeight: 700, color: STATUS_COLORS[s] }}>{statusCounts[s]}</div>
-            <div style={{ fontSize: 12, color: '#666' }}>{s}</div>
+      {(() => {
+        const cards = [
+          { key: null, label: '전체', sub: `${productList.length}품목`, count: items.length, color: '#1a73e8' },
+          { key: 'supply_wait', label: '수배 대기', sub: '재수배·업체문제', count: cardCounts.supplyWait, color: '#6a1b9a' },
+          { key: 'supply_ing', label: '수배 진행중', sub: '재수배·업체문제', count: cardCounts.supplyIng, color: '#ab47bc' },
+          { key: 'improve_wait', label: '개선 대기', sub: '상품문제·CS/VOC', count: cardCounts.improveWait, color: '#e65100' },
+          { key: 'improve_ing', label: '개선 진행중', sub: '상품문제·CS/VOC', count: cardCounts.improveIng, color: '#fb8c00' },
+          { key: 'done', label: '완료', sub: '전체', count: cardCounts.done, color: '#43a047' },
+        ];
+        return (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 10, marginBottom: 16 }}>
+            {cards.map(c => (
+              <div key={c.key ?? 'all'} onClick={() => setCardFilter(prev => prev === c.key ? null : c.key)}
+                style={{
+                  background: '#fff', border: '1px solid #e0e0e0', borderRadius: 10, padding: '12px 10px', textAlign: 'center',
+                  cursor: 'pointer', transition: 'all 0.15s',
+                  outline: cardFilter === c.key ? `2px solid ${c.color}` : 'none',
+                  boxShadow: cardFilter === c.key ? `0 0 0 1px ${c.color}22` : 'none',
+                }}>
+                <div style={{ fontSize: 20, fontWeight: 700, color: c.color }}>{c.count}</div>
+                <div style={{ fontSize: 12, fontWeight: 600, color: '#333', marginTop: 2 }}>{c.label}</div>
+                <div style={{ fontSize: 10, color: '#999', marginTop: 1 }}>{c.sub}</div>
+              </div>
+            ))}
           </div>
-        ))}
-      </div>
+        );
+      })()}
 
       {/* 툴바 */}
       <div className="card" style={{ marginBottom: 16 }}>
@@ -383,7 +417,7 @@ export default function ProductImprovement() {
               <option value="all">전체 상태</option>
               {IMP_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
             </select>
-            <button className="btn btn-outline" onClick={() => { setSearchQuery(''); setFilterStatus('all'); setFilterType('all'); }}>초기화</button>
+            <button className="btn btn-outline" onClick={() => { setSearchQuery(''); setFilterStatus('all'); setFilterType('all'); setCardFilter(null); }}>초기화</button>
             <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
               <button className="btn btn-outline" onClick={handleExcelDownload} disabled={excelDownloading || !items.length} style={{ fontSize: 13 }}>
                 {excelDownloading ? '다운로드 중...' : `엑셀 다운로드 (${items.length})`}
