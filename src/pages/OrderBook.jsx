@@ -207,8 +207,14 @@ function loadLocalSpecial() {
   try { return JSON.parse(localStorage.getItem('local_special_items') || '[]'); } catch { return []; }
 }
 
+// 상품개선 항목 로드 (localStorage + DB)
+function loadImprovementItems() {
+  try { return JSON.parse(localStorage.getItem('improvement_items') || '[]'); } catch { return []; }
+}
+
 // 확인필요: 특별 관리 상품(봉제여부/기타1회성)이면서 CN 창고도착 또는 내륙운송중
 // + localStorage에 미리 등록한 항목도 포함
+// + 상품개선 항목 (진행중인 이슈가 있는 바코드)
 function computeCheckFlags(rows, specialMap) {
   // localStorage 특별관리 → specialMap에 병합
   const localItems = loadLocalSpecial();
@@ -221,17 +227,36 @@ function computeCheckFlags(rows, specialMap) {
     }
   }
 
+  // 상품개선 항목 중 완료되지 않은 것 → 바코드별 이슈 매핑
+  const impItems = loadImprovementItems();
+  const impMap = {};
+  for (const item of impItems) {
+    if (!item.barcode || item.status === '완료') continue;
+    impMap[item.barcode] = { type: item.type, productName: item.productName, status: item.status };
+  }
+
   for (const row of rows) {
     const special = specialMap[row.sku];
-    if (!special) continue;
-    const isCnArrived = row.cnStatus.includes('CN 창고도착') || row.cnStatus.includes('작업 대기');
-    const isInland = row.cnStatus.includes('내륙') && row.cnStatus.includes('운송');
-    if (isCnArrived || isInland) {
+    const imp = impMap[row.sku];
+
+    // 특별관리 조건 (기존)
+    if (special) {
+      const isCnArrived = row.cnStatus.includes('CN 창고도착') || row.cnStatus.includes('작업 대기');
+      const isInland = row.cnStatus.includes('내륙') && row.cnStatus.includes('운송');
+      if (isCnArrived || isInland) {
+        row._check = true;
+        const reasons = [];
+        if (special.sewing) reasons.push('봉제: ' + special.sewing);
+        if (special.oneTime) reasons.push('기타: ' + special.oneTime);
+        row._checkReason = reasons.join(' / ');
+      }
+    }
+
+    // 상품개선 조건 (신규)
+    if (imp) {
       row._check = true;
-      const reasons = [];
-      if (special.sewing) reasons.push('봉제: ' + special.sewing);
-      if (special.oneTime) reasons.push('기타: ' + special.oneTime);
-      row._checkReason = reasons.join(' / ');
+      const impReason = `상품개선: ${imp.type}(${imp.status})`;
+      row._checkReason = row._checkReason ? row._checkReason + ' / ' + impReason : impReason;
     }
   }
 }

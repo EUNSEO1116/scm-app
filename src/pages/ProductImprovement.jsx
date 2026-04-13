@@ -67,10 +67,19 @@ const TYPE_COLORS = { '재등록': '#1565c0', '재수배': '#6a1b9a', '업체문
 const SUPPLY_TYPES = ['재수배', '업체문제'];
 const IMPROVE_TYPES = ['상품문제', 'CSV·VOC'];
 
+const IMP_PENDING_ALERTS_KEY = 'imp_pending_sync_alerts';
+function loadImpPendingAlerts() {
+  try { return JSON.parse(localStorage.getItem(IMP_PENDING_ALERTS_KEY) || '[]'); } catch { return []; }
+}
+function saveImpPendingAlerts(alerts) {
+  localStorage.setItem(IMP_PENDING_ALERTS_KEY, JSON.stringify(alerts));
+}
+
 export default function ProductImprovement() {
   // 특별관리 품목 목록 (자동완성용)
   const [productList, setProductList] = useState([]);
   const [productLoading, setProductLoading] = useState(true);
+  const [syncAlerts, setSyncAlerts] = useState([]);
 
   useEffect(() => {
     (async () => {
@@ -89,6 +98,11 @@ export default function ProductImprovement() {
           results.push({ barcode, productName, optionName });
         }
         setProductList(results);
+
+        // 상품개선 항목 중 특별관리 시트에 미등록인 바코드 감지
+        const sheetBarcodes = new Set(results.map(r => r.barcode));
+        const savedAlerts = loadImpPendingAlerts();
+        setSyncAlerts(savedAlerts);
       } catch { /* 실패해도 수동 입력 가능 */ }
       setProductLoading(false);
     })();
@@ -155,6 +169,30 @@ export default function ProductImprovement() {
     }).catch(() => setLoaded(true));
     setLoaded(true);
   }, []);
+
+  // 상품개선 항목 중 특별관리 시트 미등록 바코드 감지
+  useEffect(() => {
+    if (!loaded || productLoading || productList.length === 0 || items.length === 0) return;
+    const sheetBarcodes = new Set(productList.map(p => p.barcode));
+    const saved = loadImpPendingAlerts();
+    const savedSet = new Set(saved.map(a => a.barcode));
+    let updated = [...saved];
+    for (const item of items) {
+      if (!item.barcode || sheetBarcodes.has(item.barcode) || savedSet.has(item.barcode)) continue;
+      updated.push({ barcode: item.barcode, productName: item.productName, type: item.type, detectedDate: new Date().toISOString().slice(0, 10) });
+      savedSet.add(item.barcode);
+    }
+    // 이미 시트에 등록된 항목은 자동 제거 (적용완료 안 눌러도)
+    updated = updated.filter(a => !sheetBarcodes.has(a.barcode));
+    saveImpPendingAlerts(updated);
+    setSyncAlerts(updated);
+  }, [loaded, productLoading, productList, items]);
+
+  const dismissAlert = (barcode) => {
+    const updatedAlerts = syncAlerts.filter(a => a.barcode !== barcode);
+    saveImpPendingAlerts(updatedAlerts);
+    setSyncAlerts(updatedAlerts);
+  };
 
   const saveItems = useCallback((updated) => {
     setItems(updated);
@@ -431,6 +469,24 @@ export default function ProductImprovement() {
 
   return (
     <div>
+      {/* 특별관리 미등록 알림 */}
+      {syncAlerts.length > 0 && (
+        <div style={{ marginBottom: 16, background: '#fff3e0', border: '1px solid #ffb74d', borderRadius: 12, padding: 16 }}>
+          <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 8, color: '#e65100' }}>
+            📢 특별관리 시트에 미등록된 상품이 있습니다 ({syncAlerts.length}건) — 등록 후 적용완료를 눌러주세요
+          </div>
+          {syncAlerts.map(item => (
+            <div key={item.barcode} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '6px 0', borderBottom: '1px solid #ffe0b2' }}>
+              <span style={{ fontSize: 12, fontFamily: 'monospace', color: '#333' }}>{item.barcode}</span>
+              <span style={{ fontSize: 12, color: '#666', flex: 1 }}>{item.productName}{item.type ? ` · ${item.type}` : ''}</span>
+              <button className="btn btn-primary btn-sm" style={{ fontSize: 10, padding: '2px 8px' }} onClick={() => dismissAlert(item.barcode)}>
+                적용 완료
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* 요약 카드 */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 10, marginBottom: 16 }}>
         {[
