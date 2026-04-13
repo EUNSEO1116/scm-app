@@ -469,6 +469,9 @@ body {
 }
 
 /* Supplies table */
+/* Memo tooltip on hover */
+td:hover > .memo-tooltip { opacity: 1 !important; }
+
 .supplies-table { width: 100%; }
 .supplies-table th, .supplies-table td { white-space: nowrap; padding: 8px 10px; font-size: 13px; }
 .supplies-table .col-chk { width: 32px; }

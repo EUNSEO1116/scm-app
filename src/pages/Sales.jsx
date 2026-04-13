@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { useLocation } from 'react-router-dom';
 import { fetchCautionItems, saveCautionItem, deleteCautionItem } from '../sheetSync.js';
+import { dbStoreGet, dbStoreSet } from '../utils/dbApi.js';
 
 const SHEET_ID = '1NXhW_gG0b-gXuVqrhbY9ErWi8uO_7pXIy-NTo4FbE1I';
 const CSV_DAILY = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent('일일 판매량')}`;
@@ -134,6 +135,10 @@ export default function Sales() {
   const [sortKey, setSortKey] = useState('total');
   const [sortDir, setSortDir] = useState('desc');
   const [cautionSet, setCautionSet] = useState(new Set());
+  const [memos, setMemos] = useState({});
+  const [editingMemo, setEditingMemo] = useState(null);
+  const [memoInput, setMemoInput] = useState('');
+  const memoInputRef = useRef(null);
 
   // Check for ?tab=surge
   const tabParam = useMemo(() => {
@@ -200,6 +205,38 @@ export default function Sales() {
   useEffect(() => {
     fetchCautionItems().then(set => setCautionSet(set));
   }, []);
+
+  // 메모 로드
+  useEffect(() => {
+    dbStoreGet('sales_memos').then(data => {
+      if (data && typeof data === 'object') setMemos(data);
+    });
+  }, []);
+
+  const saveMemo = useCallback((barcode, text) => {
+    const trimmed = (text || '').trim();
+    setMemos(prev => {
+      const next = { ...prev };
+      if (trimmed) next[barcode] = trimmed;
+      else delete next[barcode];
+      dbStoreSet('sales_memos', next);
+      return next;
+    });
+  }, []);
+
+  const startEditMemo = (barcode) => {
+    setEditingMemo(barcode);
+    setMemoInput(memos[barcode] || '');
+    setTimeout(() => memoInputRef.current?.focus(), 0);
+  };
+
+  const commitMemo = () => {
+    if (editingMemo) {
+      saveMemo(editingMemo, memoInput);
+      setEditingMemo(null);
+      setMemoInput('');
+    }
+  };
 
   const toggleCaution = (row) => {
     const bc = row.barcode;
@@ -471,6 +508,7 @@ export default function Sales() {
                   <th onClick={() => handleSort('status')} className={sortKey === 'status' ? 'sorted' : ''}>
                     상태<SortIcon col="status" {...sortProps} />
                   </th>
+                  <th style={{ minWidth: 50, textAlign: 'center' }}>메모</th>
                   <th onClick={() => handleSort('barcode')} className={sortKey === 'barcode' ? 'sorted' : ''}>
                     바코드<SortIcon col="barcode" {...sortProps} />
                   </th>
@@ -513,7 +551,7 @@ export default function Sales() {
               <tbody>
                 {filtered.length === 0 && !loading && (
                   <tr>
-                    <td colSpan={14} style={{ textAlign: 'center', padding: '32px', color: '#aaa' }}>
+                    <td colSpan={15} style={{ textAlign: 'center', padding: '32px', color: '#aaa' }}>
                       {rows.length === 0 ? '데이터가 없습니다' : '검색 결과가 없습니다'}
                     </td>
                   </tr>
@@ -538,6 +576,45 @@ export default function Sales() {
                             }}>주의</span>
                           )}
                         </div>
+                      </td>
+                      <td style={{ textAlign: 'center', position: 'relative', minWidth: 50 }}>
+                        {editingMemo === r.barcode ? (
+                          <input
+                            ref={memoInputRef}
+                            value={memoInput}
+                            onChange={e => setMemoInput(e.target.value)}
+                            onBlur={commitMemo}
+                            onKeyDown={e => { if (e.key === 'Enter') commitMemo(); if (e.key === 'Escape') { setEditingMemo(null); setMemoInput(''); } }}
+                            style={{
+                              width: 120, fontSize: 12, padding: '3px 6px',
+                              border: '1.5px solid #1a73e8', borderRadius: 4, outline: 'none',
+                            }}
+                            placeholder="메모 입력..."
+                          />
+                        ) : (
+                          <span
+                            onClick={() => startEditMemo(r.barcode)}
+                            title={memos[r.barcode] || '클릭하여 메모 추가'}
+                            style={{
+                              cursor: 'pointer',
+                              fontSize: 14,
+                              opacity: memos[r.barcode] ? 1 : 0.3,
+                            }}
+                          >
+                            {memos[r.barcode] ? '📝' : '✏️'}
+                          </span>
+                        )}
+                        {memos[r.barcode] && editingMemo !== r.barcode && (
+                          <div className="memo-tooltip" style={{
+                            position: 'absolute', bottom: '100%', left: '50%', transform: 'translateX(-50%)',
+                            background: '#333', color: '#fff', fontSize: 12, padding: '6px 10px',
+                            borderRadius: 6, whiteSpace: 'pre-wrap', maxWidth: 220, zIndex: 100,
+                            pointerEvents: 'none', opacity: 0, transition: 'opacity 0.15s',
+                            boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
+                          }}>
+                            {memos[r.barcode]}
+                          </div>
+                        )}
                       </td>
                       <td style={{ fontSize: 11, color: '#5f6368' }}>{r.barcode || '—'}</td>
                       <td
