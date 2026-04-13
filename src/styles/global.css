@@ -469,6 +469,9 @@ body {
 }
 
 /* Supplies table */
+/* Sales table fixed column widths */
+.sales-table { table-layout: fixed; }
+
 /* Memo tooltip on hover */
 .memo-tooltip {
   position: absolute;
@@ -481,9 +484,7 @@ body {
   font-size: 12px;
   padding: 6px 10px;
   border-radius: 6px;
-  white-space: pre-wrap;
-  max-width: 240px;
-  min-width: 80px;
+  white-space: nowrap;
   z-index: 100;
   pointer-events: none;
   opacity: 0;

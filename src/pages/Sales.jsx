@@ -502,13 +502,30 @@ export default function Sales() {
           </div>
 
           <div className="table-wrapper" style={{ maxHeight: 'calc(100vh - 420px)', overflowY: 'auto', borderRadius: 0 }}>
-            <table className="data-table">
+            <table className="data-table sales-table">
+              <colgroup>
+                <col style={{ width: '5.5%' }} />{/* 상태 */}
+                <col style={{ width: '3%' }} />{/* 메모 */}
+                <col style={{ width: '8%' }} />{/* 바코드 */}
+                <col style={{ width: '22%' }} />{/* 상품명 */}
+                <col style={{ width: '12%' }} />{/* 옵션명 */}
+                <col style={{ width: '5%' }} />{/* 총재고 */}
+                <col style={{ width: '5%' }} />{/* 6일전 */}
+                <col style={{ width: '5%' }} />{/* 5일전 */}
+                <col style={{ width: '5%' }} />{/* 4일전 */}
+                <col style={{ width: '5%' }} />{/* 3일전 */}
+                <col style={{ width: '5%' }} />{/* 2일전 */}
+                <col style={{ width: '5%' }} />{/* 1일전 */}
+                <col style={{ width: '5%' }} />{/* 합계 */}
+                <col style={{ width: '5.5%' }} />{/* 리뷰 */}
+                <col style={{ width: '4%' }} />{/* 추세 */}
+              </colgroup>
               <thead>
                 <tr>
-                  <th onClick={() => handleSort('status')} className={sortKey === 'status' ? 'sorted' : ''} style={{ width: 60, maxWidth: 70 }}>
+                  <th onClick={() => handleSort('status')} className={sortKey === 'status' ? 'sorted' : ''}>
                     상태<SortIcon col="status" {...sortProps} />
                   </th>
-                  <th style={{ width: 36, maxWidth: 40, textAlign: 'center', padding: '8px 4px' }}>메모</th>
+                  <th style={{ textAlign: 'center', padding: '8px 4px' }}>메모</th>
                   <th onClick={() => handleSort('barcode')} className={sortKey === 'barcode' ? 'sorted' : ''}>
                     바코드<SortIcon col="barcode" {...sortProps} />
                   </th>
