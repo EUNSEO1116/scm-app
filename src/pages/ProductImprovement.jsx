@@ -170,20 +170,21 @@ export default function ProductImprovement() {
     setLoaded(true);
   }, []);
 
-  // 상품개선 항목 중 특별관리 시트 미등록 바코드 감지
+  // 상품개선 항목 바코드가 특별관리 시트에 새로 등록되면 알림
   useEffect(() => {
     if (!loaded || productLoading || productList.length === 0 || items.length === 0) return;
     const sheetBarcodes = new Set(productList.map(p => p.barcode));
+    const impBarcodes = new Set(items.map(i => i.barcode).filter(Boolean));
+    // 상품개선에 등록된 바코드 중 시트에도 존재하는 것 = 새로 시트에 생긴 것
+    const matched = items.filter(i => i.barcode && sheetBarcodes.has(i.barcode));
     const saved = loadImpPendingAlerts();
     const savedSet = new Set(saved.map(a => a.barcode));
     let updated = [...saved];
-    for (const item of items) {
-      if (!item.barcode || sheetBarcodes.has(item.barcode) || savedSet.has(item.barcode)) continue;
+    for (const item of matched) {
+      if (savedSet.has(item.barcode)) continue;
       updated.push({ barcode: item.barcode, productName: item.productName, type: item.type, detectedDate: new Date().toISOString().slice(0, 10) });
       savedSet.add(item.barcode);
     }
-    // 이미 시트에 등록된 항목은 자동 제거 (적용완료 안 눌러도)
-    updated = updated.filter(a => !sheetBarcodes.has(a.barcode));
     saveImpPendingAlerts(updated);
     setSyncAlerts(updated);
   }, [loaded, productLoading, productList, items]);
@@ -473,7 +474,7 @@ export default function ProductImprovement() {
       {syncAlerts.length > 0 && (
         <div style={{ marginBottom: 16, background: '#fff3e0', border: '1px solid #ffb74d', borderRadius: 12, padding: 16 }}>
           <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 8, color: '#e65100' }}>
-            📢 특별관리 시트에 미등록된 상품이 있습니다 ({syncAlerts.length}건) — 등록 후 적용완료를 눌러주세요
+            📢 스프레드시트에 새로 등록된 상품이 있습니다 ({syncAlerts.length}건) — 확인 후 적용완료를 눌러주세요
           </div>
           {syncAlerts.map(item => (
             <div key={item.barcode} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '6px 0', borderBottom: '1px solid #ffe0b2' }}>
