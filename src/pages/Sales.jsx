@@ -505,10 +505,10 @@ export default function Sales() {
             <table className="data-table">
               <thead>
                 <tr>
-                  <th onClick={() => handleSort('status')} className={sortKey === 'status' ? 'sorted' : ''}>
+                  <th onClick={() => handleSort('status')} className={sortKey === 'status' ? 'sorted' : ''} style={{ width: 60, maxWidth: 70 }}>
                     상태<SortIcon col="status" {...sortProps} />
                   </th>
-                  <th style={{ minWidth: 50, textAlign: 'center' }}>메모</th>
+                  <th style={{ width: 36, maxWidth: 40, textAlign: 'center', padding: '8px 4px' }}>메모</th>
                   <th onClick={() => handleSort('barcode')} className={sortKey === 'barcode' ? 'sorted' : ''}>
                     바코드<SortIcon col="barcode" {...sortProps} />
                   </th>
@@ -560,8 +560,8 @@ export default function Sales() {
                   const dayVals = [r.d6, r.d5, r.d4, r.d3, r.d2, r.d1];
                   return (
                     <tr key={r.barcode || i}>
-                      <td>
-                        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                      <td style={{ padding: '8px 6px' }}>
+                        <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap' }}>
                           <span className={`status-badge ${r.status}`} style={
                             !['효자', '기준미달', '최종마감', '신규'].includes(r.status)
                               ? { background: '#f1f3f4', color: '#5f6368' }
@@ -572,12 +572,12 @@ export default function Sales() {
                           {cautionSet.has(r.barcode) && (
                             <span style={{
                               background: '#fff3e0', color: '#e65100', border: '1px solid #ffcc80',
-                              fontSize: 11, fontWeight: 600, padding: '1px 7px', borderRadius: 6,
+                              fontSize: 10, fontWeight: 600, padding: '1px 5px', borderRadius: 5,
                             }}>주의</span>
                           )}
                         </div>
                       </td>
-                      <td style={{ textAlign: 'center', position: 'relative', minWidth: 50 }}>
+                      <td className="memo-cell" style={{ textAlign: 'center', position: 'relative', padding: '8px 4px' }}>
                         {editingMemo === r.barcode ? (
                           <input
                             ref={memoInputRef}
@@ -594,7 +594,6 @@ export default function Sales() {
                         ) : (
                           <span
                             onClick={() => startEditMemo(r.barcode)}
-                            title={memos[r.barcode] || '클릭하여 메모 추가'}
                             style={{
                               cursor: 'pointer',
                               fontSize: 14,
@@ -605,13 +604,7 @@ export default function Sales() {
                           </span>
                         )}
                         {memos[r.barcode] && editingMemo !== r.barcode && (
-                          <div className="memo-tooltip" style={{
-                            position: 'absolute', bottom: '100%', left: '50%', transform: 'translateX(-50%)',
-                            background: '#333', color: '#fff', fontSize: 12, padding: '6px 10px',
-                            borderRadius: 6, whiteSpace: 'pre-wrap', maxWidth: 220, zIndex: 100,
-                            pointerEvents: 'none', opacity: 0, transition: 'opacity 0.15s',
-                            boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
-                          }}>
+                          <div className="memo-tooltip">
                             {memos[r.barcode]}
                           </div>
                         )}
