@@ -67,7 +67,15 @@ const TYPE_COLORS = { '재등록': '#1565c0', '재수배': '#6a1b9a', '업체문
 const SUPPLY_TYPES = ['재수배', '업체문제'];
 const IMPROVE_TYPES = ['상품문제', 'CSV·VOC'];
 
+// 감시 목록: 등록 시 시트에 없던 바코드 (시트에 나타나면 알림)
+const IMP_WATCH_KEY = 'imp_watch_barcodes';
 const IMP_PENDING_ALERTS_KEY = 'imp_pending_sync_alerts';
+function loadWatch() {
+  try { return JSON.parse(localStorage.getItem(IMP_WATCH_KEY) || '[]'); } catch { return []; }
+}
+function saveWatch(list) {
+  localStorage.setItem(IMP_WATCH_KEY, JSON.stringify(list));
+}
 function loadImpPendingAlerts() {
   try { return JSON.parse(localStorage.getItem(IMP_PENDING_ALERTS_KEY) || '[]'); } catch { return []; }
 }
@@ -170,29 +178,32 @@ export default function ProductImprovement() {
     setLoaded(true);
   }, []);
 
-  // 상품개선 항목 바코드가 특별관리 시트에 새로 등록되면 알림
+  // 감시 목록 바코드가 시트에 나타나면 알림 (적용완료 누를 때까지 영구 유지)
   useEffect(() => {
-    if (!loaded || productLoading || productList.length === 0 || items.length === 0) return;
+    if (!loaded || productLoading || productList.length === 0) return;
     const sheetBarcodes = new Set(productList.map(p => p.barcode));
-    const impBarcodes = new Set(items.map(i => i.barcode).filter(Boolean));
-    // 상품개선에 등록된 바코드 중 시트에도 존재하는 것 = 새로 시트에 생긴 것
-    const matched = items.filter(i => i.barcode && sheetBarcodes.has(i.barcode));
+    const watch = loadWatch();
+    // 감시 목록 중 시트에 등록된 것 → 알림
+    const newAlerts = watch.filter(w => sheetBarcodes.has(w.barcode));
+    // 기존 영구 알림에 새로 감지된 것 추가
     const saved = loadImpPendingAlerts();
     const savedSet = new Set(saved.map(a => a.barcode));
     let updated = [...saved];
-    for (const item of matched) {
-      if (savedSet.has(item.barcode)) continue;
-      updated.push({ barcode: item.barcode, productName: item.productName, type: item.type, detectedDate: new Date().toISOString().slice(0, 10) });
-      savedSet.add(item.barcode);
+    for (const item of newAlerts) {
+      if (!savedSet.has(item.barcode)) {
+        updated.push({ ...item, detectedDate: new Date().toISOString().slice(0, 10) });
+      }
     }
     saveImpPendingAlerts(updated);
     setSyncAlerts(updated);
-  }, [loaded, productLoading, productList, items]);
+  }, [loaded, productLoading, productList]);
 
   const dismissAlert = (barcode) => {
+    // 적용완료: 영구 알림에서 제거 + 감시 목록에서도 제거
     const updatedAlerts = syncAlerts.filter(a => a.barcode !== barcode);
     saveImpPendingAlerts(updatedAlerts);
     setSyncAlerts(updatedAlerts);
+    saveWatch(loadWatch().filter(w => w.barcode !== barcode));
   };
 
   const saveItems = useCallback((updated) => {
@@ -246,6 +257,18 @@ export default function ProductImprovement() {
       createdAt: new Date().toISOString(),
     };
     saveItems([newItem, ...items]);
+
+    // 바코드가 시트에 없으면 감시 목록에 추가
+    if (newItem.barcode) {
+      const sheetBarcodes = new Set(productList.map(p => p.barcode));
+      if (!sheetBarcodes.has(newItem.barcode)) {
+        const watch = loadWatch();
+        if (!watch.some(w => w.barcode === newItem.barcode)) {
+          saveWatch([...watch, { barcode: newItem.barcode, productName: newItem.productName, type: newItem.type }]);
+        }
+      }
+    }
+
     if (formImages.length > 0) {
       const updated = { ...impImages, [itemId]: formImages };
       saveImagesDb(updated);
