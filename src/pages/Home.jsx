@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { dbSaveCalendar, dbGetCalendar } from '../utils/dbApi';
+import { dbSaveCalendar, dbGetCalendar, dbStoreGet } from '../utils/dbApi';
 
 const SHEET_ID = '1NXhW_gG0b-gXuVqrhbY9ErWi8uO_7pXIy-NTo4FbE1I';
 const CSV_ORDER = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent('발주장부')}`;
@@ -208,58 +208,87 @@ export default function Home() {
 
   const fetchEvents = useCallback(async () => {
     setLoading(true);
+
+    // 원격 캐시 로드, 실패시 localStorage 폴백
+    const cached = (await loadRemoteEvents()) || loadCachedEvents();
+    const merged = { ...cached };
+
+    // 1) 발주장부에서 FBC 이벤트 파싱
     try {
-      // 발주장부에서 FBC 이벤트 파싱
       const res = await fetch(CSV_ORDER);
-      if (!res.ok) return;
-      const csv = await res.text();
-      const lines = csv.split('\n').filter(l => l.trim());
-      const sheetEvents = {};
-      for (let i = 1; i < lines.length; i++) {
-        const cols = parseCsvRow(lines[i]);
-        const category = (cols[5] || '').trim();
-        if (category !== 'FBC') continue;
-        const orderNo = (cols[0] || '').trim();
-        const productName = (cols[1] || '').trim();
-        const qty = (cols[3] || '').trim();
-        const cnShipDate = (cols[10] || '').trim();
+      if (res.ok) {
+        const csv = await res.text();
+        const lines = csv.split('\n').filter(l => l.trim());
+        const sheetEvents = {};
+        for (let i = 1; i < lines.length; i++) {
+          const cols = parseCsvRow(lines[i]);
+          const category = (cols[5] || '').trim();
+          if (category !== 'FBC') continue;
+          const orderNo = (cols[0] || '').trim();
+          const productName = (cols[1] || '').trim();
+          const qty = (cols[3] || '').trim();
+          const cnShipDate = (cols[10] || '').trim();
 
-        if (!cnShipDate) continue;
-        const shipDate = parseShipDate(cnShipDate);
-        if (!shipDate) continue;
+          if (!cnShipDate) continue;
+          const shipDate = parseShipDate(cnShipDate);
+          if (!shipDate) continue;
 
-        const arrivalDate = addDays(shipDate, 7);
-        const key = dateKey(arrivalDate);
+          const arrivalDate = addDays(shipDate, 7);
+          const key = dateKey(arrivalDate);
 
-        if (!sheetEvents[key]) sheetEvents[key] = [];
-        sheetEvents[key].push({ orderNo, productName, qty });
-      }
+          if (!sheetEvents[key]) sheetEvents[key] = [];
+          sheetEvents[key].push({ orderNo, productName, qty });
+        }
 
-      // 원격(스프레드시트) 캐시 로드, 실패시 localStorage 폴백
-      const cached = (await loadRemoteEvents()) || loadCachedEvents();
-      const merged = { ...cached };
-
-      // 시트에서 새로 들어온 이벤트 추가 (사용자가 옮긴 것 보호)
-      for (const [key, items] of Object.entries(sheetEvents)) {
-        if (!merged[key]) merged[key] = [];
-        for (const item of items) {
-          const existsAnywhere = Object.values(merged).some(dayItems =>
-            dayItems.some(e => e.orderNo === item.orderNo && e.productName === item.productName)
-          );
-          if (!existsAnywhere) {
-            merged[key].push(item);
+        // 시트에서 새로 들어온 이벤트 추가 (사용자가 옮긴 것 보호)
+        for (const [key, items] of Object.entries(sheetEvents)) {
+          if (!merged[key]) merged[key] = [];
+          for (const item of items) {
+            const existsAnywhere = Object.values(merged).some(dayItems =>
+              dayItems.some(e => e.orderNo === item.orderNo && e.productName === item.productName)
+            );
+            if (!existsAnywhere) {
+              merged[key].push(item);
+            }
           }
         }
       }
+    } catch { /* FBC 파싱 실패해도 계속 진행 */ }
 
-      // 빈 날짜 키 제거
-      for (const key of Object.keys(merged)) {
-        if (merged[key].length === 0) delete merged[key];
+    // 2) 상품개선: 기존 상품개선 이벤트 전부 제거 후 현재 종료일 기준으로 재추가
+    try {
+      let impItems = await dbStoreGet('improvement_items');
+      if (!Array.isArray(impItems) || impItems.length === 0) {
+        try { impItems = JSON.parse(localStorage.getItem('improvement_items') || 'null'); } catch {}
       }
+      // 기존 상품개선 이벤트 모두 제거
+      for (const key of Object.keys(merged)) {
+        merged[key] = merged[key].filter(e => !e.improvement);
+      }
+      // 현재 종료일 있는 항목만 추가
+      if (Array.isArray(impItems)) {
+        for (const imp of impItems) {
+          if (!imp.endDate) continue;
+          const key = imp.endDate;
+          if (!merged[key]) merged[key] = [];
+          merged[key].push({
+            orderNo: '',
+            productName: `[상품개선] ${imp.productName}`,
+            qty: '',
+            impId: imp.id,
+            improvement: true,
+          });
+        }
+      }
+    } catch { /* 상품개선 실패해도 계속 진행 */ }
 
-      saveEvents(merged);
-      setFbcEvents(merged);
-    } catch (e) { /* ignore */ }
+    // 빈 날짜 키 제거
+    for (const key of Object.keys(merged)) {
+      if (merged[key].length === 0) delete merged[key];
+    }
+
+    saveEvents(merged);
+    setFbcEvents(merged);
     setLoading(false);
   }, []);
 
@@ -528,11 +557,12 @@ export default function Home() {
               const dayOfWeek = day.getDay();
               const isDragOver = dragOverKey === key;
               const isAdding = addingDay === key;
-              // FBC 이벤트는 발주번호 기준 중복 제거, 메모는 그대로
-              const fbcItems = events.filter(e => !e.memo);
+              // FBC 이벤트는 발주번호 기준 중복 제거, 메모/상품개선은 그대로
+              const fbcItems = events.filter(e => !e.memo && !e.improvement);
               const memoItems = events.filter(e => e.memo);
+              const impItems = events.filter(e => e.improvement);
               const uniqueFbc = [...new Map(fbcItems.map(e => [e.orderNo + e.productName, e])).values()];
-              const allItems = [...uniqueFbc, ...memoItems];
+              const allItems = [...uniqueFbc, ...impItems, ...memoItems];
 
               return (
                 <div
@@ -590,16 +620,16 @@ export default function Home() {
                       onClick={ev => { ev.stopPropagation(); if (events.length > 0) setSelectedDay(selectedDay === key ? null : key); }}
                       style={{
                         fontSize: 10,
-                        background: e.memo ? '#fff8e1' : e.moved ? '#e8f5e9' : '#f3eef8',
-                        color: e.memo ? '#e65100' : e.moved ? '#2e7d32' : '#7c4dbd',
+                        background: e.improvement ? '#f3e5f5' : e.memo ? '#fff8e1' : e.moved ? '#e8f5e9' : '#f3eef8',
+                        color: e.improvement ? '#6a1b9a' : e.memo ? '#e65100' : e.moved ? '#2e7d32' : '#7c4dbd',
                         fontWeight: 500,
                         borderRadius: 4, padding: '2px 6px', marginBottom: 3,
-                        borderLeft: e.memo ? '3px solid #ff9800' : e.moved ? '3px solid #4caf50' : '3px solid #7c4dbd',
+                        borderLeft: e.improvement ? '3px solid #9c27b0' : e.memo ? '3px solid #ff9800' : e.moved ? '3px solid #4caf50' : '3px solid #7c4dbd',
                         overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                         cursor: 'grab',
                       }}
                     >
-                      {e.memo ? e.productName : `${e.orderNo} 픽업일`}{e.moved && !e.memo ? ' ✦' : ''}
+                      {e.improvement ? e.productName : e.memo ? e.productName : `${e.orderNo} 픽업일`}{e.moved && !e.memo && !e.improvement ? ' ✦' : ''}
                     </div>
                   ))}
                   {allItems.length > 3 && (
@@ -639,8 +669,9 @@ export default function Home() {
             </div>
             {(() => {
               const items = fbcEvents[selectedDay] || [];
-              const fbcItems = items.filter(e => !e.memo);
+              const fbcItems = items.filter(e => !e.memo && !e.improvement);
               const memoItems = items.filter(e => e.memo);
+              const impItems = items.filter(e => e.improvement);
 
               // FBC 발주번호별 그룹핑
               const grouped = {};
@@ -678,6 +709,32 @@ export default function Home() {
                       })}
                     </div>
                   ))}
+                  {impItems.length > 0 && (
+                    <div style={{ marginBottom: 12 }}>
+                      <div style={{
+                        fontSize: 13, fontWeight: 600, color: '#6a1b9a',
+                        background: '#f3e5f5', padding: '4px 10px', borderRadius: 6, marginBottom: 6,
+                      }}>
+                        상품개선 종료일
+                      </div>
+                      {impItems.map((item, j) => {
+                        const globalIdx = items.indexOf(item);
+                        return (
+                          <div key={j} style={{
+                            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                            padding: '4px 10px', fontSize: 13, borderBottom: '1px solid #f0f0f0',
+                          }}>
+                            <span style={{ flex: 1 }}>{item.productName}</span>
+                            <span
+                              onClick={() => handleDeleteEvent(selectedDay, globalIdx)}
+                              style={{ marginLeft: 8, color: '#d93025', cursor: 'pointer', fontSize: 12, fontWeight: 600 }}
+                              title="삭제"
+                            >✕</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                   {memoItems.length > 0 && (
                     <div style={{ marginBottom: 12 }}>
                       <div style={{
