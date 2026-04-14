@@ -129,6 +129,7 @@ export default function ProductImprovement() {
   const [productSearch, setProductSearch] = useState('');
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [expandedId, setExpandedId] = useState(null);
+  const [editingId, setEditingId] = useState(null);
   const [formImages, setFormImages] = useState([]);
   const formFileRef = useRef(null);
 
@@ -274,6 +275,57 @@ export default function ProductImprovement() {
       saveImagesDb(updated);
     }
 
+    setForm(emptyForm);
+    setFormImages([]);
+    setProductSearch('');
+    setShowForm(false);
+  };
+
+  const handleEdit = (item) => {
+    setEditingId(item.id);
+    setForm({
+      status: item.status,
+      type: item.type,
+      productName: item.productName || '',
+      barcode: item.barcode || '',
+      issue: '',
+      startDate: item.startDate || '',
+      endDate: item.endDate || '',
+      urls: [...(item.urls || []), '', '', ''].slice(0, 3),
+    });
+    setProductSearch(item.productName || '');
+    setFormImages(impImages[item.id] || []);
+    setShowForm(true);
+  };
+
+  const handleUpdate = async () => {
+    if (!editingId) return;
+    if (!form.productName.trim() && !form.barcode.trim()) return;
+    const updated = items.map(i => {
+      if (i.id !== editingId) return i;
+      return {
+        ...i,
+        status: form.status,
+        type: form.type,
+        productName: form.productName,
+        barcode: form.barcode,
+        startDate: form.startDate,
+        endDate: form.endDate,
+        urls: (form.urls || []).filter(u => u.trim()),
+      };
+    });
+    saveItems(updated);
+
+    // 이미지 업데이트
+    const updatedImg = { ...impImages };
+    if (formImages.length > 0) {
+      updatedImg[editingId] = formImages;
+    } else {
+      delete updatedImg[editingId];
+    }
+    saveImagesDb(updatedImg);
+
+    setEditingId(null);
     setForm(emptyForm);
     setFormImages([]);
     setProductSearch('');
@@ -555,7 +607,7 @@ export default function ProductImprovement() {
               <button className="btn btn-outline" onClick={handlePhotoZipDownload} disabled={zipDownloading || imgCount === 0} style={{ fontSize: 13 }}>
                 {zipDownloading ? '다운로드 중...' : `사진 다운로드 (${imgCount})`}
               </button>
-              <button className="btn btn-primary" onClick={() => { setShowForm(!showForm); setForm(emptyForm); setProductSearch(''); }}>
+              <button className="btn btn-primary" onClick={() => { setShowForm(!showForm); setForm(emptyForm); setProductSearch(''); setEditingId(null); setFormImages([]); }}>
                 {showForm ? '닫기' : '+ 새 항목'}
               </button>
             </div>
@@ -565,8 +617,8 @@ export default function ProductImprovement() {
 
       {/* 신규 등록 폼 */}
       {showForm && (
-        <div className="card" style={{ marginBottom: 16, border: '2px solid #1a73e8' }}>
-          <div className="card-header"><h2 style={{ fontSize: 14, fontWeight: 600 }}>새 상품개선 항목 등록</h2></div>
+        <div className="card" style={{ marginBottom: 16, border: `2px solid ${editingId ? '#fb8c00' : '#1a73e8'}` }}>
+          <div className="card-header"><h2 style={{ fontSize: 14, fontWeight: 600 }}>{editingId ? '상품개선 항목 수정' : '새 상품개선 항목 등록'}</h2></div>
           <div className="card-body">
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 12, marginBottom: 12 }}>
               <div>
@@ -615,12 +667,14 @@ export default function ProductImprovement() {
                 <input className="search-input" value={form.barcode} onChange={e => setForm(p => ({ ...p, barcode: e.target.value }))} style={{ width: '100%', minWidth: 'auto' }} placeholder="자동 입력 또는 직접 입력" />
               </div>
             </div>
-            <div style={{ marginBottom: 12 }}>
-              <label style={{ fontSize: 11, color: '#666', display: 'block', marginBottom: 4 }}>초기 이슈 내용</label>
-              <textarea className="search-input" value={form.issue} onChange={e => setForm(p => ({ ...p, issue: e.target.value }))}
-                placeholder="이슈 내용을 입력하세요..." rows={3}
-                style={{ width: '100%', minWidth: 'auto', resize: 'vertical', fontFamily: 'inherit', lineHeight: 1.5 }} />
-            </div>
+            {!editingId && (
+              <div style={{ marginBottom: 12 }}>
+                <label style={{ fontSize: 11, color: '#666', display: 'block', marginBottom: 4 }}>초기 이슈 내용</label>
+                <textarea className="search-input" value={form.issue} onChange={e => setForm(p => ({ ...p, issue: e.target.value }))}
+                  placeholder="이슈 내용을 입력하세요..." rows={3}
+                  style={{ width: '100%', minWidth: 'auto', resize: 'vertical', fontFamily: 'inherit', lineHeight: 1.5 }} />
+              </div>
+            )}
             <div style={{ marginBottom: 12 }}>
               <label style={{ fontSize: 11, color: '#666', display: 'block', marginBottom: 4 }}>참고 URL (최대 3개)</label>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -653,8 +707,8 @@ export default function ProductImprovement() {
               {formImages.length < 5 && <div style={{ fontSize: 10, color: '#aaa', marginTop: 4 }}>이 영역에서 Ctrl+V로 붙여넣기 가능</div>}
             </div>
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-              <button className="btn btn-outline" onClick={() => { setShowForm(false); setForm(emptyForm); setFormImages([]); setProductSearch(''); }}>취소</button>
-              <button className="btn btn-primary" onClick={handleAdd} disabled={!form.productName.trim() && !form.barcode.trim()}>등록</button>
+              <button className="btn btn-outline" onClick={() => { setShowForm(false); setForm(emptyForm); setFormImages([]); setProductSearch(''); setEditingId(null); }}>취소</button>
+              <button className="btn btn-primary" onClick={editingId ? handleUpdate : handleAdd} disabled={!form.productName.trim() && !form.barcode.trim()}>{editingId ? '수정 완료' : '등록'}</button>
             </div>
           </div>
         </div>
@@ -702,6 +756,7 @@ export default function ProductImprovement() {
                         <button className="btn btn-outline btn-sm" onClick={() => openImpImgModal(item.id)} style={{ fontSize: 11, padding: '3px 10px' }}>
                           📷 사진 ({imgArr.length}/5)
                         </button>
+                        <span style={{ cursor: 'pointer', fontSize: 13, color: '#1a73e8', padding: '3px 6px' }} onClick={() => handleEdit(item)} title="수정">수정</span>
                         <span style={{ cursor: 'pointer', fontSize: 13, color: '#d93025', padding: '3px 6px' }} onClick={() => handleDelete(item.id)} title="삭제">삭제</span>
                       </div>
                     </div>
