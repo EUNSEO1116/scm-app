@@ -489,11 +489,11 @@ export default function OrderRequest() {
             position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
             background: 'rgba(0,0,0,0.5)', zIndex: 9999,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
-          }} onClick={(e) => { if (e.button === 0) setPhotoModal(null); }} onContextMenu={e => e.stopPropagation()}>
+          }} onClick={() => setPhotoModal(null)}>
             <div style={{
               background: '#fff', borderRadius: 12, padding: 24,
               maxWidth: 600, width: '90%', boxShadow: '0 8px 32px rgba(0,0,0,0.2)',
-            }} onClick={e => e.stopPropagation()} onContextMenu={e => e.stopPropagation()}>
+            }} onClick={e => e.stopPropagation()}>
               {/* 헤더 */}
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
                 <h3 style={{ margin: 0, fontSize: 16 }}>{cur && cur.source === 'improvement' ? '🔄 상품개선 재수배 알림' : '📷 이슈관리 등록 사진'}</h3>
@@ -534,7 +534,7 @@ export default function OrderRequest() {
                               <img key={imgIdx} src={img} alt={`imp-${imgIdx}`} style={{
                                 width: 160, height: 160, objectFit: 'cover',
                                 borderRadius: 6, border: '1px solid #ddd', cursor: 'pointer',
-                              }} onClick={() => window.open(img, '_blank')} />
+                              }} onClick={() => { const m = img.match(/^data:(image\/\w+);base64,(.+)$/); if (m) { const b = Uint8Array.from(atob(m[2]), c => c.charCodeAt(0)); window.open(URL.createObjectURL(new Blob([b], { type: m[1] })), '_blank'); } else { window.open(img, '_blank'); } }} />
                             ))}
                           </div>
                         ) : (
@@ -557,7 +557,7 @@ export default function OrderRequest() {
                             <img key={imgIdx} src={img} alt={`${cur.sku}-${imgIdx}`} style={{
                               width: 160, height: 160, objectFit: 'cover',
                               borderRadius: 6, border: '1px solid #ddd', cursor: 'pointer',
-                            }} onClick={() => window.open(img, '_blank')} />
+                            }} onClick={() => { const m = img.match(/^data:(image\/\w+);base64,(.+)$/); if (m) { const b = Uint8Array.from(atob(m[2]), c => c.charCodeAt(0)); window.open(URL.createObjectURL(new Blob([b], { type: m[1] })), '_blank'); } else { window.open(img, '_blank'); } }} />
                           ))}
                         </div>
                       </>
