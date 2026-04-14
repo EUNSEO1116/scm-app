@@ -271,9 +271,20 @@ export default function SoldOutRate() {
   const currentMonth = new Date().getMonth();
   const thisMonthData = monthlyData[currentMonth];
 
-  // 전체 평균
-  const allRates = Object.values(snapshots).map(s => s.rate || 0);
-  const overallAvg = allRates.length > 0 ? Math.round(allRates.reduce((a,b) => a+b, 0) / allRates.length * 100) / 100 : 0;
+  // 현재 분기 평균
+  const currentQuarter = Math.floor(new Date().getMonth() / 3) + 1;
+  const quarterStartMonth = (currentQuarter - 1) * 3 + 1;
+  const quarterEndMonth = currentQuarter * 3;
+  const quarterPrefix = `${new Date().getFullYear()}-`;
+  const quarterRates = Object.entries(snapshots)
+    .filter(([date]) => {
+      if (!date.startsWith(quarterPrefix)) return false;
+      const m = parseInt(date.slice(5, 7), 10);
+      return m >= quarterStartMonth && m <= quarterEndMonth;
+    })
+    .map(([, s]) => s.rate || 0);
+  const quarterAvg = quarterRates.length > 0 ? Math.round(quarterRates.reduce((a,b) => a+b, 0) / quarterRates.length * 100) / 100 : 0;
+  const quarterDays = quarterRates.length;
 
   return (
     <div>
@@ -306,10 +317,10 @@ export default function SoldOutRate() {
             {thisMonthData?.days > 0 ? `${thisMonthData.days}일 기록` : '데이터 없음'}
           </div>
         </div>
-        <div className="stat-card" style={{ background: '#e8f5e9' }}>
-          <div className="label">전체 평균 품절률</div>
-          <div className="value" style={{ color: '#2e7d32' }}>{overallAvg}%</div>
-          <div className="sub">전체 {totalDays}일 기준</div>
+        <div className="stat-card" style={{ background: quarterDays > 0 ? '#e8f5e9' : '#f5f5f5' }}>
+          <div className="label">{currentQuarter}분기 품절률</div>
+          <div className="value" style={{ color: '#2e7d32' }}>{quarterDays > 0 ? quarterAvg + '%' : '-'}</div>
+          <div className="sub">{quarterDays > 0 ? `${quarterDays}일 기록` : '데이터 없음'}</div>
         </div>
         <div className="stat-card">
           <div className="label">목표 품절률</div>
