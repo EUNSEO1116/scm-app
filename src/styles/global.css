@@ -66,6 +66,12 @@ body {
   background: rgba(255,255,255,0.12);
 }
 
+.sidebar-logo.active {
+  background: rgba(255,255,255,0.15);
+  border-left: 3px solid #fff;
+  padding-left: 21px;
+}
+
 .sidebar-logo span { font-size: 22px; }
 
 .sidebar-nav { flex: 1; padding: 12px 0; overflow-y: auto; }

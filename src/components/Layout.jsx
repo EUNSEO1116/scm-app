@@ -88,21 +88,16 @@ export default function Layout({ children }) {
     return () => document.removeEventListener('mousedown', handler);
   }, []);
 
-  const isItemActive = (item) => {
-    if (location.pathname === '/') return false; // 홈화면에서는 어떤 메뉴도 활성화 안 함
-    if (item.path) {
-      return location.pathname === item.path;
-    }
-    if (item.children) {
-      return item.children.some(c => location.pathname === c.path);
-    }
-    return false;
-  };
+  const isHome = location.pathname === '/';
 
   return (
     <div className="app-layout">
       <aside className="sidebar">
-        <div className="sidebar-logo" onClick={() => window.location.href = '/'} style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div
+          className={`sidebar-logo${isHome ? ' active' : ''}`}
+          onClick={() => window.location.href = '/'}
+          style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}
+        >
           <img src="/logo.jpg" alt="ARIPPLE" style={{ width: 28, height: 28, borderRadius: 6 }} />
           ARIPPLE SCM
         </div>
@@ -111,7 +106,7 @@ export default function Layout({ children }) {
             item.children ? (
               <div key={item.id} className="nav-group">
                 <div
-                  className={`nav-item ${isItemActive(item) ? 'active' : ''}`}
+                  className="nav-item"
                   onClick={() => setOpenMenu(openMenu === item.id ? null : item.id)}
                 >
                   {icons[item.icon]}
