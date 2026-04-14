@@ -504,26 +504,52 @@ export default function Home() {
           </div>
         </div>
 
-        {/* 바로가기 */}
+        {/* 총재고원가 대시보드 */}
         <div style={{ flex: 1 }}>
-          <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 12, color: '#333' }}>바로가기</div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
-            {NAV_SHORTCUTS.map(s => (
-              <div
-                key={s.path}
-                onClick={() => navigate(s.path)}
-                style={{
-                  background: '#fff', borderRadius: 10, padding: '14px 16px',
-                  boxShadow: '0 1px 4px rgba(0,0,0,0.08)', cursor: 'pointer',
-                  transition: 'all 0.15s', display: 'flex', alignItems: 'center', gap: 10,
-                }}
-                onMouseEnter={e => { e.currentTarget.style.transform = 'translateY(-2px)'; e.currentTarget.style.boxShadow = '0 4px 12px rgba(0,0,0,0.12)'; }}
-                onMouseLeave={e => { e.currentTarget.style.transform = ''; e.currentTarget.style.boxShadow = '0 1px 4px rgba(0,0,0,0.08)'; }}
-              >
-                <span style={{ fontSize: 20 }}>{s.icon}</span>
-                <span style={{ fontSize: 13, fontWeight: 500 }}>{s.label}</span>
-              </div>
-            ))}
+          <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 12, color: '#333' }}>총재고원가 대시보드</div>
+          <div style={{
+            background: '#fff', borderRadius: 10, boxShadow: '0 1px 4px rgba(0,0,0,0.08)',
+            overflow: 'hidden', border: '1px solid #e0e0e0',
+          }}>
+            {/* 헤더 */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', borderBottom: '1px solid #e0e0e0' }}>
+              {['월 품절률', '가용 재고', '가용 재고 총 원가', '악성 재고', '악성 재고 원가'].map((title, i) => {
+                const bg = i === 0 ? '#f0f0f0' : i <= 2 ? '#dceefb' : '#fde8e8';
+                return (
+                  <div key={title} style={{
+                    background: bg, padding: '10px 8px', textAlign: 'center',
+                    fontSize: 13, fontWeight: 800, color: '#222', letterSpacing: '0.5px',
+                    borderRight: i < 4 ? '1px solid #e0e0e0' : 'none',
+                  }}>{title}</div>
+                );
+              })}
+            </div>
+            {/* 값 */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', borderBottom: '1px solid #e0e0e0' }}>
+              {['—%', '—개', '—원', '—개', '—원'].map((val, i) => {
+                const bg = i === 0 ? '#fff' : i <= 2 ? '#f0f7ff' : '#fff5f5';
+                return (
+                  <div key={i} style={{
+                    background: bg, padding: '14px 8px', textAlign: 'center',
+                    fontSize: 18, fontWeight: 700, color: '#222',
+                    borderRight: i < 4 ? '1px solid #e0e0e0' : 'none',
+                  }}>{val}</div>
+                );
+              })}
+            </div>
+            {/* 설명 */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)' }}>
+              {['판매중 품절률', '판매중 의 총 재고', '판매중 재고의 총 원가', '최종마감 수량', '최종마감 총 원가 합'].map((desc, i) => {
+                const bg = i === 0 ? '#fff' : i <= 2 ? '#f7fbff' : '#fffafa';
+                return (
+                  <div key={i} style={{
+                    background: bg, padding: '8px 6px', textAlign: 'center',
+                    fontSize: 10, color: '#999',
+                    borderRight: i < 4 ? '1px solid #e0e0e0' : 'none',
+                  }}>{desc}</div>
+                );
+              })}
+            </div>
           </div>
         </div>
       </div>
