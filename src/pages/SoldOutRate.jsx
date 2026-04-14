@@ -120,12 +120,20 @@ export default function SoldOutRate() {
   const [hoveredBar, setHoveredBar] = useState(null);
   const [dbLoaded, setDbLoaded] = useState(false);
 
-  // 1단계: DB에서 초기 데이터 로드
+  // 1단계: DB에서 초기 데이터 로드 → 로컬과 병합
   useEffect(() => {
     dbStoreGet('soldout_rate').then(data => {
       if (data && typeof data === 'object' && Object.keys(data).length > 0) {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-        setSnapshots(data);
+        // DB 데이터와 로컬 데이터 병합 (DB 우선)
+        const local = loadSnapshots();
+        const merged = { ...local, ...data };
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
+        setSnapshots(merged);
+        // 오늘 데이터가 DB에 이미 있으면 todayData로 표시
+        const today = todayKey();
+        if (merged[today]) {
+          setTodayData(merged[today]);
+        }
       }
     }).catch(() => {}).finally(() => setDbLoaded(true));
   }, []);
@@ -133,6 +141,18 @@ export default function SoldOutRate() {
   const fetchAndSave = useCallback(async () => {
     setLoading(true);
     try {
+      const existing = loadSnapshots();
+      const today = todayKey();
+
+      // 이미 오늘 데이터가 DB에서 로드되었으면 새로 계산하지 않음
+      if (existing[today]) {
+        setTodayData(existing[today]);
+        setSnapshots(existing);
+        setLoading(false);
+        return;
+      }
+
+      // 오늘 데이터가 없을 때만 TSV에서 새로 계산
       const [calcRes, dataRes] = await Promise.all([
         fetch(TSV_CALC), fetch(TSV_DATA),
       ]);
@@ -143,15 +163,10 @@ export default function SoldOutRate() {
       const snapshot = calcTodaySnapshot(calcTsv, dataTsv);
       setTodayData(snapshot);
 
-      // 저장 (같은 날짜에 이미 DB에 데이터가 있으면 첫 기록 유지)
-      const existing = loadSnapshots();
-      if (!existing[snapshot.date]) {
-        const updated = { ...existing, [snapshot.date]: snapshot };
-        saveSnapshots(updated);
-        setSnapshots(updated);
-      } else {
-        setSnapshots(existing);
-      }
+      // DB에 저장 (병합 방식)
+      const updated = { ...existing, [snapshot.date]: snapshot };
+      saveSnapshots(updated);
+      setSnapshots(updated);
     } catch (err) {
       console.error('Snapshot fetch error:', err);
     }
@@ -222,7 +237,7 @@ export default function SoldOutRate() {
       <div className="card" style={{ marginBottom: 16 }}>
         <div className="card-body" style={{ padding: '12px 20px', fontSize: 13, color: '#5f6368', display: 'flex', alignItems: 'center', gap: 8 }}>
           <span style={{ fontSize: 16 }}>💡</span>
-          이 페이지를 방문할 때마다 오늘의 품절률이 자동 기록됩니다. 매일 방문하면 더 정확한 월별 추이를 볼 수 있습니다.
+          누군가 한 번만 방문하면 오늘의 품절률이 자동 기록되어 모든 컴퓨터에서 공유됩니다.
           <span style={{ marginLeft: 'auto', fontWeight: 600 }}>
             누적 {totalDays}일 기록
           </span>
