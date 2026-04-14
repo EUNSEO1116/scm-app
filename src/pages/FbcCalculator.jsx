@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import * as XLSX from 'xlsx';
-import { dbStoreSet } from '../utils/dbApi';
+import { dbStoreGet, dbStoreSet } from '../utils/dbApi';
 import './FbcCalculator.css';
 
 // ─── Constants ───────────────────────────────────────────────────────────────

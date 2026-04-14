@@ -89,11 +89,12 @@ export default function Layout({ children }) {
   }, []);
 
   const isItemActive = (item) => {
+    if (location.pathname === '/') return false; // 홈화면에서는 어떤 메뉴도 활성화 안 함
     if (item.path) {
-      return location.pathname === item.path || (item.path === '/inventory' && location.pathname === '/');
+      return location.pathname === item.path;
     }
     if (item.children) {
-      return item.children.some(c => location.pathname === c.path || (c.path === '/inventory' && location.pathname === '/'));
+      return item.children.some(c => location.pathname === c.path);
     }
     return false;
   };
@@ -145,7 +146,7 @@ export default function Layout({ children }) {
                 key={item.id}
                 to={item.path}
                 className={({ isActive }) =>
-                  `nav-item ${isActive || (item.path === '/inventory' && location.pathname === '/') ? 'active' : ''}`
+                  `nav-item ${isActive ? 'active' : ''}`
                 }
               >
                 {icons[item.icon]}
