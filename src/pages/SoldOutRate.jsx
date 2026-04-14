@@ -8,6 +8,7 @@ const TSV_DATA = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?form
 const EXCLUDE_KEYWORDS = ['최종마감', '품질확인서', '마감대상'];
 const STORAGE_KEY = 'soldout_rate_snapshots';
 const EXCLUDE_ITEMS_KEY = 'soldout_exclude_items';
+const NEW_PRODUCT_STOCK_KEY = 'new_product_stock_tracker';
 const MONTHS_KR = ['1월','2월','3월','4월','5월','6월','7월','8월','9월','10월','11월','12월'];
 
 function safeNum(v) {
@@ -41,9 +42,21 @@ function shouldExclude(status) {
   return EXCLUDE_KEYWORDS.some(kw => status.includes(kw));
 }
 
-function loadExcludeItems() {
+function loadExcludeItemsLocal() {
   try { return JSON.parse(localStorage.getItem(EXCLUDE_ITEMS_KEY) || '[]'); }
   catch { return []; }
+}
+
+async function loadExcludeItems() {
+  const local = loadExcludeItemsLocal();
+  try {
+    const db = await dbStoreGet('soldout_exclude');
+    if (db && Array.isArray(db) && db.length > 0) {
+      localStorage.setItem(EXCLUDE_ITEMS_KEY, JSON.stringify(db));
+      return db;
+    }
+  } catch {}
+  return local;
 }
 
 function isExcludedBarcode(barcode, excludeItems) {
@@ -53,9 +66,39 @@ function isExcludedBarcode(barcode, excludeItems) {
   );
 }
 
-// 오늘 스냅샷 계산
-function calcTodaySnapshot(calcTsv, dataTsv) {
-  const excludeItems = loadExcludeItems();
+// 신규 상품 재고 추적 로드 (SoldOut.jsx와 동일)
+async function loadStockTracker() {
+  const local = (() => {
+    try { return JSON.parse(localStorage.getItem(NEW_PRODUCT_STOCK_KEY)) || {}; } catch { return {}; }
+  })();
+  try {
+    const db = await dbStoreGet('new_product_stock');
+    if (!db) return local;
+    const merged = { ...db };
+    for (const [barcode, entry] of Object.entries(local)) {
+      if (!merged[barcode]) {
+        merged[barcode] = entry;
+      } else {
+        const dateMap = {};
+        for (const r of merged[barcode].records) dateMap[r.date] = r;
+        for (const r of entry.records) dateMap[r.date] = r;
+        merged[barcode].records = Object.values(dateMap);
+      }
+    }
+    return merged;
+  } catch { return local; }
+}
+
+function hadStockBefore(tracker, barcode) {
+  const entry = tracker[barcode];
+  if (!entry) return false;
+  return entry.records.some(r => r.stock > 0);
+}
+
+// 오늘 스냅샷 계산 — 품절 현황(SoldOut.jsx) 표시 기준과 완전히 동일
+async function calcTodaySnapshot(calcTsv, dataTsv) {
+  const excludeItems = await loadExcludeItems();
+  const stockTracker = await loadStockTracker();
 
   // 상태 매핑
   const statusMap = {};
@@ -83,13 +126,10 @@ function calcTodaySnapshot(calcTsv, dataTsv) {
     const rawStatus = cols[5] || '';
     const status = rawStatus || statusMap[optionId] || '';
     const stock = safeNum(cols[6]);
-    const incoming = safeNum(cols[7]); // 그로스 입고예정
+    const incoming = safeNum(cols[7]);
+    const ipgo = safeNum(cols[8]);
 
     if (shouldExclude(status)) continue;
-
-    // 신규 + 입고예정 있으면 제외 (아직 입고된 적 없는 상품)
-    if (status === 'NEW' && incoming > 0) continue;
-    if (status === '신규' && incoming > 0) continue;
 
     // 제외 품목 체크
     if (isExcludedBarcode(barcode, excludeItems)) {
@@ -97,7 +137,12 @@ function calcTodaySnapshot(calcTsv, dataTsv) {
       continue;
     }
 
+    // 신규 상품: 한 번도 재고 > 0이 된 적 없으면 품절 아님 (SoldOut.jsx 345행과 동일)
+    if (status.includes('신규') && stock === 0 && !hadStockBefore(stockTracker, barcode)) continue;
+
     totalProducts++;
+
+    // stock===0이고 품절 현황에 표시되는 기준과 동일
     if (stock === 0) soldoutCount++;
   }
 
@@ -144,7 +189,7 @@ export default function SoldOutRate() {
       const existing = loadSnapshots();
       const today = todayKey();
 
-      // 이미 오늘 데이터가 DB에서 로드되었으면 새로 계산하지 않음
+      // DB에서 오늘 데이터가 이미 있으면 재계산 없이 그대로 사용
       if (existing[today]) {
         setTodayData(existing[today]);
         setSnapshots(existing);
@@ -160,10 +205,9 @@ export default function SoldOutRate() {
       const calcTsv = await calcRes.text();
       const dataTsv = dataRes.ok ? await dataRes.text() : null;
 
-      const snapshot = calcTodaySnapshot(calcTsv, dataTsv);
+      const snapshot = await calcTodaySnapshot(calcTsv, dataTsv);
       setTodayData(snapshot);
 
-      // DB에 저장 (병합 방식)
       const updated = { ...existing, [snapshot.date]: snapshot };
       saveSnapshots(updated);
       setSnapshots(updated);

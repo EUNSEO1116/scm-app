@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
 import * as XLSX from 'xlsx';
-import { fetchFromSheet, saveReasonsToSheet, deleteReasonFromSheet, markLocalSave } from '../sheetSync.js';
+import { fetchReasons, saveReasons, deleteReason } from '../sheetSync.js';
 import { dbStoreGet, dbStoreSet } from '../utils/dbApi';
 
 const SHEET_ID = '1NXhW_gG0b-gXuVqrhbY9ErWi8uO_7pXIy-NTo4FbE1I';
@@ -329,9 +329,11 @@ async function parseData(calcTsv, dataTsv, orderSkus, skuArrival, preloadedTrack
     // 제외: 최종마감, 품질확인서, 마감대상 포함 상태
     if (shouldExclude(status)) continue;
 
-    // 품절률 계산: 월별품절률(SoldOutRate)과 동일 기준
-    const skipForRate = (status === '신규' && incoming > 0) || (status === 'NEW' && incoming > 0) || isExcludedBarcode(barcode);
-    if (!skipForRate) {
+    // 신규 상품: 7일간 재고 추적 결과 한 번도 재고 > 0이 된 적 없으면 품절 아님
+    if (status.includes('신규') && stock === 0 && !hadStockBefore(stockTracker, barcode)) continue;
+
+    // 품절률 계산: 제외 품목 빼고 카운트 (신규 필터 이후이므로 품절현황 표시와 동일)
+    if (!isExcludedBarcode(barcode)) {
       totalValidCount++;
       if (stock === 0) soldoutRateCount++;
     }
@@ -340,10 +342,6 @@ async function parseData(calcTsv, dataTsv, orderSkus, skuArrival, preloadedTrack
     let riskLevel = null;
     let riskReason = '';
     let forceArrival = '';
-
-    // 신규 상품: 7일간 재고 추적 결과 한 번도 재고 > 0이 된 적 없으면 품절 아님
-    // 단, 수동 예외 목록은 신규 조건 무시 (재고 이력 확인된 상품)
-    if (status.includes('신규') && stock === 0 && !hadStockBefore(stockTracker, barcode)) continue;
 
     if (stock === 0) {
       riskLevel = '품절';
@@ -454,8 +452,7 @@ export default function SoldOut() {
         optionName: item?.optionName || '',
       });
     }
-    markLocalSave([...selected]);
-    saveReasonsToSheet(items);
+    saveReasons(items);
 
     setSelected(new Set());
     setReasonInput('');
@@ -467,7 +464,7 @@ export default function SoldOut() {
     delete updated[barcode];
     setReasons(updated);
     saveSoldoutReasons(updated);
-    deleteReasonFromSheet(barcode); // fire-and-forget
+    deleteReason(barcode);
   };
 
   const fetchData = useCallback(async () => {
@@ -512,6 +509,26 @@ export default function SoldOut() {
 
       setData(parsed);
       setLastUpdated(new Date());
+
+      // 품절률 스냅샷을 DB에 저장 → 다른 컴퓨터의 월별 품절률 페이지에서도 동일 데이터 표시
+      const meta = parsed._meta;
+      if (meta && meta.totalValidCount > 0) {
+        const today = todayStr();
+        const snapshot = {
+          date: today,
+          total: meta.totalValidCount,
+          soldout: meta.soldoutRateCount,
+          excluded: 0,
+          rate: meta.soldoutRate,
+        };
+        try {
+          const rateKey = 'soldout_rate_snapshots';
+          const existing = JSON.parse(localStorage.getItem(rateKey) || '{}');
+          existing[today] = snapshot;
+          localStorage.setItem(rateKey, JSON.stringify(existing));
+          dbStoreSet('soldout_rate', existing).catch(() => {});
+        } catch {}
+      }
     } catch (err) {
       setError('데이터를 불러오지 못했습니다: ' + err.message);
     }
@@ -521,7 +538,7 @@ export default function SoldOut() {
   useEffect(() => { fetchData(); }, [fetchData]);
 
   useEffect(() => {
-    fetchFromSheet().then(data => {
+    fetchReasons().then(data => {
       if (data) {
         setReasons(loadSoldoutReasons());
       }
