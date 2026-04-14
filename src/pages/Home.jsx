@@ -197,17 +197,39 @@ export default function Home() {
           }
         } catch {}
 
-        // 발주장부에서 확인필요 카운트
+        // 상품개선 미완료 바코드 목록 (OrderBook computeCheckFlags와 동일)
+        let impItems;
+        try {
+          impItems = await dbStoreGet('improvement_items');
+          if (!impItems) impItems = JSON.parse(localStorage.getItem('improvement_items') || '[]');
+        } catch { impItems = []; }
+        const impSkus = new Set();
+        for (const item of (impItems || [])) {
+          if (item.barcode && item.status !== '완료') impSkus.add(item.barcode);
+        }
+
+        // 발주장부에서 확인필요 카운트 (특별관리 + 상품개선)
         let checkCount = 0;
+        const countedSkus = new Set(); // 중복 방지
         for (let i = 1; i < orderLines.length; i++) {
           const cols = parseCsvRow(orderLines[i]);
           const sku = (cols[2] || '').trim();
           const cnStatus = (cols[8] || '').trim();
+          if (!sku) continue;
 
-          if (!specialSkus.has(sku)) continue;
-          const isCnArrived = cnStatus.includes('CN 창고도착') || cnStatus.includes('작업 대기');
-          const isInland = cnStatus.includes('내륙') && cnStatus.includes('운송');
-          if (isCnArrived || isInland) checkCount++;
+          let isCheck = false;
+
+          // 특별관리 조건: CN 창고도착/작업대기/내륙운송
+          if (specialSkus.has(sku)) {
+            const isCnArrived = cnStatus.includes('CN 창고도착') || cnStatus.includes('작업 대기');
+            const isInland = cnStatus.includes('내륙') && cnStatus.includes('운송');
+            if (isCnArrived || isInland) isCheck = true;
+          }
+
+          // 상품개선 미완료 조건
+          if (impSkus.has(sku)) isCheck = true;
+
+          if (isCheck) checkCount++;
         }
 
         // 입고예정일 도래도 카운트
