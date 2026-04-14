@@ -1,12 +1,14 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { dbSaveCalendar, dbGetCalendar, dbStoreGet } from '../utils/dbApi';
+import { dbSaveCalendar, dbGetCalendar, dbStoreGet, dbStoreSet } from '../utils/dbApi';
 
 const SHEET_ID = '1NXhW_gG0b-gXuVqrhbY9ErWi8uO_7pXIy-NTo4FbE1I';
 const CSV_ORDER = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent('발주장부')}`;
 const CSV_DAILY = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent('일일 판매량')}`;
 const TSV_CALC = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=tsv&gid=1349677364`;
 const CSV_SPECIAL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent('특별 관리 상품')}`;
+const CSV_BARCODE = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent('쿠팡바코드')}`;
+const TSV_BARCODE = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=tsv&gid=2111556061`;
 
 function parseCsvRow(line) {
   const result = [];
@@ -26,6 +28,27 @@ function parseCsvRow(line) {
   }
   result.push(current);
   return result;
+}
+
+function parseCsvRows(text) {
+  const rows = [];
+  let current = '';
+  let inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inQuotes) {
+      if (ch === '"' && text[i + 1] === '"') { current += '"'; i++; }
+      else if (ch === '"') inQuotes = false;
+      else current += ch;
+    } else {
+      if (ch === '"') inQuotes = true;
+      else if (ch === '\n') { rows.push(parseCsvRow(current)); current = ''; }
+      else if (ch === '\r') { /* skip */ }
+      else current += ch;
+    }
+  }
+  if (current.trim()) rows.push(parseCsvRow(current));
+  return rows;
 }
 
 // "3/27" → Date 객체 (올해 기준)
@@ -105,6 +128,7 @@ export default function Home() {
   const [alerts, setAlerts] = useState({ newSurge: [], checkCount: 0, syncCount: 0 });
   const [dragData, setDragData] = useState(null);
   const [dragOverKey, setDragOverKey] = useState(null);
+  const [dashboardData, setDashboardData] = useState({ availableCount: 0, availableCost: 0, badCount: 0, badCost: 0, soldoutRate: null });
   const [addingDay, setAddingDay] = useState(null); // 메모 추가할 날짜 키
   const [memoText, setMemoText] = useState('');
 
@@ -293,6 +317,105 @@ export default function Home() {
   }, []);
 
   useEffect(() => { fetchEvents(); fetchAlerts(); }, [fetchEvents, fetchAlerts]);
+
+  // 총재고원가 대시보드 데이터 로드
+  useEffect(() => {
+    (async () => {
+      try {
+        // 재고계산기 시트에서 총재고 합계
+        const calcRes = await fetch(TSV_CALC);
+        if (!calcRes.ok) return;
+        const tsvText = await calcRes.text();
+        const tsvLines = tsvText.split('\n').filter(l => l.trim());
+
+        // 쿠팡바코드 시트에서 원가 매핑 (TSV로 가져와서 쉼표 파싱 문제 방지)
+        const barcodeRes = await fetch(TSV_BARCODE);
+        const barcodeTsv = barcodeRes.ok ? await barcodeRes.text() : '';
+        const barcodeLines = barcodeTsv.split('\n').filter(l => l.trim());
+        const costMap = {};
+        for (let i = 1; i < barcodeLines.length; i++) {
+          const cols = barcodeLines[i].split('\t');
+          const bc = (cols[5] || '').trim();
+          const cost = Number(String(cols[6] || '').replace(/[₩,\s]/g, '')) || 0;
+          if (bc) costMap[bc] = cost;
+        }
+
+        let availableCount = 0, availableCost = 0, badCount = 0, badCost = 0;
+        for (let i = 1; i < tsvLines.length; i++) {
+          const cols = tsvLines[i].split('\t');
+          const barcode = (cols[2] || '').trim();
+          const status = (cols[5] || '').trim();
+          const totalStock = Number(cols[14]) || 0;
+          const unitCost = costMap[barcode] || 0;
+          const isBad = status.includes('최종마감') || status.includes('마감대상');
+          if (isBad) { badCount += totalStock; badCost += totalStock * unitCost; }
+          else { availableCount += totalStock; availableCost += totalStock * unitCost; }
+        }
+
+        // 품절률: localStorage soldout_rate_snapshots에서 이번 달 평균
+        let soldoutRate = null;
+        try {
+          const stored = await dbStoreGet('soldout_rate_snapshots');
+          const snapshots = stored || JSON.parse(localStorage.getItem('soldout_rate_snapshots') || '{}');
+          const now = new Date();
+          const yearStr = String(now.getFullYear());
+          const monthStr = String(now.getMonth() + 1).padStart(2, '0');
+          const prefix = `${yearStr}-${monthStr}`;
+          let rateSum = 0, days = 0;
+          for (const [date, snap] of Object.entries(snapshots)) {
+            if (date.startsWith(prefix)) { rateSum += snap.rate || 0; days++; }
+          }
+          if (days > 0) soldoutRate = Math.round(rateSum / days * 100) / 100;
+        } catch {}
+
+        setDashboardData({ availableCount, availableCost, badCount, badCost, soldoutRate });
+      } catch (e) { console.error('Dashboard data load error:', e); }
+    })();
+  }, []);
+
+  // 대시보드 엑셀 다운로드
+  const downloadDashboardExcel = useCallback(async () => {
+    const yearStr = String(new Date().getFullYear());
+    let history = {};
+    try {
+      history = (await dbStoreGet(`dashboard_history_${yearStr}`)) || {};
+    } catch {}
+
+    // 현재 월 데이터 추가
+    const now = new Date();
+    const monthKey = `${yearStr}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    history[monthKey] = {
+      soldoutRate: dashboardData.soldoutRate,
+      availableCount: dashboardData.availableCount,
+      availableCost: dashboardData.availableCost,
+      badCount: dashboardData.badCount,
+      badCost: dashboardData.badCost,
+      updatedAt: now.toISOString(),
+    };
+    await dbStoreSet(`dashboard_history_${yearStr}`, history);
+
+    // CSV 생성
+    const header = '월,월 품절률(%),가용 재고(개),가용 재고 총 원가(원),악성 재고(개),악성 재고 원가(원),업데이트일시';
+    const csvRows = [header];
+    for (let m = 1; m <= 12; m++) {
+      const key = `${yearStr}-${String(m).padStart(2, '0')}`;
+      const d = history[key];
+      if (d) {
+        csvRows.push(`${yearStr}년 ${m}월,${d.soldoutRate ?? ''},${d.availableCount},${d.availableCost.toLocaleString()},${d.badCount},${d.badCost.toLocaleString()},${d.updatedAt || ''}`);
+      } else {
+        csvRows.push(`${yearStr}년 ${m}월,,,,,,`);
+      }
+    }
+
+    const bom = '\uFEFF';
+    const blob = new Blob([bom + csvRows.join('\n')], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `총재고원가_대시보드_${yearStr}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [dashboardData]);
 
   // 드래그앤드롭: 이벤트를 다른 날짜로 이동
   const handleDragStart = (e, fromKey, event) => {
@@ -506,7 +629,19 @@ export default function Home() {
 
         {/* 총재고원가 대시보드 */}
         <div style={{ flex: 1 }}>
-          <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 12, color: '#333' }}>총재고원가 대시보드</div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+            <div style={{ fontSize: 14, fontWeight: 600, color: '#333' }}>총재고원가 대시보드</div>
+            <button
+              onClick={downloadDashboardExcel}
+              style={{
+                background: '#f5f5f5', border: '1px solid #ddd', borderRadius: 6,
+                padding: '4px 10px', fontSize: 11, color: '#555', cursor: 'pointer',
+                display: 'flex', alignItems: 'center', gap: 4,
+              }}
+              onMouseEnter={e => { e.currentTarget.style.background = '#e8e8e8'; }}
+              onMouseLeave={e => { e.currentTarget.style.background = '#f5f5f5'; }}
+            >CSV</button>
+          </div>
           <div style={{
             background: '#fff', borderRadius: 10, boxShadow: '0 1px 4px rgba(0,0,0,0.08)',
             overflow: 'hidden', border: '1px solid #e0e0e0',
@@ -526,7 +661,13 @@ export default function Home() {
             </div>
             {/* 값 */}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', borderBottom: '1px solid #e0e0e0' }}>
-              {['—%', '—개', '—원', '—개', '—원'].map((val, i) => {
+              {[
+                dashboardData.soldoutRate !== null ? `${dashboardData.soldoutRate}%` : '—%',
+                `${dashboardData.availableCount.toLocaleString()}개`,
+                `${dashboardData.availableCost.toLocaleString()}원`,
+                `${dashboardData.badCount.toLocaleString()}개`,
+                `${dashboardData.badCost.toLocaleString()}원`,
+              ].map((val, i) => {
                 const bg = i === 0 ? '#fff' : i <= 2 ? '#f0f7ff' : '#fff5f5';
                 return (
                   <div key={i} style={{
@@ -539,7 +680,7 @@ export default function Home() {
             </div>
             {/* 설명 */}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)' }}>
-              {['판매중 품절률', '판매중 의 총 재고', '판매중 재고의 총 원가', '최종마감 수량', '최종마감 총 원가 합'].map((desc, i) => {
+              {['판매중 품절률', '판매중 의 총 재고', '판매중 재고의 총 원가', '최종마감 수량', '최종마감 총 원가 합 (소진가능 재고 포함)'].map((desc, i) => {
                 const bg = i === 0 ? '#fff' : i <= 2 ? '#f7fbff' : '#fffafa';
                 return (
                   <div key={i} style={{
