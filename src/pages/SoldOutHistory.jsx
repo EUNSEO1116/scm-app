@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect } from 'react';
 import XLSX_STYLE from 'xlsx-js-style';
-import { fetchFromSheet } from '../sheetSync.js';
+import { fetchReasons } from '../sheetSync.js';
 import { dbStoreGet, dbStoreSet } from '../utils/dbApi';
 
 const SOLDOUT_HISTORY_KEY = 'soldout_history';
@@ -39,11 +39,11 @@ export default function SoldOutHistory() {
   const [excludeTarget, setExcludeTarget] = useState(null); // { barcode, productName, optionName, reason }
   const [excludeEndDate, setExcludeEndDate] = useState('');
 
-  // 시트에서 품절 기록 동기화
+  // DB에서 품절 기록 동기화
   useEffect(() => {
-    fetchFromSheet().then(data => {
+    fetchReasons().then(data => {
       if (data && data.history) {
-        setHistory(loadHistory()); // localStorage가 시트 데이터로 갱신된 후 다시 로드
+        setHistory(loadHistory()); // localStorage가 DB 데이터로 갱신된 후 다시 로드
       }
     });
   }, []);
