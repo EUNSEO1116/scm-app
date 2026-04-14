@@ -235,19 +235,54 @@ export default function OrderRequest() {
     ).join('\n');
   };
 
-  // 복사 후 사진 있는 상품 확인 & 모달 표시
+  // 복사 후 사진 있는 상품 확인 + 상품개선 재수배 매칭 → 모달 표시
   const showPhotosAfterCopy = async (rows) => {
-    const withImg = rows.filter(r => imgCounts[r.sku] > 0);
-    if (withImg.length === 0) return;
     setPhotoLoading(true);
     setPhotoModal({ items: [] });
+
+    // 1) 이슈관리 사진
     let allData = {};
     try { const d = await dbStoreGet('issue_img_data'); if (d && typeof d === 'object') allData = d; } catch {}
-    const items = withImg.map((r) => {
+    const withImg = rows.filter(r => imgCounts[r.sku] > 0);
+    const photoItems = withImg.map((r) => {
       const images = allData[r.sku];
-      return { orderNo: r.orderNo, productName: r.productName, sku: r.sku, images: Array.isArray(images) ? images : [] };
-    });
-    setPhotoModal({ items: items.filter(it => it.images.length > 0) });
+      return { source: 'issue', orderNo: r.orderNo, productName: r.productName, sku: r.sku, images: Array.isArray(images) ? images : [] };
+    }).filter(it => it.images.length > 0);
+
+    // 2) 상품개선 재수배(시작전/처리중) 중 발주신청 상품명과 키워드 매칭
+    let impItems = [];
+    try {
+      let dbImpItems = await dbStoreGet('improvement_items');
+      if (!Array.isArray(dbImpItems) || dbImpItems.length === 0) {
+        try { dbImpItems = JSON.parse(localStorage.getItem('improvement_items') || 'null'); } catch {}
+      }
+      let dbImpImages = await dbStoreGet('improvement_images');
+      if (!dbImpImages || typeof dbImpImages !== 'object') {
+        try { dbImpImages = JSON.parse(localStorage.getItem('improvement_images') || 'null'); } catch {}
+      }
+      if (Array.isArray(dbImpItems)) {
+        const normalize = s => (s || '').replace(/\s+/g, ' ').trim();
+        const orderProductNames = rows.map(r => normalize(r.productName));
+        const impImgData = (dbImpImages && typeof dbImpImages === 'object') ? dbImpImages : {};
+        impItems = dbImpItems
+          .filter(imp => imp.type === '재수배' && (imp.status === '시작전' || imp.status === '처리중'))
+          .filter(imp => {
+            const impName = normalize(imp.productName);
+            if (!impName) return false;
+            return orderProductNames.some(orderName => orderName.includes(impName));
+          })
+          .map(imp => ({
+            source: 'improvement',
+            productName: imp.productName,
+            barcode: imp.barcode || '',
+            images: Array.isArray(impImgData[imp.id]) ? impImgData[imp.id] : [],
+          }));
+      }
+    } catch {}
+
+    const allItems = [...photoItems, ...impItems];
+    if (allItems.length === 0) { setPhotoModal(null); setPhotoLoading(false); return; }
+    setPhotoModal({ items: allItems });
     setPhotoIdx(0);
     setPhotoLoading(false);
   };
@@ -461,7 +496,7 @@ export default function OrderRequest() {
             }} onClick={e => e.stopPropagation()}>
               {/* 헤더 */}
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-                <h3 style={{ margin: 0, fontSize: 16 }}>📷 이슈관리 등록 사진</h3>
+                <h3 style={{ margin: 0, fontSize: 16 }}>{cur && cur.source === 'improvement' ? '🔄 상품개선 재수배 알림' : '📷 이슈관리 등록 사진'}</h3>
                 <button onClick={() => setPhotoModal(null)} style={{
                   background: 'none', border: 'none', fontSize: 20, cursor: 'pointer', color: '#666',
                 }}>✕</button>
@@ -470,30 +505,63 @@ export default function OrderRequest() {
               {photoLoading ? (
                 <div style={{ textAlign: 'center', padding: 32 }}>
                   <div className="spinner" />
-                  <p style={{ marginTop: 8, color: '#666' }}>사진 불러오는 중...</p>
+                  <p style={{ marginTop: 8, color: '#666' }}>불러오는 중...</p>
                 </div>
               ) : total === 0 ? (
-                <p style={{ textAlign: 'center', color: '#999', padding: 20 }}>사진이 있는 상품이 없습니다.</p>
+                <p style={{ textAlign: 'center', color: '#999', padding: 20 }}>표시할 항목이 없습니다.</p>
               ) : (
                 <>
-                  {/* 상품 정보 */}
+                  {/* 소스 구분 배지 */}
+                  <div style={{ marginBottom: 12 }}>
+                    <span style={{
+                      display: 'inline-block',
+                      background: cur.source === 'improvement' ? '#6a1b9a' : '#1976d2',
+                      color: '#fff', padding: '2px 10px', borderRadius: 4, fontSize: 12, fontWeight: 600,
+                    }}>{cur.source === 'improvement' ? '상품개선 · 재수배' : '이슈관리 사진'}</span>
+                  </div>
+
                   <div style={{ padding: 16, background: '#f8f9fa', borderRadius: 8, border: '1px solid #e9ecef' }}>
-                    <div style={{ marginBottom: 10 }}>
-                      <span style={{
-                        display: 'inline-block', background: '#1976d2', color: '#fff',
-                        padding: '2px 8px', borderRadius: 4, fontSize: 12, fontWeight: 600, marginRight: 8,
-                      }}>{cur.orderNo}</span>
-                      <span style={{ fontSize: 13, color: '#333' }}>{cur.productName}</span>
-                      <span style={{ fontSize: 11, color: '#999', marginLeft: 8 }}>{cur.sku}</span>
-                    </div>
-                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'center' }}>
-                      {cur.images.map((img, imgIdx) => (
-                        <img key={imgIdx} src={img} alt={`${cur.sku}-${imgIdx}`} style={{
-                          width: 160, height: 160, objectFit: 'cover',
-                          borderRadius: 6, border: '1px solid #ddd', cursor: 'pointer',
-                        }} onClick={() => window.open(img, '_blank')} />
-                      ))}
-                    </div>
+                    {cur.source === 'improvement' ? (
+                      <>
+                        {/* 상품개선 재수배 항목 */}
+                        <div style={{ marginBottom: 10 }}>
+                          <span style={{ fontSize: 14, fontWeight: 600, color: '#333' }}>{cur.productName}</span>
+                          {cur.barcode && <span style={{ fontSize: 11, color: '#999', marginLeft: 8 }}>{cur.barcode}</span>}
+                        </div>
+                        {cur.images.length > 0 ? (
+                          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'center' }}>
+                            {cur.images.map((img, imgIdx) => (
+                              <img key={imgIdx} src={img} alt={`imp-${imgIdx}`} style={{
+                                width: 160, height: 160, objectFit: 'cover',
+                                borderRadius: 6, border: '1px solid #ddd', cursor: 'pointer',
+                              }} onClick={() => window.open(img, '_blank')} />
+                            ))}
+                          </div>
+                        ) : (
+                          <p style={{ textAlign: 'center', color: '#999', fontSize: 13 }}>첨부 사진 없음</p>
+                        )}
+                      </>
+                    ) : (
+                      <>
+                        {/* 이슈관리 사진 (기존) */}
+                        <div style={{ marginBottom: 10 }}>
+                          <span style={{
+                            display: 'inline-block', background: '#1976d2', color: '#fff',
+                            padding: '2px 8px', borderRadius: 4, fontSize: 12, fontWeight: 600, marginRight: 8,
+                          }}>{cur.orderNo}</span>
+                          <span style={{ fontSize: 13, color: '#333' }}>{cur.productName}</span>
+                          <span style={{ fontSize: 11, color: '#999', marginLeft: 8 }}>{cur.sku}</span>
+                        </div>
+                        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'center' }}>
+                          {cur.images.map((img, imgIdx) => (
+                            <img key={imgIdx} src={img} alt={`${cur.sku}-${imgIdx}`} style={{
+                              width: 160, height: 160, objectFit: 'cover',
+                              borderRadius: 6, border: '1px solid #ddd', cursor: 'pointer',
+                            }} onClick={() => window.open(img, '_blank')} />
+                          ))}
+                        </div>
+                      </>
+                    )}
                   </div>
 
                   {/* 화살표 네비게이션 */}
