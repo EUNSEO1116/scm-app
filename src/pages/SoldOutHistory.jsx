@@ -1,7 +1,7 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import XLSX_STYLE from 'xlsx-js-style';
-import { fetchReasons, saveReasons as dbSyncReasons } from '../sheetSync.js';
-import { dbStoreGet, dbStoreSet } from '../utils/dbApi';
+import { fetchReasons } from '../sheetSync.js';
+import { dbStoreGet, dbStoreSet, dbSaveReasons, dbDeleteReason } from '../utils/dbApi';
 
 const SOLDOUT_HISTORY_KEY = 'soldout_history';
 const SOLDOUT_REASONS_KEY = 'soldout_reasons_v2';
@@ -31,6 +31,29 @@ function todayStr() {
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 }
 
+// history를 flat 배열로 변환 (각 항목에 uid 부여)
+function flattenHistory(hist) {
+  const records = [];
+  let uid = 0;
+  for (const [barcode, entries] of Object.entries(hist)) {
+    for (let i = 0; i < entries.length; i++) {
+      records.push({ uid: uid++, barcode, origIdx: i, ...entries[i] });
+    }
+  }
+  records.sort((a, b) => b.date.localeCompare(a.date));
+  return records;
+}
+
+// flat 배열을 다시 history 객체로 변환
+function unflattenRecords(records) {
+  const hist = {};
+  for (const r of records) {
+    if (!hist[r.barcode]) hist[r.barcode] = [];
+    hist[r.barcode].push({ reason: r.reason, date: r.date, productName: r.productName || '', optionName: r.optionName || '' });
+  }
+  return hist;
+}
+
 // history 객체를 DB 저장용 items 배열로 변환
 function historyToItems(hist, reasons) {
   const items = [];
@@ -39,7 +62,6 @@ function historyToItems(hist, reasons) {
       items.push({ barcode, reason: e.reason, date: e.date, productName: e.productName || '', optionName: e.optionName || '' });
     }
   }
-  // reasons에만 있고 history에 없는 것도 포함
   for (const [barcode, info] of Object.entries(reasons)) {
     if (!hist[barcode] || hist[barcode].length === 0) {
       items.push({ barcode, reason: info.reason, date: info.date, productName: '', optionName: '' });
@@ -51,15 +73,14 @@ function historyToItems(hist, reasons) {
 export default function SoldOutHistory() {
   const [search, setSearch] = useState('');
   const [history, setHistory] = useState(loadHistory);
-  const [editingKey, setEditingKey] = useState(null);
+  const [editingUid, setEditingUid] = useState(null);
   const [editDate, setEditDate] = useState('');
   const [excludeTarget, setExcludeTarget] = useState(null);
   const [excludeEndDate, setExcludeEndDate] = useState('');
-  const [selected, setSelected] = useState(new Set()); // 체크박스 선택: "barcode-index"
-  const [editingReason, setEditingReason] = useState(null); // 사유 수정 중: "barcode-index"
+  const [selected, setSelected] = useState(new Set()); // barcode 기반
+  const [editingReasonUid, setEditingReasonUid] = useState(null);
   const [editReasonText, setEditReasonText] = useState('');
 
-  // DB에서 품절 기록 동기화
   useEffect(() => {
     fetchReasons().then(data => {
       if (data && data.history) {
@@ -68,128 +89,7 @@ export default function SoldOutHistory() {
     });
   }, []);
 
-  const updateDate = (barcode, index) => {
-    if (!editDate) return;
-    const updated = { ...history };
-    updated[barcode][index].date = editDate;
-    setHistory(updated);
-    saveHistory(updated);
-    if (index === updated[barcode].length - 1) {
-      const reasons = loadReasons();
-      if (reasons[barcode]) {
-        reasons[barcode].date = editDate;
-        saveReasons(reasons);
-      }
-    }
-    // DB 동기화
-    dbSyncReasons(historyToItems(updated, loadReasons())).catch(() => {});
-    setEditingKey(null);
-    setEditDate('');
-  };
-
-  const updateReason = (barcode, index) => {
-    if (!editReasonText.trim()) return;
-    const updated = { ...history };
-    updated[barcode][index].reason = editReasonText.trim();
-    setHistory(updated);
-    saveHistory(updated);
-    // reasons(현재 사유)도 업데이트 - 마지막 기록이면
-    if (index === updated[barcode].length - 1) {
-      const reasons = loadReasons();
-      if (reasons[barcode]) {
-        reasons[barcode].reason = editReasonText.trim();
-        saveReasons(reasons);
-      }
-    }
-    // DB 동기화
-    dbSyncReasons(historyToItems(updated, loadReasons())).catch(() => {});
-    setEditingReason(null);
-    setEditReasonText('');
-  };
-
-  const toggleSelect = (key) => {
-    setSelected(prev => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
-  };
-
-  const deleteSelected = () => {
-    if (selected.size === 0) return;
-    if (!confirm(`선택한 ${selected.size}건을 삭제하시겠습니까?`)) return;
-
-    const updated = { ...history };
-    const reasons = loadReasons();
-
-    // "barcode-index" 를 barcode별로 그룹화하고, 큰 index부터 삭제
-    const deleteMap = {};
-    for (const key of selected) {
-      const lastDash = key.lastIndexOf('-');
-      const barcode = key.substring(0, lastDash);
-      const idx = parseInt(key.substring(lastDash + 1));
-      if (!deleteMap[barcode]) deleteMap[barcode] = [];
-      deleteMap[barcode].push(idx);
-    }
-
-    for (const [barcode, indices] of Object.entries(deleteMap)) {
-      if (!updated[barcode]) continue;
-      // 큰 인덱스부터 삭제해야 인덱스 안 밀림
-      indices.sort((a, b) => b - a);
-      for (const idx of indices) {
-        updated[barcode].splice(idx, 1);
-      }
-      // 전부 삭제됐으면 바코드 자체 제거
-      if (updated[barcode].length === 0) {
-        delete updated[barcode];
-        delete reasons[barcode];
-      } else {
-        // 마지막 기록으로 reasons 업데이트
-        const last = updated[barcode][updated[barcode].length - 1];
-        if (reasons[barcode]) {
-          reasons[barcode] = { reason: last.reason, date: last.date };
-        }
-      }
-    }
-
-    setHistory(updated);
-    saveHistory(updated);
-    saveReasons(reasons);
-    setSelected(new Set());
-
-    // DB 동기화
-    dbSyncReasons(historyToItems(updated, reasons)).catch(() => {});
-  };
-
-  const moveToExclude = () => {
-    if (!excludeTarget || !excludeEndDate) return;
-    const excludes = loadExcludes();
-    if (!excludes.some(e => e.barcode === excludeTarget.barcode)) {
-      excludes.push({
-        barcode: excludeTarget.barcode,
-        productName: excludeTarget.productName,
-        optionName: excludeTarget.optionName,
-        reason: excludeTarget.reason,
-        endDate: excludeEndDate,
-        addedDate: todayStr(),
-      });
-      saveExcludes(excludes);
-    }
-    setExcludeTarget(null);
-    setExcludeEndDate('');
-  };
-
-  const allRecords = useMemo(() => {
-    const records = [];
-    for (const [barcode, entries] of Object.entries(history)) {
-      for (let idx = 0; idx < entries.length; idx++) {
-        records.push({ barcode, _origIdx: idx, ...entries[idx] });
-      }
-    }
-    records.sort((a, b) => b.date.localeCompare(a.date));
-    return records;
-  }, [history]);
+  const allRecords = useMemo(() => flattenHistory(history), [history]);
 
   const filtered = useMemo(() => {
     if (!search) return allRecords;
@@ -216,38 +116,135 @@ export default function SoldOutHistory() {
     return new Set(ex.map(e => e.barcode));
   }, [excludeTarget]);
 
-  // 이번달 / 반기 품절 품목 수
   const { monthCount, halfYearCount } = useMemo(() => {
     const now = new Date();
     const thisMonth = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
     const halfStart = now.getMonth() < 6
       ? `${now.getFullYear()}-01`
       : `${now.getFullYear()}-07`;
-    const halfStr = halfStart;
     const monthBarcodes = new Set();
     const halfBarcodes = new Set();
     for (const [barcode, entries] of Object.entries(history)) {
       for (const e of entries) {
         if (e.date && e.date.startsWith(thisMonth)) monthBarcodes.add(barcode);
-        if (e.date && e.date >= halfStr) halfBarcodes.add(barcode);
+        if (e.date && e.date >= halfStart) halfBarcodes.add(barcode);
       }
     }
     return { monthCount: monthBarcodes.size, halfYearCount: halfBarcodes.size };
   }, [history]);
+
+  // 변경된 바코드만 DB에서 삭제 후 재삽입
+  const syncToDb = async (newHistory, changedBarcodes) => {
+    const reasons = loadReasons();
+    for (const barcode of Object.keys(reasons)) {
+      if (!newHistory[barcode] || newHistory[barcode].length === 0) {
+        delete reasons[barcode];
+      } else {
+        const last = newHistory[barcode][newHistory[barcode].length - 1];
+        reasons[barcode] = { reason: last.reason, date: last.date };
+      }
+    }
+    saveReasons(reasons);
+
+    for (const barcode of changedBarcodes) {
+      // 해당 바코드의 기존 DB 기록 전부 삭제 (DELETE는 1건씩이므로 반복)
+      for (let i = 0; i < 20; i++) {
+        const ok = await dbDeleteReason(barcode);
+        if (!ok) break;
+      }
+      // 남은 기록 다시 삽입
+      const entries = newHistory[barcode] || [];
+      if (entries.length > 0) {
+        const items = entries.map(e => ({
+          barcode, reason: e.reason, date: e.date,
+          productName: e.productName || '', optionName: e.optionName || '',
+        }));
+        await dbSaveReasons(items);
+      }
+    }
+  };
+
+  const deleteSelected = () => {
+    if (selected.size === 0) return;
+    if (!confirm(`선택한 ${selected.size}개 품목의 품절 기록을 전부 삭제하시겠습니까?`)) return;
+
+    const newHistory = JSON.parse(JSON.stringify(history));
+    for (const barcode of selected) {
+      delete newHistory[barcode];
+    }
+
+    setHistory(newHistory);
+    saveHistory(newHistory);
+    syncToDb(newHistory, selected);
+    setSelected(new Set());
+  };
+
+  const updateDate = (uid) => {
+    if (!editDate) return;
+    const record = allRecords.find(r => r.uid === uid);
+    if (!record) return;
+
+    const newHistory = JSON.parse(JSON.stringify(history));
+    newHistory[record.barcode][record.origIdx].date = editDate;
+
+    setHistory(newHistory);
+    saveHistory(newHistory);
+    syncToDb(newHistory, [record.barcode]);
+    setEditingUid(null);
+    setEditDate('');
+  };
+
+  const updateReason = (uid) => {
+    if (!editReasonText.trim()) return;
+    const record = allRecords.find(r => r.uid === uid);
+    if (!record) return;
+
+    const newHistory = JSON.parse(JSON.stringify(history));
+    newHistory[record.barcode][record.origIdx].reason = editReasonText.trim();
+
+    setHistory(newHistory);
+    saveHistory(newHistory);
+    syncToDb(newHistory, [record.barcode]);
+    setEditingReasonUid(null);
+    setEditReasonText('');
+  };
+
+  const toggleSelect = (barcode) => {
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(barcode)) next.delete(barcode);
+      else next.add(barcode);
+      return next;
+    });
+  };
+
+  const moveToExclude = () => {
+    if (!excludeTarget || !excludeEndDate) return;
+    const excludes = loadExcludes();
+    if (!excludes.some(e => e.barcode === excludeTarget.barcode)) {
+      excludes.push({
+        barcode: excludeTarget.barcode,
+        productName: excludeTarget.productName,
+        optionName: excludeTarget.optionName,
+        reason: excludeTarget.reason,
+        endDate: excludeEndDate,
+        addedDate: todayStr(),
+      });
+      saveExcludes(excludes);
+    }
+    setExcludeTarget(null);
+    setExcludeEndDate('');
+  };
 
   const handleExport = () => {
     if (allRecords.length === 0) return;
     const wb = XLSX_STYLE.utils.book_new();
     const baseFont = { name: 'Arial', sz: 10 };
     const baseAlign = { horizontal: 'center', vertical: 'center' };
-
-    const wsData = [
-      ['바코드', '상품명', '옵션명', '품절일', '사유'],
-    ];
+    const wsData = [['바코드', '상품명', '옵션명', '품절일', '사유']];
     for (const r of allRecords) {
       wsData.push([r.barcode, r.productName, r.optionName, r.date, r.reason]);
     }
-
     const ws = XLSX_STYLE.utils.aoa_to_sheet(wsData);
     const range = XLSX_STYLE.utils.decode_range(ws['!ref']);
     for (let ri = range.s.r; ri <= range.e.r; ri++) {
@@ -289,7 +286,7 @@ export default function SoldOutHistory() {
         <div style={{ flex: 1 }} />
         {selected.size > 0 && (
           <button className="btn btn-sm" style={{ background: '#d93025', color: '#fff', marginRight: 8 }} onClick={deleteSelected}>
-            {selected.size}건 삭제
+            {selected.size}개 품목 삭제
           </button>
         )}
         <span style={{ fontSize: 13, color: '#666' }}>{filtered.length}건</span>
@@ -305,9 +302,17 @@ export default function SoldOutHistory() {
       ) : grouped.map(([barcode, info]) => (
         <div className="card" key={barcode} style={{ marginBottom: 12 }}>
           <div className="card-header">
-            <div>
-              <h2 style={{ fontSize: 14, fontWeight: 600 }}>{info.productName}</h2>
-              <span style={{ fontSize: 12, color: '#666' }}>{info.optionName} · {barcode}</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <input
+                type="checkbox"
+                checked={selected.has(barcode)}
+                onChange={() => toggleSelect(barcode)}
+                style={{ cursor: 'pointer', accentColor: '#d93025', width: 16, height: 16 }}
+              />
+              <div>
+                <h2 style={{ fontSize: 14, fontWeight: 600 }}>{info.productName}</h2>
+                <span style={{ fontSize: 12, color: '#666' }}>{info.optionName} · {barcode}</span>
+              </div>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <span style={{ fontSize: 12, color: '#999' }}>{info.entries.length}건</span>
@@ -327,59 +332,47 @@ export default function SoldOutHistory() {
             </div>
           </div>
           <div className="card-body" style={{ padding: '8px 20px 12px' }}>
-            {info.entries.map((e, i) => {
-              const origIdx = e._origIdx;
-              const selectKey = `${barcode}-${origIdx}`;
-              const reasonKey = `${barcode}-${origIdx}`;
-              return (
-                <div key={i} style={{
-                  display: 'flex', alignItems: 'center', gap: 12, padding: '6px 0',
-                  borderBottom: i < info.entries.length - 1 ? '1px solid #f0f0f0' : 'none',
-                }}>
-                  <input
-                    type="checkbox"
-                    checked={selected.has(selectKey)}
-                    onChange={() => toggleSelect(selectKey)}
-                    style={{ cursor: 'pointer', accentColor: '#d93025' }}
-                  />
-                  {editingKey === selectKey ? (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                      <input type="date" value={editDate} onChange={ev => setEditDate(ev.target.value)}
-                        style={{ fontSize: 11, padding: '2px 4px', border: '1px solid #ddd', borderRadius: 4 }} />
-                      <button className="btn btn-primary btn-sm" style={{ fontSize: 10, padding: '2px 6px' }} onClick={() => updateDate(barcode, origIdx)}>저장</button>
-                      <button className="btn btn-outline btn-sm" style={{ fontSize: 10, padding: '2px 6px' }} onClick={() => setEditingKey(null)}>취소</button>
-                    </div>
-                  ) : (
-                    <span style={{ fontSize: 12, color: '#999', minWidth: 80, cursor: 'pointer' }}
-                      onClick={() => { setEditingKey(selectKey); setEditDate(e.date); }}
-                      title="클릭하여 날짜 수정"
-                    >{e.date} ✏️</span>
-                  )}
-                  {editingReason === reasonKey ? (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                      <input type="text" value={editReasonText} onChange={ev => setEditReasonText(ev.target.value)}
-                        onKeyDown={ev => { if (ev.key === 'Enter') updateReason(barcode, origIdx); if (ev.key === 'Escape') setEditingReason(null); }}
-                        style={{ fontSize: 11, padding: '2px 8px', border: '1px solid #ddd', borderRadius: 4, minWidth: 120 }}
-                        autoFocus />
-                      <button className="btn btn-primary btn-sm" style={{ fontSize: 10, padding: '2px 6px' }} onClick={() => updateReason(barcode, origIdx)}>저장</button>
-                      <button className="btn btn-outline btn-sm" style={{ fontSize: 10, padding: '2px 6px' }} onClick={() => setEditingReason(null)}>취소</button>
-                    </div>
-                  ) : (
-                    <span style={{ fontSize: 12, background: '#f3eef8', color: '#7c4dbd', borderRadius: 4, padding: '2px 8px', cursor: 'pointer' }}
-                      onClick={() => { setEditingReason(reasonKey); setEditReasonText(e.reason); }}
-                      title="클릭하여 사유 수정"
-                    >
-                      {e.reason}
-                    </span>
-                  )}
-                </div>
-              );
-            })}
+            {info.entries.map((e, i) => (
+              <div key={e.uid} style={{
+                display: 'flex', alignItems: 'center', gap: 12, padding: '6px 0',
+                borderBottom: i < info.entries.length - 1 ? '1px solid #f0f0f0' : 'none',
+              }}>
+                {editingUid === e.uid ? (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <input type="date" value={editDate} onChange={ev => setEditDate(ev.target.value)}
+                      style={{ fontSize: 11, padding: '2px 4px', border: '1px solid #ddd', borderRadius: 4 }} />
+                    <button className="btn btn-primary btn-sm" style={{ fontSize: 10, padding: '2px 6px' }} onClick={() => updateDate(e.uid)}>저장</button>
+                    <button className="btn btn-outline btn-sm" style={{ fontSize: 10, padding: '2px 6px' }} onClick={() => setEditingUid(null)}>취소</button>
+                  </div>
+                ) : (
+                  <span style={{ fontSize: 12, color: '#999', minWidth: 80, cursor: 'pointer' }}
+                    onClick={() => { setEditingUid(e.uid); setEditDate(e.date); }}
+                    title="클릭하여 날짜 수정"
+                  >{e.date} ✏️</span>
+                )}
+                {editingReasonUid === e.uid ? (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <input type="text" value={editReasonText} onChange={ev => setEditReasonText(ev.target.value)}
+                      onKeyDown={ev => { if (ev.key === 'Enter') updateReason(e.uid); if (ev.key === 'Escape') setEditingReasonUid(null); }}
+                      style={{ fontSize: 11, padding: '2px 8px', border: '1px solid #ddd', borderRadius: 4, minWidth: 120 }}
+                      autoFocus />
+                    <button className="btn btn-primary btn-sm" style={{ fontSize: 10, padding: '2px 6px' }} onClick={() => updateReason(e.uid)}>저장</button>
+                    <button className="btn btn-outline btn-sm" style={{ fontSize: 10, padding: '2px 6px' }} onClick={() => setEditingReasonUid(null)}>취소</button>
+                  </div>
+                ) : (
+                  <span style={{ fontSize: 12, background: '#f3eef8', color: '#7c4dbd', borderRadius: 4, padding: '2px 8px', cursor: 'pointer' }}
+                    onClick={() => { setEditingReasonUid(e.uid); setEditReasonText(e.reason); }}
+                    title="클릭하여 사유 수정"
+                  >
+                    {e.reason}
+                  </span>
+                )}
+              </div>
+            ))}
           </div>
         </div>
       ))}
 
-      {/* 제외 품목 종료일 선택 모달 */}
       {excludeTarget && (
         <div
           style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}

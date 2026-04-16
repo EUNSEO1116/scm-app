@@ -26,6 +26,20 @@ export async function dbGetReasons() {
   }
 }
 
+export async function dbReplaceReasons(items) {
+  try {
+    const res = await fetch(`${API_BASE}/soldout/reasons`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items }),
+    });
+    return (await res.json()).ok;
+  } catch (e) {
+    console.error('DB replaceReasons error:', e);
+    return false;
+  }
+}
+
 export async function dbDeleteReason(barcode) {
   try {
     const res = await fetch(`${API_BASE}/soldout/reasons/${encodeURIComponent(barcode)}`, {
