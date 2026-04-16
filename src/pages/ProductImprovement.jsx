@@ -180,21 +180,14 @@ export default function ProductImprovement() {
       dbStoreGet('improvement_items'),
       dbStoreGet('improvement_images'),
     ]).then(([dbItems, dbImgs]) => {
-      if (Array.isArray(dbItems) && dbItems.length > 0) {
-        // DB 데이터가 있으면 localStorage와 병합 (id 기준 중복 제거)
-        setItems(prev => {
-          const ids = new Set(prev.map(i => i.id));
-          const merged = [...prev, ...dbItems.filter(i => !ids.has(i.id))];
-          localStorage.setItem('improvement_items', JSON.stringify(merged));
-          return merged;
-        });
+      if (Array.isArray(dbItems)) {
+        // DB가 메인: DB 데이터로 덮어쓰기
+        setItems(dbItems);
+        localStorage.setItem('improvement_items', JSON.stringify(dbItems));
       }
-      if (dbImgs && typeof dbImgs === 'object' && Object.keys(dbImgs).length > 0) {
-        setImpImages(prev => {
-          const merged = { ...prev, ...dbImgs };
-          localStorage.setItem('improvement_images', JSON.stringify(merged));
-          return merged;
-        });
+      if (dbImgs && typeof dbImgs === 'object') {
+        setImpImages(dbImgs);
+        localStorage.setItem('improvement_images', JSON.stringify(dbImgs));
       }
       setLoaded(true);
     }).catch(() => setLoaded(true));

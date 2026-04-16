@@ -71,7 +71,7 @@ export default function SoldOutExclude() {
   // DB에서 초기 데이터 로드
   useEffect(() => {
     dbStoreGet('soldout_exclude').then(data => {
-      if (data && Array.isArray(data) && data.length > 0) {
+      if (data && Array.isArray(data)) {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
         setExcludes(data);
       }

@@ -102,7 +102,7 @@ export default function IssueManagement() {
   // DB에서 초기 데이터 로드
   useEffect(() => {
     dbStoreGet('issue_special_items').then(data => {
-      if (data && Array.isArray(data) && data.length > 0) {
+      if (data && Array.isArray(data)) {
         localStorage.setItem(LOCAL_SPECIAL_KEY, JSON.stringify(data));
         setLocalItems(data);
       }

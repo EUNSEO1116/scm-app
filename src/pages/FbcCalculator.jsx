@@ -252,11 +252,8 @@ export default function FbcCalculator() {
   // DB에서 기존 기록 로드 → localStorage 동기화 (덮어쓰기 방지)
   useEffect(() => {
     dbStoreGet('fbc_savings').then(data => {
-      if (data && Array.isArray(data) && data.length > 0) {
-        const local = JSON.parse(localStorage.getItem('fbc_savings_history') || '[]');
-        if (local.length < data.length) {
-          localStorage.setItem('fbc_savings_history', JSON.stringify(data));
-        }
+      if (data && Array.isArray(data)) {
+        localStorage.setItem('fbc_savings_history', JSON.stringify(data));
       }
     }).catch(() => {});
   }, []);

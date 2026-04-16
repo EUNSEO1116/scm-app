@@ -182,7 +182,7 @@ export default function Dashboard() {
   // DB에서 초기 데이터 로드
   useEffect(() => {
     dbStoreGet('fbc_savings').then(data => {
-      if (data && Array.isArray(data) && data.length > 0) {
+      if (data && Array.isArray(data)) {
         localStorage.setItem('fbc_savings_history', JSON.stringify(data));
         setHistory(data);
       }

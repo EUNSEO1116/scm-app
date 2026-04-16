@@ -55,7 +55,7 @@ export default function SuppliesOrder() {
   // DB에서 초기 데이터 로드
   useEffect(() => {
     dbStoreGet('supplies_orders').then(data => {
-      if (data && Array.isArray(data) && data.length > 0) {
+      if (data && Array.isArray(data)) {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
         setOrders(data);
       }
