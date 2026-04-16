@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect } from 'react';
 import XLSX_STYLE from 'xlsx-js-style';
-import { fetchReasons } from '../sheetSync.js';
+import { fetchReasons, saveReasons as dbSyncReasons } from '../sheetSync.js';
 import { dbStoreGet, dbStoreSet } from '../utils/dbApi';
 
 const SOLDOUT_HISTORY_KEY = 'soldout_history';
@@ -31,19 +31,39 @@ function todayStr() {
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 }
 
+// history 객체를 DB 저장용 items 배열로 변환
+function historyToItems(hist, reasons) {
+  const items = [];
+  for (const [barcode, entries] of Object.entries(hist)) {
+    for (const e of entries) {
+      items.push({ barcode, reason: e.reason, date: e.date, productName: e.productName || '', optionName: e.optionName || '' });
+    }
+  }
+  // reasons에만 있고 history에 없는 것도 포함
+  for (const [barcode, info] of Object.entries(reasons)) {
+    if (!hist[barcode] || hist[barcode].length === 0) {
+      items.push({ barcode, reason: info.reason, date: info.date, productName: '', optionName: '' });
+    }
+  }
+  return items;
+}
+
 export default function SoldOutHistory() {
   const [search, setSearch] = useState('');
   const [history, setHistory] = useState(loadHistory);
   const [editingKey, setEditingKey] = useState(null);
   const [editDate, setEditDate] = useState('');
-  const [excludeTarget, setExcludeTarget] = useState(null); // { barcode, productName, optionName, reason }
+  const [excludeTarget, setExcludeTarget] = useState(null);
   const [excludeEndDate, setExcludeEndDate] = useState('');
+  const [selected, setSelected] = useState(new Set()); // 체크박스 선택: "barcode-index"
+  const [editingReason, setEditingReason] = useState(null); // 사유 수정 중: "barcode-index"
+  const [editReasonText, setEditReasonText] = useState('');
 
   // DB에서 품절 기록 동기화
   useEffect(() => {
     fetchReasons().then(data => {
       if (data && data.history) {
-        setHistory(loadHistory()); // localStorage가 DB 데이터로 갱신된 후 다시 로드
+        setHistory(loadHistory());
       }
     });
   }, []);
@@ -61,14 +81,90 @@ export default function SoldOutHistory() {
         saveReasons(reasons);
       }
     }
+    // DB 동기화
+    dbSyncReasons(historyToItems(updated, loadReasons())).catch(() => {});
     setEditingKey(null);
     setEditDate('');
+  };
+
+  const updateReason = (barcode, index) => {
+    if (!editReasonText.trim()) return;
+    const updated = { ...history };
+    updated[barcode][index].reason = editReasonText.trim();
+    setHistory(updated);
+    saveHistory(updated);
+    // reasons(현재 사유)도 업데이트 - 마지막 기록이면
+    if (index === updated[barcode].length - 1) {
+      const reasons = loadReasons();
+      if (reasons[barcode]) {
+        reasons[barcode].reason = editReasonText.trim();
+        saveReasons(reasons);
+      }
+    }
+    // DB 동기화
+    dbSyncReasons(historyToItems(updated, loadReasons())).catch(() => {});
+    setEditingReason(null);
+    setEditReasonText('');
+  };
+
+  const toggleSelect = (key) => {
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  const deleteSelected = () => {
+    if (selected.size === 0) return;
+    if (!confirm(`선택한 ${selected.size}건을 삭제하시겠습니까?`)) return;
+
+    const updated = { ...history };
+    const reasons = loadReasons();
+
+    // "barcode-index" 를 barcode별로 그룹화하고, 큰 index부터 삭제
+    const deleteMap = {};
+    for (const key of selected) {
+      const lastDash = key.lastIndexOf('-');
+      const barcode = key.substring(0, lastDash);
+      const idx = parseInt(key.substring(lastDash + 1));
+      if (!deleteMap[barcode]) deleteMap[barcode] = [];
+      deleteMap[barcode].push(idx);
+    }
+
+    for (const [barcode, indices] of Object.entries(deleteMap)) {
+      if (!updated[barcode]) continue;
+      // 큰 인덱스부터 삭제해야 인덱스 안 밀림
+      indices.sort((a, b) => b - a);
+      for (const idx of indices) {
+        updated[barcode].splice(idx, 1);
+      }
+      // 전부 삭제됐으면 바코드 자체 제거
+      if (updated[barcode].length === 0) {
+        delete updated[barcode];
+        delete reasons[barcode];
+      } else {
+        // 마지막 기록으로 reasons 업데이트
+        const last = updated[barcode][updated[barcode].length - 1];
+        if (reasons[barcode]) {
+          reasons[barcode] = { reason: last.reason, date: last.date };
+        }
+      }
+    }
+
+    setHistory(updated);
+    saveHistory(updated);
+    saveReasons(reasons);
+    setSelected(new Set());
+
+    // DB 동기화
+    dbSyncReasons(historyToItems(updated, reasons)).catch(() => {});
   };
 
   const moveToExclude = () => {
     if (!excludeTarget || !excludeEndDate) return;
     const excludes = loadExcludes();
-    // 이미 있으면 중복 방지
     if (!excludes.some(e => e.barcode === excludeTarget.barcode)) {
       excludes.push({
         barcode: excludeTarget.barcode,
@@ -87,8 +183,8 @@ export default function SoldOutHistory() {
   const allRecords = useMemo(() => {
     const records = [];
     for (const [barcode, entries] of Object.entries(history)) {
-      for (const entry of entries) {
-        records.push({ barcode, ...entry });
+      for (let idx = 0; idx < entries.length; idx++) {
+        records.push({ barcode, _origIdx: idx, ...entries[idx] });
       }
     }
     records.sort((a, b) => b.date.localeCompare(a.date));
@@ -124,7 +220,6 @@ export default function SoldOutHistory() {
   const { monthCount, halfYearCount } = useMemo(() => {
     const now = new Date();
     const thisMonth = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
-    // 반기: 1~6월 = 상반기, 7~12월 = 하반기
     const halfStart = now.getMonth() < 6
       ? `${now.getFullYear()}-01`
       : `${now.getFullYear()}-07`;
@@ -192,6 +287,11 @@ export default function SoldOutHistory() {
           onChange={e => setSearch(e.target.value)}
         />
         <div style={{ flex: 1 }} />
+        {selected.size > 0 && (
+          <button className="btn btn-sm" style={{ background: '#d93025', color: '#fff', marginRight: 8 }} onClick={deleteSelected}>
+            {selected.size}건 삭제
+          </button>
+        )}
         <span style={{ fontSize: 13, color: '#666' }}>{filtered.length}건</span>
         <button className="btn btn-primary btn-sm" onClick={handleExport}>📥 엑셀 다운로드</button>
       </div>
@@ -228,28 +328,50 @@ export default function SoldOutHistory() {
           </div>
           <div className="card-body" style={{ padding: '8px 20px 12px' }}>
             {info.entries.map((e, i) => {
-              const key = `${barcode}-${i}`;
+              const origIdx = e._origIdx;
+              const selectKey = `${barcode}-${origIdx}`;
+              const reasonKey = `${barcode}-${origIdx}`;
               return (
                 <div key={i} style={{
                   display: 'flex', alignItems: 'center', gap: 12, padding: '6px 0',
                   borderBottom: i < info.entries.length - 1 ? '1px solid #f0f0f0' : 'none',
                 }}>
-                  {editingKey === key ? (
+                  <input
+                    type="checkbox"
+                    checked={selected.has(selectKey)}
+                    onChange={() => toggleSelect(selectKey)}
+                    style={{ cursor: 'pointer', accentColor: '#d93025' }}
+                  />
+                  {editingKey === selectKey ? (
                     <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                       <input type="date" value={editDate} onChange={ev => setEditDate(ev.target.value)}
                         style={{ fontSize: 11, padding: '2px 4px', border: '1px solid #ddd', borderRadius: 4 }} />
-                      <button className="btn btn-primary btn-sm" style={{ fontSize: 10, padding: '2px 6px' }} onClick={() => updateDate(barcode, i)}>저장</button>
+                      <button className="btn btn-primary btn-sm" style={{ fontSize: 10, padding: '2px 6px' }} onClick={() => updateDate(barcode, origIdx)}>저장</button>
                       <button className="btn btn-outline btn-sm" style={{ fontSize: 10, padding: '2px 6px' }} onClick={() => setEditingKey(null)}>취소</button>
                     </div>
                   ) : (
                     <span style={{ fontSize: 12, color: '#999', minWidth: 80, cursor: 'pointer' }}
-                      onClick={() => { setEditingKey(key); setEditDate(e.date); }}
+                      onClick={() => { setEditingKey(selectKey); setEditDate(e.date); }}
                       title="클릭하여 날짜 수정"
                     >{e.date} ✏️</span>
                   )}
-                  <span style={{ fontSize: 12, background: '#f3eef8', color: '#7c4dbd', borderRadius: 4, padding: '2px 8px' }}>
-                    {e.reason}
-                  </span>
+                  {editingReason === reasonKey ? (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                      <input type="text" value={editReasonText} onChange={ev => setEditReasonText(ev.target.value)}
+                        onKeyDown={ev => { if (ev.key === 'Enter') updateReason(barcode, origIdx); if (ev.key === 'Escape') setEditingReason(null); }}
+                        style={{ fontSize: 11, padding: '2px 8px', border: '1px solid #ddd', borderRadius: 4, minWidth: 120 }}
+                        autoFocus />
+                      <button className="btn btn-primary btn-sm" style={{ fontSize: 10, padding: '2px 6px' }} onClick={() => updateReason(barcode, origIdx)}>저장</button>
+                      <button className="btn btn-outline btn-sm" style={{ fontSize: 10, padding: '2px 6px' }} onClick={() => setEditingReason(null)}>취소</button>
+                    </div>
+                  ) : (
+                    <span style={{ fontSize: 12, background: '#f3eef8', color: '#7c4dbd', borderRadius: 4, padding: '2px 8px', cursor: 'pointer' }}
+                      onClick={() => { setEditingReason(reasonKey); setEditReasonText(e.reason); }}
+                      title="클릭하여 사유 수정"
+                    >
+                      {e.reason}
+                    </span>
+                  )}
                 </div>
               );
             })}
