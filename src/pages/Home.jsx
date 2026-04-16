@@ -189,9 +189,13 @@ export default function Home() {
             if (sewing || oneTime) specialSkus.add(sku);
           }
         }
-        // localStorage 특별관리도 포함
+        // 특별관리 로컬등록 항목도 포함 (DB 우선, localStorage fallback)
         try {
-          const localItems = JSON.parse(localStorage.getItem('local_special_items') || '[]');
+          let localItems;
+          try {
+            localItems = await dbStoreGet('issue_special_items');
+          } catch {}
+          if (!localItems) localItems = JSON.parse(localStorage.getItem('local_special_items') || '[]');
           for (const item of localItems) {
             if (item.barcode && (item.sewing || item.oneTime)) specialSkus.add(item.barcode);
           }
@@ -232,20 +236,30 @@ export default function Home() {
           if (isCheck) checkCount++;
         }
 
-        // 입고예정일 도래도 카운트
+        // 입고예정일 도래도 카운트 (발주장부에 실제 존재하는 건만)
+        const activeColTs = new Set();
+        for (let i = 1; i < orderLines.length; i++) {
+          const cols = parseCsvRow(orderLines[i]);
+          const colT = (cols[19] || '').trim();
+          if (colT) activeColTs.add(colT);
+        }
         const todayKey2 = dateKey(today);
         try {
           const notes = JSON.parse(localStorage.getItem('orderbook_notes') || '{}');
-          for (const [, note] of Object.entries(notes)) {
-            if (note.arrivalDate && note.arrivalDate <= todayKey2) checkCount++;
+          for (const [key, note] of Object.entries(notes)) {
+            if (activeColTs.has(key) && note.arrivalDate && note.arrivalDate <= todayKey2) checkCount++;
           }
         } catch {}
 
         setAlerts(prev => ({ ...prev, checkCount }));
 
-        // 이슈관리 동기화 알림: 영구 알림 목록 카운트
+        // 이슈관리 동기화 알림: 영구 알림 목록 카운트 (DB 우선)
         try {
-          const pendingAlerts = JSON.parse(localStorage.getItem('pending_sync_alerts') || '[]');
+          let pendingAlerts;
+          try {
+            pendingAlerts = await dbStoreGet('pending_sync_alerts');
+          } catch {}
+          if (!pendingAlerts) pendingAlerts = JSON.parse(localStorage.getItem('pending_sync_alerts') || '[]');
           setAlerts(prev => ({ ...prev, syncCount: pendingAlerts.length }));
         } catch {}
       }

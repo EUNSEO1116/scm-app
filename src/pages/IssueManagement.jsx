@@ -51,8 +51,19 @@ const PENDING_ALERTS_KEY = 'pending_sync_alerts';
 function loadPendingAlerts() {
   try { return JSON.parse(localStorage.getItem(PENDING_ALERTS_KEY) || '[]'); } catch { return []; }
 }
+async function loadPendingAlertsFromDB() {
+  try {
+    const dbData = await dbStoreGet('pending_sync_alerts');
+    if (dbData && Array.isArray(dbData)) {
+      localStorage.setItem(PENDING_ALERTS_KEY, JSON.stringify(dbData));
+      return dbData;
+    }
+  } catch {}
+  return loadPendingAlerts();
+}
 function savePendingAlerts(list) {
   localStorage.setItem(PENDING_ALERTS_KEY, JSON.stringify(list));
+  dbStoreSet('pending_sync_alerts', list).catch(() => {});
 }
 
 function resizeImage(file, maxDim = 800) {
@@ -266,7 +277,7 @@ export default function IssueManagement() {
       const newAlerts = local.filter(item => sheetBarcodes.has(item.barcode));
 
       // 새로 감지된 항목을 영구 알림 목록에 추가 (적용완료 누를 때까지 유지)
-      const saved = loadPendingAlerts();
+      const saved = await loadPendingAlertsFromDB();
       const savedBarcodes = new Set(saved.map(a => a.barcode));
       let updated = [...saved];
       for (const item of newAlerts) {

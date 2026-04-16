@@ -483,17 +483,20 @@ export default function SoldOut() {
       const parsed = await parseData(calcTsv, dataTsv, orderSkus, skuArrival, preloadedTracker);
 
       // 재진입 품절 사유 자동 삭제: 이전에 품절 아니었다가 다시 품절된 항목
-      // 단, 최근 저장한 항목(보호 기간)은 삭제하지 않음
       const currentSoldout = new Set(parsed.filter(r => r.riskLevel === '품절').map(r => r.barcode));
       try {
-        const prevRaw = localStorage.getItem(PREV_SOLDOUT_KEY);
+        let prevRaw = null;
+        try {
+          const dbPrev = await dbStoreGet('soldout_prev_barcodes');
+          if (dbPrev) prevRaw = JSON.stringify(dbPrev);
+        } catch {}
+        if (prevRaw === null) prevRaw = localStorage.getItem(PREV_SOLDOUT_KEY);
         if (prevRaw !== null) {
           const prevSoldout = new Set(JSON.parse(prevRaw));
-          const protected_ = getProtectedBarcodes();
           const currentReasons = loadSoldoutReasons();
           let changed = false;
           for (const barcode of currentSoldout) {
-            if (!prevSoldout.has(barcode) && currentReasons[barcode] && !protected_.has(barcode)) {
+            if (!prevSoldout.has(barcode) && currentReasons[barcode]) {
               delete currentReasons[barcode];
               changed = true;
               // 스프레드시트에서는 삭제하지 않음 (기록 유지)
@@ -504,7 +507,9 @@ export default function SoldOut() {
             setReasons({ ...currentReasons });
           }
         }
-        localStorage.setItem(PREV_SOLDOUT_KEY, JSON.stringify([...currentSoldout]));
+        const prevData = [...currentSoldout];
+        localStorage.setItem(PREV_SOLDOUT_KEY, JSON.stringify(prevData));
+        dbStoreSet('soldout_prev_barcodes', prevData).catch(() => {});
       } catch {}
 
       setData(parsed);

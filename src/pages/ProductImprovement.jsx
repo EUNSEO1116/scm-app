@@ -73,14 +73,36 @@ const IMP_PENDING_ALERTS_KEY = 'imp_pending_sync_alerts';
 function loadWatch() {
   try { return JSON.parse(localStorage.getItem(IMP_WATCH_KEY) || '[]'); } catch { return []; }
 }
+async function loadWatchFromDB() {
+  try {
+    const dbData = await dbStoreGet('imp_watch_barcodes');
+    if (dbData && Array.isArray(dbData)) {
+      localStorage.setItem(IMP_WATCH_KEY, JSON.stringify(dbData));
+      return dbData;
+    }
+  } catch {}
+  return loadWatch();
+}
 function saveWatch(list) {
   localStorage.setItem(IMP_WATCH_KEY, JSON.stringify(list));
+  dbStoreSet('imp_watch_barcodes', list).catch(() => {});
 }
 function loadImpPendingAlerts() {
   try { return JSON.parse(localStorage.getItem(IMP_PENDING_ALERTS_KEY) || '[]'); } catch { return []; }
 }
+async function loadImpPendingAlertsFromDB() {
+  try {
+    const dbData = await dbStoreGet('imp_pending_sync_alerts');
+    if (dbData && Array.isArray(dbData)) {
+      localStorage.setItem(IMP_PENDING_ALERTS_KEY, JSON.stringify(dbData));
+      return dbData;
+    }
+  } catch {}
+  return loadImpPendingAlerts();
+}
 function saveImpPendingAlerts(alerts) {
   localStorage.setItem(IMP_PENDING_ALERTS_KEY, JSON.stringify(alerts));
+  dbStoreSet('imp_pending_sync_alerts', alerts).catch(() => {});
 }
 
 export default function ProductImprovement() {
@@ -109,7 +131,7 @@ export default function ProductImprovement() {
 
         // 상품개선 항목 중 특별관리 시트에 미등록인 바코드 감지
         const sheetBarcodes = new Set(results.map(r => r.barcode));
-        const savedAlerts = loadImpPendingAlerts();
+        const savedAlerts = await loadImpPendingAlertsFromDB();
         setSyncAlerts(savedAlerts);
       } catch { /* 실패해도 수동 입력 가능 */ }
       setProductLoading(false);
@@ -182,21 +204,23 @@ export default function ProductImprovement() {
   // 감시 목록 바코드가 시트에 나타나면 알림 (적용완료 누를 때까지 영구 유지)
   useEffect(() => {
     if (!loaded || productLoading || productList.length === 0) return;
-    const sheetBarcodes = new Set(productList.map(p => p.barcode));
-    const watch = loadWatch();
-    // 감시 목록 중 시트에 등록된 것 → 알림
-    const newAlerts = watch.filter(w => sheetBarcodes.has(w.barcode));
-    // 기존 영구 알림에 새로 감지된 것 추가
-    const saved = loadImpPendingAlerts();
-    const savedSet = new Set(saved.map(a => a.barcode));
-    let updated = [...saved];
-    for (const item of newAlerts) {
-      if (!savedSet.has(item.barcode)) {
-        updated.push({ ...item, detectedDate: new Date().toISOString().slice(0, 10) });
+    (async () => {
+      const sheetBarcodes = new Set(productList.map(p => p.barcode));
+      const watch = await loadWatchFromDB();
+      // 감시 목록 중 시트에 등록된 것 → 알림
+      const newAlerts = watch.filter(w => sheetBarcodes.has(w.barcode));
+      // 기존 영구 알림에 새로 감지된 것 추가
+      const saved = await loadImpPendingAlertsFromDB();
+      const savedSet = new Set(saved.map(a => a.barcode));
+      let updated = [...saved];
+      for (const item of newAlerts) {
+        if (!savedSet.has(item.barcode)) {
+          updated.push({ ...item, detectedDate: new Date().toISOString().slice(0, 10) });
+        }
       }
-    }
-    saveImpPendingAlerts(updated);
-    setSyncAlerts(updated);
+      saveImpPendingAlerts(updated);
+      setSyncAlerts(updated);
+    })();
   }, [loaded, productLoading, productList]);
 
   const dismissAlert = (barcode) => {
