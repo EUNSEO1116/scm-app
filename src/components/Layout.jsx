@@ -128,6 +128,7 @@ export default function Layout({ children }) {
                       <NavLink
                         key={child.path}
                         to={child.path}
+                        end
                         className={({ isActive }) => `sub-item ${isActive ? 'active' : ''}`}
                       >
                         {child.label}
