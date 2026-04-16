@@ -311,10 +311,10 @@ export default function Home() {
       for (const key of Object.keys(merged)) {
         merged[key] = merged[key].filter(e => !e.improvement);
       }
-      // 현재 종료일 있는 항목만 추가
+      // 종료일 있고 완료되지 않은 항목만 추가
       if (Array.isArray(impItems)) {
         for (const imp of impItems) {
-          if (!imp.endDate) continue;
+          if (!imp.endDate || imp.status === '완료') continue;
           const key = imp.endDate;
           if (!merged[key]) merged[key] = [];
           merged[key].push({
