@@ -528,7 +528,11 @@ export default function SoldOut() {
         };
         try {
           const rateKey = 'soldout_rate_snapshots';
-          const existing = JSON.parse(localStorage.getItem(rateKey) || '{}');
+          let existing = {};
+          try {
+            const dbData = await dbStoreGet('soldout_rate');
+            existing = dbData || JSON.parse(localStorage.getItem(rateKey) || '{}');
+          } catch { existing = JSON.parse(localStorage.getItem(rateKey) || '{}'); }
           existing[today] = snapshot;
           localStorage.setItem(rateKey, JSON.stringify(existing));
           dbStoreSet('soldout_rate', existing).catch(() => {});

@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
+import { dbStoreGet } from '../utils/dbApi';
 
 const ORDERS_KEY = 'supplies_orders';
 const SHEET_ID = '1NXhW_gG0b-gXuVqrhbY9ErWi8uO_7pXIy-NTo4FbE1I';
@@ -166,6 +167,15 @@ export default function SuppliesList() {
   }, []);
 
   useEffect(() => { fetchData(); }, [fetchData]);
+
+  // DB에서 초기 데이터 로드 (localStorage 덮어쓰기)
+  useEffect(() => {
+    dbStoreGet('supplies_orders').then(data => {
+      if (data && Array.isArray(data)) {
+        localStorage.setItem(ORDERS_KEY, JSON.stringify(data));
+      }
+    }).catch(() => {});
+  }, []);
 
   // 남은 수량 계산: 부자재 발주 입고량 - 발주장부 소모량
   const remainingByBarcode = useMemo(() => {

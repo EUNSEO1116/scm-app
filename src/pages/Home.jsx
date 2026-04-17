@@ -245,7 +245,11 @@ export default function Home() {
         }
         const todayKey2 = dateKey(today);
         try {
-          const notes = JSON.parse(localStorage.getItem('orderbook_notes') || '{}');
+          let notes = {};
+          try {
+            const dbNotes = await dbStoreGet('orderbook_notes');
+            notes = dbNotes || JSON.parse(localStorage.getItem('orderbook_notes') || '{}');
+          } catch { notes = JSON.parse(localStorage.getItem('orderbook_notes') || '{}'); }
           for (const [key, note] of Object.entries(notes)) {
             if (activeColTs.has(key) && note.arrivalDate && note.arrivalDate <= todayKey2) checkCount++;
           }
@@ -391,7 +395,7 @@ export default function Home() {
         // 품절률: localStorage soldout_rate_snapshots에서 이번 달 평균
         let soldoutRate = null;
         try {
-          const stored = await dbStoreGet('soldout_rate_snapshots');
+          const stored = await dbStoreGet('soldout_rate');
           const snapshots = stored || JSON.parse(localStorage.getItem('soldout_rate_snapshots') || '{}');
           const now = new Date();
           const yearStr = String(now.getFullYear());

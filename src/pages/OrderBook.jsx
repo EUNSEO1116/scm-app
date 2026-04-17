@@ -212,12 +212,35 @@ function loadImprovementItems() {
   try { return JSON.parse(localStorage.getItem('improvement_items') || '[]'); } catch { return []; }
 }
 
+// DB에서 특별관리 항목 로드 후 localStorage 동기화
+async function loadLocalSpecialFromDb() {
+  try {
+    const dbData = await dbStoreGet('issue_special_items');
+    if (dbData && Array.isArray(dbData)) {
+      localStorage.setItem('local_special_items', JSON.stringify(dbData));
+      return dbData;
+    }
+  } catch {}
+  return loadLocalSpecial();
+}
+
+// DB에서 상품개선 항목 로드 후 localStorage 동기화
+async function loadImprovementItemsFromDb() {
+  try {
+    const dbData = await dbStoreGet('improvement_items');
+    if (dbData && Array.isArray(dbData)) {
+      localStorage.setItem('improvement_items', JSON.stringify(dbData));
+      return dbData;
+    }
+  } catch {}
+  return loadImprovementItems();
+}
+
 // 확인필요: 특별 관리 상품(봉제여부/기타1회성)이면서 CN 창고도착 또는 내륙운송중
 // + localStorage에 미리 등록한 항목도 포함
 // + 상품개선 항목 (진행중인 이슈가 있는 바코드)
-function computeCheckFlags(rows, specialMap) {
-  // localStorage 특별관리 → specialMap에 병합
-  const localItems = loadLocalSpecial();
+function computeCheckFlags(rows, specialMap, localItems, impItems) {
+  // DB에서 로드된 특별관리 항목 → specialMap에 병합
   for (const item of localItems) {
     if (!item.barcode) continue;
     if (!specialMap[item.barcode]) {
@@ -228,7 +251,6 @@ function computeCheckFlags(rows, specialMap) {
   }
 
   // 상품개선 항목 중 완료되지 않은 것 → 바코드별 이슈 매핑
-  const impItems = loadImprovementItems();
   const impMap = {};
   for (const item of impItems) {
     if (!item.barcode || item.status === '완료') continue;
@@ -523,10 +545,16 @@ export default function OrderBook() {
         });
       }
 
+      // DB에서 특별관리/상품개선 항목 로드 (localStorage 동기화 포함)
+      const [localSpecialItems, improvementItems] = await Promise.all([
+        loadLocalSpecialFromDb(),
+        loadImprovementItemsFromDb(),
+      ]);
+
       // 재촉필요 + 출고필요 + 확인필요 판정
       computeRemindFlags(rows, stockMap);
       computeShipFlags(rows, stockMap);
-      computeCheckFlags(rows, specialMap);
+      computeCheckFlags(rows, specialMap, localSpecialItems, improvementItems);
 
       // 입고예정일 도래 → 확인필요 + 존재하지 않는 답변 정리
       const today = todayStr();

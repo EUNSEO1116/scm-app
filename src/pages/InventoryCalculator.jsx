@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
 import * as XLSX from 'xlsx';
+import { dbStoreGet } from '../utils/dbApi';
 
 const SHEET_ID = '1NXhW_gG0b-gXuVqrhbY9ErWi8uO_7pXIy-NTo4FbE1I';
 const GID_CALCULATOR = '1349677364';
@@ -192,6 +193,15 @@ export default function InventoryCalculator() {
 
   // 최초 로드
   useEffect(() => { fetchData(); }, [fetchData]);
+
+  // DB에서 품절제외 항목 로드 (localStorage 덮어쓰기)
+  useEffect(() => {
+    dbStoreGet('soldout_exclude').then(data => {
+      if (data && Array.isArray(data)) {
+        localStorage.setItem(EXCLUDE_ITEMS_KEY, JSON.stringify(data));
+      }
+    }).catch(() => {});
+  }, []);
 
   // Derived: unique statuses, alert counts
   const { statuses, alertCounts } = useMemo(() => {
