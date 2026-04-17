@@ -212,13 +212,22 @@ export default function Home() {
           if (item.barcode && item.status !== '완료') impSkus.add(item.barcode);
         }
 
-        // 발주장부에서 확인필요 카운트 (특별관리 + 상품개선)
+        // 발주장부에서 확인필요 카운트 (OrderBook matchFilter 'check'와 동일 로직)
         let checkCount = 0;
-        const countedSkus = new Set(); // 중복 방지
+        const todayKey2 = dateKey(today);
+        let notes = {};
+        try {
+          const dbNotes = await dbStoreGet('orderbook_notes');
+          notes = dbNotes || JSON.parse(localStorage.getItem('orderbook_notes') || '{}');
+        } catch { try { notes = JSON.parse(localStorage.getItem('orderbook_notes') || '{}'); } catch {} }
+
         for (let i = 1; i < orderLines.length; i++) {
           const cols = parseCsvRow(orderLines[i]);
+          const orderNo = (cols[0] || '').trim();
+          if (!orderNo) continue;
           const sku = (cols[2] || '').trim();
           const cnStatus = (cols[8] || '').trim();
+          const colT = (cols[19] || '').trim();
           if (!sku) continue;
 
           let isCheck = false;
@@ -233,27 +242,11 @@ export default function Home() {
           // 상품개선 미완료 조건
           if (impSkus.has(sku)) isCheck = true;
 
+          // 입고예정일 도래 조건
+          if (colT && notes[colT] && notes[colT].arrivalDate && notes[colT].arrivalDate <= todayKey2) isCheck = true;
+
           if (isCheck) checkCount++;
         }
-
-        // 입고예정일 도래도 카운트 (발주장부에 실제 존재하는 건만)
-        const activeColTs = new Set();
-        for (let i = 1; i < orderLines.length; i++) {
-          const cols = parseCsvRow(orderLines[i]);
-          const colT = (cols[19] || '').trim();
-          if (colT) activeColTs.add(colT);
-        }
-        const todayKey2 = dateKey(today);
-        try {
-          let notes = {};
-          try {
-            const dbNotes = await dbStoreGet('orderbook_notes');
-            notes = dbNotes || JSON.parse(localStorage.getItem('orderbook_notes') || '{}');
-          } catch { notes = JSON.parse(localStorage.getItem('orderbook_notes') || '{}'); }
-          for (const [key, note] of Object.entries(notes)) {
-            if (activeColTs.has(key) && note.arrivalDate && note.arrivalDate <= todayKey2) checkCount++;
-          }
-        } catch {}
 
         setAlerts(prev => ({ ...prev, checkCount }));
 
