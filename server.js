@@ -149,12 +149,12 @@ app.get('/api/calendar', (req, res) => {
   res.json({ events: row ? JSON.parse(row.event_data) : [] });
 });
 
-// 범용 저장소 (localStorage 대체)
-const VALID_STORES = ['fbc_savings', 'soldout_history', 'soldout_exclude', 'new_product_stock', 'orderbook_notes', 'supplies_orders', 'issue_special_items', 'soldout_rate', 'soldout_reasons_obj'];
+// 범용 저장소 (localStorage 대체) — 이름 형식만 검증 (영소문자+숫자+언더스코어)
+const isValidStore = (name) => /^[a-z][a-z0-9_]*$/.test(name);
 
 app.post('/api/store/:name', (req, res) => {
   const { name } = req.params;
-  if (!VALID_STORES.includes(name)) return res.status(400).json({ error: 'invalid store' });
+  if (!isValidStore(name)) return res.status(400).json({ error: 'invalid store name' });
   const { data } = req.body;
   try {
     db.prepare(`DELETE FROM ${name}`).run();
@@ -168,7 +168,7 @@ app.post('/api/store/:name', (req, res) => {
 
 app.get('/api/store/:name', (req, res) => {
   const { name } = req.params;
-  if (!VALID_STORES.includes(name)) return res.status(400).json({ error: 'invalid store' });
+  if (!isValidStore(name)) return res.status(400).json({ error: 'invalid store name' });
   try {
     const row = db.prepare(`SELECT data FROM ${name} ORDER BY id DESC LIMIT 1`).get();
     res.json({ data: row ? JSON.parse(row.data) : null });

@@ -9,57 +9,48 @@
 - 서버 코드: `/root/scm-api/server.js`
 - 프론트 프록시: `api/proxy.js` → Vultr `158.247.239.161:3100`
 
-## 1단계: SSH 접속
+## 1단계: 로컬 server.js 수정
 
-```bash
-ssh root@158.247.239.161
-cd /root/scm-api
+`/scm-app/server.js` 에서 아래 2가지 수정:
+
+1. `db.exec()` 블록에 CREATE TABLE 추가:
+```sql
+CREATE TABLE IF NOT EXISTS [테이블명] (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    data TEXT NOT NULL,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
 ```
 
-## 2단계: 테이블 생성
-
-```bash
-sqlite3 scm.db "CREATE TABLE IF NOT EXISTS [테이블명] (id INTEGER PRIMARY KEY AUTOINCREMENT, data TEXT);"
-```
-
-예시 (상품개선):
-```bash
-sqlite3 scm.db "CREATE TABLE IF NOT EXISTS improvement_items (id INTEGER PRIMARY KEY AUTOINCREMENT, data TEXT);"
-sqlite3 scm.db "CREATE TABLE IF NOT EXISTS improvement_images (id INTEGER PRIMARY KEY AUTOINCREMENT, data TEXT);"
-```
-
-테이블 생성 확인:
-```bash
-sqlite3 scm.db ".tables"
-```
-
-## 3단계: VALID_STORES에 추가
-
-```bash
-nano /root/scm-api/server.js
-```
-
-`VALID_STORES` 배열에 새 테이블명 추가:
+2. `VALID_STORES` 배열에 테이블명 추가:
 ```js
-const VALID_STORES = [...기존항목, 'improvement_items', 'improvement_images'];
+const VALID_STORES = [...기존항목, '테이블명'];
 ```
 
-저장: `Ctrl+O` → `Enter` → `Ctrl+X`
+## 2단계: PowerShell에서 Vultr에 파일 복사
 
-## 4단계: 서버 재시작
+```powershell
+scp C:\Users\Edit\Desktop\scm-app\server.js root@158.247.239.161:~/scm-api/server.js
+```
+비밀번호 입력 (Vultr 대시보드 → 서버 Overview에서 확인)
 
-```bash
-ps aux | grep node
-kill [PID번호]
-nohup node /root/scm-api/server.js &
+## 3단계: PowerShell에서 서버 재시작
+
+```powershell
+ssh root@158.247.239.161 "kill $(pgrep -f 'node /root/scm-api/server.js'); cd ~/scm-api && nohup node server.js > /dev/null 2>&1 & sleep 2 && curl http://localhost:3100/api/store/[테이블명]"
 ```
 
-재시작 확인:
-```bash
-ps aux | grep node
+`{"data":null}` 나오면 성공.
+
+## 참고: 테이블 확인
+
+```powershell
+ssh root@158.247.239.161 "sqlite3 ~/scm-api/scm.db '.tables'"
 ```
 
-node 프로세스가 1개만 실행 중이면 완료.
+## 참고: 자동 테이블 생성
+
+server.js에 자동 테이블 생성 로직이 있어서, VALID_STORES에만 추가하면 첫 접근 시 테이블이 자동 생성됨. 수동으로 sqlite3 명령어를 실행할 필요 없음.
 
 ## 프론트엔드 연동
 
@@ -92,5 +83,6 @@ const data = await dbStoreGet('improvement_items');
 | issue_img_data | 이슈관리 사진 |
 | issue_img_counts | 이슈관리 사진 수 |
 | issue_special_items | 특별관리 품목 |
+| soldout_reasons_obj | 품절 사유 (전체 객체) |
 | improvement_items | 상품개선 항목 |
 | improvement_images | 상품개선 사진 |
