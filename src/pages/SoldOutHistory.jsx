@@ -12,12 +12,14 @@ function loadHistory() {
 }
 function saveHistory(data) {
   localStorage.setItem(SOLDOUT_HISTORY_KEY, JSON.stringify(data));
+  dbStoreSet('soldout_history', data).catch(() => {});
 }
 function loadReasons() {
   try { return JSON.parse(localStorage.getItem(SOLDOUT_REASONS_KEY) || '{}'); } catch { return {}; }
 }
 function saveReasons(data) {
   localStorage.setItem(SOLDOUT_REASONS_KEY, JSON.stringify(data));
+  dbStoreSet('soldout_reasons_obj', data).catch(() => {});
 }
 function loadExcludes() {
   try { return JSON.parse(localStorage.getItem(EXCLUDE_KEY) || '[]'); } catch { return []; }
@@ -82,11 +84,31 @@ export default function SoldOutHistory() {
   const [editReasonText, setEditReasonText] = useState('');
 
   useEffect(() => {
-    fetchReasons().then(data => {
-      if (data && data.history) {
-        setHistory(loadHistory());
-      }
-    });
+    (async () => {
+      try {
+        // DB 제네릭 스토어에서 로드 (DB 우선)
+        const dbHistory = await dbStoreGet('soldout_history');
+        if (dbHistory && Object.keys(dbHistory).length > 0) {
+          localStorage.setItem(SOLDOUT_HISTORY_KEY, JSON.stringify(dbHistory));
+          setHistory(dbHistory);
+          // reasons도 DB에서 동기화
+          const dbReasons = await dbStoreGet('soldout_reasons_obj');
+          if (dbReasons) localStorage.setItem(SOLDOUT_REASONS_KEY, JSON.stringify(dbReasons));
+          return;
+        }
+        // 폴백: dedicated API에서 마이그레이션
+        const data = await fetchReasons();
+        if (data?.history) {
+          localStorage.setItem(SOLDOUT_HISTORY_KEY, JSON.stringify(data.history));
+          setHistory(data.history);
+          dbStoreSet('soldout_history', data.history).catch(() => {});
+          if (data.reasons) {
+            localStorage.setItem(SOLDOUT_REASONS_KEY, JSON.stringify(data.reasons));
+            dbStoreSet('soldout_reasons_obj', data.reasons).catch(() => {});
+          }
+        }
+      } catch {}
+    })();
   }, []);
 
   const allRecords = useMemo(() => flattenHistory(history), [history]);

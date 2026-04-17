@@ -73,6 +73,11 @@ db.exec(`
     data TEXT NOT NULL,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
+  CREATE TABLE IF NOT EXISTS soldout_reasons_obj (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    data TEXT NOT NULL,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
 `);
 
 app.use(cors());
@@ -145,13 +150,18 @@ app.get('/api/calendar', (req, res) => {
 });
 
 // 범용 저장소 (localStorage 대체)
-const VALID_STORES = ['fbc_savings', 'soldout_history', 'soldout_exclude', 'new_product_stock', 'orderbook_notes', 'supplies_orders', 'issue_special_items', 'soldout_rate'];
+const VALID_STORES = ['fbc_savings', 'soldout_history', 'soldout_exclude', 'new_product_stock', 'orderbook_notes', 'supplies_orders', 'issue_special_items', 'soldout_rate', 'soldout_reasons_obj'];
 
 app.post('/api/store/:name', (req, res) => {
   const { name } = req.params;
   if (!VALID_STORES.includes(name)) return res.status(400).json({ error: 'invalid store' });
   const { data } = req.body;
-  db.prepare(`DELETE FROM ${name}`).run();
+  try {
+    db.prepare(`DELETE FROM ${name}`).run();
+  } catch {
+    db.exec(`CREATE TABLE IF NOT EXISTS ${name} (id INTEGER PRIMARY KEY AUTOINCREMENT, data TEXT NOT NULL, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)`);
+    db.prepare(`DELETE FROM ${name}`).run();
+  }
   db.prepare(`INSERT INTO ${name} (data) VALUES (?)`).run(JSON.stringify(data));
   res.json({ ok: true });
 });
@@ -159,8 +169,13 @@ app.post('/api/store/:name', (req, res) => {
 app.get('/api/store/:name', (req, res) => {
   const { name } = req.params;
   if (!VALID_STORES.includes(name)) return res.status(400).json({ error: 'invalid store' });
-  const row = db.prepare(`SELECT data FROM ${name} ORDER BY id DESC LIMIT 1`).get();
-  res.json({ data: row ? JSON.parse(row.data) : null });
+  try {
+    const row = db.prepare(`SELECT data FROM ${name} ORDER BY id DESC LIMIT 1`).get();
+    res.json({ data: row ? JSON.parse(row.data) : null });
+  } catch {
+    db.exec(`CREATE TABLE IF NOT EXISTS ${name} (id INTEGER PRIMARY KEY AUTOINCREMENT, data TEXT NOT NULL, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)`);
+    res.json({ data: null });
+  }
 });
 
 app.listen(PORT, '0.0.0.0', () => {

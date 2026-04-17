@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
 import * as XLSX from 'xlsx';
-import { fetchReasons, saveReasons, deleteReason } from '../sheetSync.js';
-import { dbStoreGet, dbStoreSet } from '../utils/dbApi';
+import { saveReasons, deleteReason } from '../sheetSync.js';
+import { dbStoreGet, dbStoreSet, dbGetReasons } from '../utils/dbApi';
 
 const SHEET_ID = '1NXhW_gG0b-gXuVqrhbY9ErWi8uO_7pXIy-NTo4FbE1I';
 const TSV_CALC = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=tsv&gid=1349677364`;
@@ -183,26 +183,13 @@ function daysBetween(dateStr) {
   return Math.floor((now - d) / (1000 * 60 * 60 * 24));
 }
 
-// 현재 사유: { barcode: { reason, date } }
-// 사유가 비어있으면 품절기록(history)에서 최신 사유 복원
+// 현재 사유: { barcode: { reason, date } } — DB 우선, localStorage 캐시
 function loadSoldoutReasons() {
-  try {
-    const reasons = JSON.parse(localStorage.getItem(SOLDOUT_REASONS_KEY) || '{}');
-    const history = JSON.parse(localStorage.getItem(SOLDOUT_HISTORY_KEY) || '{}');
-    let restored = false;
-    for (const [barcode, entries] of Object.entries(history)) {
-      if (!reasons[barcode] && entries.length > 0) {
-        const latest = entries[entries.length - 1];
-        reasons[barcode] = { reason: latest.reason, date: latest.date };
-        restored = true;
-      }
-    }
-    if (restored) localStorage.setItem(SOLDOUT_REASONS_KEY, JSON.stringify(reasons));
-    return reasons;
-  } catch { return {}; }
+  try { return JSON.parse(localStorage.getItem(SOLDOUT_REASONS_KEY) || '{}'); } catch { return {}; }
 }
 function saveSoldoutReasons(data) {
   localStorage.setItem(SOLDOUT_REASONS_KEY, JSON.stringify(data));
+  dbStoreSet('soldout_reasons_obj', data).catch(() => {});
 }
 
 // 품절 기록 누적: { barcode: [{ reason, date, productName, optionName }] }
@@ -211,6 +198,7 @@ function loadSoldoutHistory() {
 }
 function saveSoldoutHistory(data) {
   localStorage.setItem(SOLDOUT_HISTORY_KEY, JSON.stringify(data));
+  dbStoreSet('soldout_history', data).catch(() => {});
 }
 
 function parseOrderBook(csv) {
@@ -471,8 +459,10 @@ export default function SoldOut() {
     setLoading(true);
     setError(null);
     try {
-      const [calcRes, dataRes, orderRes] = await Promise.all([
+      const [calcRes, dataRes, orderRes, dbReasonsData, dbHistoryData] = await Promise.all([
         fetch(TSV_CALC), fetch(TSV_DATA), fetch(CSV_ORDER),
+        dbStoreGet('soldout_reasons_obj').catch(() => null),
+        dbStoreGet('soldout_history').catch(() => null),
       ]);
       if (!calcRes.ok) throw new Error(`HTTP ${calcRes.status}`);
       const calcTsv = await calcRes.text();
@@ -482,7 +472,29 @@ export default function SoldOut() {
       const preloadedTracker = await loadStockTracker();
       const parsed = await parseData(calcTsv, dataTsv, orderSkus, skuArrival, preloadedTracker);
 
+      // DB에서 최신 사유/이력 동기화
+      try {
+        if (dbReasonsData && Object.keys(dbReasonsData).length > 0) {
+          localStorage.setItem(SOLDOUT_REASONS_KEY, JSON.stringify(dbReasonsData));
+        } else {
+          // 제네릭 스토어에 없으면 dedicated API에서 마이그레이션
+          try {
+            const dedicated = await dbGetReasons();
+            if (dedicated?.reasons && Object.keys(dedicated.reasons).length > 0) {
+              localStorage.setItem(SOLDOUT_REASONS_KEY, JSON.stringify(dedicated.reasons));
+              if (dedicated.history) localStorage.setItem(SOLDOUT_HISTORY_KEY, JSON.stringify(dedicated.history));
+              dbStoreSet('soldout_reasons_obj', dedicated.reasons).catch(() => {});
+              if (dedicated.history) dbStoreSet('soldout_history', dedicated.history).catch(() => {});
+            }
+          } catch {}
+        }
+        if (dbHistoryData && Object.keys(dbHistoryData).length > 0) {
+          localStorage.setItem(SOLDOUT_HISTORY_KEY, JSON.stringify(dbHistoryData));
+        }
+      } catch {}
+
       // 재진입 품절 사유 자동 삭제: 이전에 품절 아니었다가 다시 품절된 항목
+      let latestReasons = loadSoldoutReasons();
       const currentSoldout = new Set(parsed.filter(r => r.riskLevel === '품절').map(r => r.barcode));
       try {
         let prevRaw = null;
@@ -493,18 +505,16 @@ export default function SoldOut() {
         if (prevRaw === null) prevRaw = localStorage.getItem(PREV_SOLDOUT_KEY);
         if (prevRaw !== null) {
           const prevSoldout = new Set(JSON.parse(prevRaw));
-          const currentReasons = loadSoldoutReasons();
           let changed = false;
           for (const barcode of currentSoldout) {
-            if (!prevSoldout.has(barcode) && currentReasons[barcode]) {
-              delete currentReasons[barcode];
+            if (!prevSoldout.has(barcode) && latestReasons[barcode]) {
+              delete latestReasons[barcode];
               changed = true;
-              // 스프레드시트에서는 삭제하지 않음 (기록 유지)
+              deleteReason(barcode); // DB dedicated API에서도 삭제
             }
           }
           if (changed) {
-            saveSoldoutReasons(currentReasons);
-            setReasons({ ...currentReasons });
+            saveSoldoutReasons(latestReasons); // localStorage + DB 제네릭 스토어
           }
         }
         const prevData = [...currentSoldout];
@@ -512,6 +522,7 @@ export default function SoldOut() {
         dbStoreSet('soldout_prev_barcodes', prevData).catch(() => {});
       } catch {}
 
+      setReasons({ ...latestReasons });
       setData(parsed);
       setLastUpdated(new Date());
 
@@ -546,13 +557,6 @@ export default function SoldOut() {
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
-  useEffect(() => {
-    fetchReasons().then(data => {
-      if (data) {
-        setReasons(loadSoldoutReasons());
-      }
-    });
-  }, []);
 
   const stats = useMemo(() => {
     if (!data) return null;
