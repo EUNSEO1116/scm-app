@@ -18,6 +18,7 @@ import FbcItems from './pages/FbcItems';
 import Home from './pages/Home';
 import Sales from './pages/Sales';
 import Placeholder from './pages/Placeholder';
+import IncheonIncoming from './pages/IncheonIncoming';
 
 function App() {
   return (
@@ -29,7 +30,7 @@ function App() {
           <Route path="/inventory/incoming" element={<Incoming />} />
           <Route path="/inventory/order" element={<OrderRequest />} />
           <Route path="/inventory/orderbook" element={<OrderBook />} />
-          <Route path="/inventory/excess" element={<Placeholder title="과잉재고" />} />
+          <Route path="/inventory/incheon" element={<IncheonIncoming />} />
           <Route path="/fbc" element={<FbcCalculator />} />
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/fbc/items" element={<FbcItems />} />

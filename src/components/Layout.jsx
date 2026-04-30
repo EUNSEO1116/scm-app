@@ -7,7 +7,7 @@ const navItems = [
     { label: '입고신청', path: '/inventory/incoming' },
     { label: '발주신청', path: '/inventory/order' },
     { label: '발주장부', path: '/inventory/orderbook' },
-    { label: '과잉재고', path: '/inventory/excess' },
+    { label: '인천입고신청', path: '/inventory/incheon' },
   ]},
   { id: 'fbc', label: 'FBC관리', icon: 'fbc', children: [
     { label: 'FBC 비용 계산기', path: '/fbc' },
@@ -46,7 +46,7 @@ const pageTitles = {
   '/inventory/incoming': '입고신청',
   '/inventory/order': '발주신청',
   '/inventory/orderbook': '발주장부',
-  '/inventory/excess': '과잉재고',
+  '/inventory/incheon': '인천입고신청',
   '/fbc': 'FBC 비용 계산기',
   '/dashboard': '절감 대시보드',
   '/fbc/items': 'FBC 품목',
