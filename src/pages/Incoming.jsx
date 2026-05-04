@@ -59,6 +59,13 @@ export default function Incoming() {
   const [result, setResult] = useState(null); // { fileName, sheets: [{name, rows, stats}] }
   const [isDragOver, setIsDragOver] = useState(false);
   const fileRef = useRef();
+  const [nameToSkuMap, setNameToSkuMap] = useState({});
+  const [orderFile, setOrderFile] = useState(null);
+  const [orderMap, setOrderMap] = useState({});       // SKU → 합산 주문수량
+  const [waitBarcodes, setWaitBarcodes] = useState(new Set());
+  const [waitInput, setWaitInput] = useState('');
+  const [showWaitInput, setShowWaitInput] = useState(false);
+  const orderFileRef = useRef();
 
   const processFile = useCallback(async (file) => {
     if (!file) return;
@@ -85,6 +92,7 @@ export default function Incoming() {
       // 재고계산기: barcode(col2) → { stock, incoming, ipgo, weeksCI }
       // col6=쿠팡재고, col7=그로스입고예정, col8=입고, col21=쿠팡재고+입고예정 예상판매주
       const stockMap = {};
+      const newNameToSkuMap = {};
       if (calcRes.ok) {
         const tsv = await calcRes.text();
         const lines = tsv.split('\n').filter(l => l.trim());
@@ -92,6 +100,11 @@ export default function Incoming() {
           const cols = lines[i].split('\t');
           const barcode = (cols[2] || '').trim();
           if (!barcode) continue;
+          const productName = (cols[3] || '').trim();
+          const optionName = (cols[4] || '').trim();
+          if (productName) {
+            newNameToSkuMap[`${productName}||${optionName}`] = barcode;
+          }
           const coupangStock = safeNum(cols[6]);      // 쿠팡재고
           const incoming = safeNum(cols[7]);           // 그로스 입고예정
           const ipgo = safeNum(cols[8]);               // 입고
@@ -109,6 +122,7 @@ export default function Incoming() {
           };
         }
       }
+      setNameToSkuMap(newNameToSkuMap);
 
       setStatus('엑셀 파일 분석 중...');
 
@@ -257,6 +271,63 @@ export default function Incoming() {
     setLoading(false);
   }, []);
 
+  // 주문목록 엑셀 업로드 → SKU별 주문수량 매핑
+  const processOrderFile = useCallback(async (file) => {
+    if (!file) return;
+    try {
+      const buffer = await file.arrayBuffer();
+      const wb = XLSX.read(buffer, { type: 'array' });
+      const skuQtyMap = {};
+
+      for (const sheetName of wb.SheetNames) {
+        const ws = wb.Sheets[sheetName];
+        const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+        for (let i = 1; i < rows.length; i++) {
+          const row = rows[i];
+          const qty = safeNum(row[3]);                     // D열 주문수량
+          const name = String(row[4] || '').trim();        // E열 상품명
+          const option = String(row[5] || '').trim();      // F열 옵션명
+          if (!name || qty <= 0) continue;
+          const key = `${name}||${option}`;
+          const sku = nameToSkuMap[key];
+          if (sku) {
+            skuQtyMap[sku] = (skuQtyMap[sku] || 0) + qty;
+          }
+        }
+      }
+
+      setOrderMap(skuQtyMap);
+      setOrderFile(file.name);
+    } catch (err) {
+      alert('주문목록 파일 처리 오류: ' + err.message);
+    }
+  }, [nameToSkuMap]);
+
+  // 대기필요 바코드 추가
+  const addWaitBarcodes = useCallback(() => {
+    const lines = waitInput.split(/[\n\r,\t]+/).map(s => s.trim()).filter(Boolean);
+    if (lines.length === 0) return;
+    setWaitBarcodes(prev => {
+      const next = new Set(prev);
+      lines.forEach(b => next.add(b));
+      return next;
+    });
+    setWaitInput('');
+    setShowWaitInput(false);
+  }, [waitInput]);
+
+  // 비고 생성 (SKU 기준)
+  const getRemark = (sku) => {
+    const remarks = [];
+    if (orderMap[sku]) {
+      remarks.push(`${orderMap[sku]}개 윙 발송`);
+    }
+    if (waitBarcodes.has(sku)) {
+      remarks.push('대기필요');
+    }
+    return remarks.join(', ');
+  };
+
   const handleExport = () => {
     if (!result) return;
     const wb = XLSX_STYLE.utils.book_new();
@@ -272,7 +343,7 @@ export default function Incoming() {
       // Row 0: 브랜드 코드
       const row0 = [sheet.brandCode[0] || sheet.name, '', '', '', '', '', ''];
       // Row 1: 헤더 (원본 그대로 + 우측)
-      const row1 = ['상자 번호', '발주번호', 'SKU', '라벨명', '출고수량', '', '', 'SKU', '라벨명', '합계 : 출고수량'];
+      const row1 = ['상자 번호', '발주번호', 'SKU', '라벨명', '출고수량', '', '비고', '', 'SKU', '라벨명', '합계 : 출고수량'];
 
       const wsData = [row0, row1];
 
@@ -281,8 +352,9 @@ export default function Incoming() {
         const r = sheet.rows[i];
         const origIdx = r.rowIdx; // 원본 행 인덱스
         const right = sheet.rightSideRows[origIdx] || ['', '', ''];
+        const remark = getRemark(r.sku);
         wsData.push([
-          r.boxNo, r.orderNo, r.sku, r.label, r.qty, r.center, '',
+          r.boxNo, r.orderNo, r.sku, r.label, r.qty, r.center, remark, '',
           right[0], right[1], right[2],
         ]);
       }
@@ -298,7 +370,7 @@ export default function Incoming() {
           const ref = XLSX_STYLE.utils.encode_cell({ r, c });
           if (!ws[ref]) ws[ref] = { v: '', t: 's' };
           // 출고수량(E=4), 합계:출고수량(J=9) 열은 숫자 강제 (엑셀 합계 표시용)
-          if (c === 4 || c === 9) {
+          if (c === 4 || c === 10) {
             if (r > 1 && ws[ref].v !== '' && ws[ref].v != null) {
               ws[ref].v = Number(ws[ref].v) || 0;
               ws[ref].t = 'n';
@@ -315,7 +387,7 @@ export default function Incoming() {
       }
 
       // 헤더 행 스타일 (Row 1) - 기본 위에 덮어쓰기
-      for (let c = 0; c <= 9; c++) {
+      for (let c = 0; c <= 10; c++) {
         const ref = XLSX_STYLE.utils.encode_cell({ r: 1, c });
         if (!ws[ref]) continue;
         ws[ref].s = {
@@ -344,8 +416,8 @@ export default function Incoming() {
           ? { patternType: 'solid', fgColor: { rgb: row.cellColor } }
           : null;
 
-        // A~F 열 (좌측 박스 데이터)
-        for (let c = 0; c <= 5; c++) {
+        // A~G 열 (좌측 박스 데이터 + 비고)
+        for (let c = 0; c <= 6; c++) {
           const ref = XLSX_STYLE.utils.encode_cell({ r: dataRowIdx, c });
           if (!ws[ref]) ws[ref] = { v: '', t: 's' };
           ws[ref].s = {
@@ -356,8 +428,8 @@ export default function Incoming() {
           };
         }
 
-        // H~J 열 (우측 요약)
-        for (let c = 7; c <= 9; c++) {
+        // I~K 열 (우측 요약)
+        for (let c = 8; c <= 10; c++) {
           const ref = XLSX_STYLE.utils.encode_cell({ r: dataRowIdx, c });
           if (!ws[ref]) ws[ref] = { v: '', t: 's' };
           ws[ref].s = {
@@ -376,10 +448,11 @@ export default function Incoming() {
         { wch: 59 },  // D: 라벨명
         { wch: 8 },   // E: 출고수량
         { wch: 13 },  // F: 입고센터
-        { wch: 2 },   // G: 빈칸
-        { wch: 18 },  // H: SKU
-        { wch: 67 },  // I: 라벨명
-        { wch: 15 },  // J: 합계
+        { wch: 20 },  // G: 비고
+        { wch: 2 },   // H: 빈칸
+        { wch: 18 },  // I: SKU
+        { wch: 67 },  // J: 라벨명
+        { wch: 15 },  // K: 합계
       ];
 
       XLSX_STYLE.utils.book_append_sheet(wb, ws, sheet.name);
@@ -430,10 +503,85 @@ export default function Incoming() {
                 </div>
                 <div style={{ flex: 1 }} />
                 <button className="btn btn-primary btn-sm" onClick={handleExport}>📥 입고배정 엑셀 다운로드</button>
+                <button className="btn btn-outline btn-sm" onClick={() => orderFileRef.current?.click()}>
+                  📋 주문목록 업로드 {orderFile && '✓'}
+                </button>
+                <input
+                  ref={orderFileRef}
+                  type="file"
+                  accept=".xlsx,.xls"
+                  onChange={e => processOrderFile(e.target.files?.[0])}
+                  style={{ display: 'none' }}
+                />
+                <button
+                  className={`btn btn-sm ${showWaitInput ? 'btn-primary' : 'btn-outline'}`}
+                  onClick={() => setShowWaitInput(!showWaitInput)}
+                >
+                  ⏳ 대기필요 등록 {waitBarcodes.size > 0 && `(${waitBarcodes.size})`}
+                </button>
                 <button className="btn btn-outline btn-sm" onClick={() => setResult(null)}>🔄 새 파일</button>
               </div>
             </div>
           </div>
+
+          {/* 대기필요 입력 영역 */}
+          {showWaitInput && (
+            <div className="card" style={{ marginBottom: 16 }}>
+              <div className="card-header">
+                <h2 style={{ fontSize: 14, fontWeight: 600 }}>대기필요 바코드 등록</h2>
+                {waitBarcodes.size > 0 && (
+                  <button
+                    className="btn btn-outline btn-sm"
+                    style={{ fontSize: 11, color: '#d32f2f' }}
+                    onClick={() => setWaitBarcodes(new Set())}
+                  >
+                    전체 삭제
+                  </button>
+                )}
+              </div>
+              <div className="card-body">
+                <p style={{ fontSize: 12, color: '#666', marginBottom: 8 }}>
+                  바코드를 복사하여 붙여넣기 하세요. (줄바꿈, 쉼표, 탭으로 구분)
+                </p>
+                <textarea
+                  value={waitInput}
+                  onChange={e => setWaitInput(e.target.value)}
+                  placeholder="바코드를 붙여넣기..."
+                  style={{
+                    width: '100%', minHeight: 80, padding: 10, border: '1px solid #ddd',
+                    borderRadius: 6, fontSize: 13, fontFamily: 'monospace', resize: 'vertical',
+                    boxSizing: 'border-box',
+                  }}
+                />
+                <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                  <button className="btn btn-primary btn-sm" onClick={addWaitBarcodes}>등록</button>
+                  <button className="btn btn-outline btn-sm" onClick={() => { setShowWaitInput(false); setWaitInput(''); }}>취소</button>
+                </div>
+                {waitBarcodes.size > 0 && (
+                  <div style={{ marginTop: 12, fontSize: 12, color: '#666' }}>
+                    <strong>등록된 바코드 ({waitBarcodes.size}개):</strong>
+                    <div style={{ marginTop: 4, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                      {[...waitBarcodes].map(b => (
+                        <span
+                          key={b}
+                          style={{
+                            display: 'inline-flex', alignItems: 'center', gap: 4,
+                            background: '#fff3e0', padding: '2px 8px', borderRadius: 4, fontSize: 11,
+                          }}
+                        >
+                          {b}
+                          <span
+                            style={{ cursor: 'pointer', color: '#d32f2f', fontWeight: 700 }}
+                            onClick={() => setWaitBarcodes(prev => { const n = new Set(prev); n.delete(b); return n; })}
+                          >×</span>
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
 
           {/* 금일 작업예정물량 */}
           <div className="stat-card" style={{ marginBottom: 16, padding: 20, background: '#1a73e8', color: '#fff' }}>
@@ -494,6 +642,7 @@ export default function Incoming() {
                         <th>라벨명</th>
                         <th className="num">출고수량</th>
                         <th>입고센터</th>
+                        <th>비고</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -520,6 +669,21 @@ export default function Incoming() {
                                   <span style={{ color: '#666' }}>{r.center.split('/')[1]}</span>
                                 </span>
                               ) : r.center || '-'}
+                            </td>
+                            <td style={{ fontSize: 12 }}>
+                              {orderMap[r.sku] && (
+                                <span style={{
+                                  background: '#e8f0fe', color: '#1a73e8', padding: '2px 6px',
+                                  borderRadius: 4, fontSize: 11, fontWeight: 600, marginRight: 4,
+                                }}>{orderMap[r.sku]}개 윙 발송</span>
+                              )}
+                              {waitBarcodes.has(r.sku) && (
+                                <span style={{
+                                  background: '#fff3e0', color: '#e65100', padding: '2px 6px',
+                                  borderRadius: 4, fontSize: 11, fontWeight: 600,
+                                }}>대기필요</span>
+                              )}
+                              {!orderMap[r.sku] && !waitBarcodes.has(r.sku) && '-'}
                             </td>
                           </tr>
                         );
