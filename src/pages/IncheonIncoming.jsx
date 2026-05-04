@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef } from 'react';
 import * as XLSX from 'xlsx';
 import XLSX_STYLE from 'xlsx-js-style';
+import { dbStoreGet } from '../utils/dbApi';
 
 const SHEET_ID = '1NXhW_gG0b-gXuVqrhbY9ErWi8uO_7pXIy-NTo4FbE1I';
 const TSV_CALC = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=tsv&gid=1349677364`;
@@ -47,7 +48,8 @@ export default function IncheonIncoming() {
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState('');
   const [data, setData] = useState(null); // { items: [{barcode, productName, optionName, incomingQty, center}] }
-  const [oneTimeMap, setOneTimeMap] = useState({}); // barcode → 기타(1회성) 내용
+  const [oneTimeMap, setOneTimeMap] = useState({}); // barcode → 기타(1회성) 존재 여부
+  const [vocNames, setVocNames] = useState([]); // VOC 상품명 키워드 목록
   const [orderFile, setOrderFile] = useState(null); // 주문목록 파일명
   const [orderMap, setOrderMap] = useState({}); // key: "상품명||옵션명" → 합산 주문수량
   const [waitBarcodes, setWaitBarcodes] = useState(new Set()); // 대기필요 바코드 목록
@@ -60,7 +62,10 @@ export default function IncheonIncoming() {
     setLoading(true);
     setStatus('스프레드시트 데이터 가져오는 중...');
     try {
-      const [calcRes, barcodeRes, specialRes] = await Promise.all([fetch(TSV_CALC), fetch(CSV_BARCODE), fetch(CSV_SPECIAL)]);
+      const [calcRes, barcodeRes, specialRes, impData] = await Promise.all([
+        fetch(TSV_CALC), fetch(CSV_BARCODE), fetch(CSV_SPECIAL),
+        dbStoreGet('improvement_items').catch(() => null)
+      ]);
 
       // 쿠팡바코드 시트: barcode(col5) → center(col11)
       const centerMap = {};
@@ -86,10 +91,21 @@ export default function IncheonIncoming() {
           const cols = rows[i];
           const barcode = (cols[0] || '').trim();
           const oneTime = (cols[8] || '').trim();
-          if (/^S\d+$/.test(barcode) && oneTime) specialOneTimeMap[barcode] = oneTime;
+          if (/^S\d+$/.test(barcode) && oneTime) specialOneTimeMap[barcode] = true;
         }
       }
       setOneTimeMap(specialOneTimeMap);
+
+      // VOC: 상품개선 DB에서 CSV·VOC 유형 + 시작전/처리중
+      const newVocNames = [];
+      if (Array.isArray(impData)) {
+        for (const item of impData) {
+          if (item.type === 'CSV·VOC' && (item.status === '시작전' || item.status === '처리중') && item.productName) {
+            newVocNames.push(item.productName);
+          }
+        }
+      }
+      setVocNames(newVocNames);
 
       // 재고 계산기 시트: P열(cols[15]) = (1) 재고 입고
       const items = [];
@@ -166,6 +182,12 @@ export default function IncheonIncoming() {
     setShowWaitInput(false);
   }, [waitInput]);
 
+  // VOC 체크 (상품명 키워드 매칭)
+  const isVoc = (productName) => {
+    if (!productName || vocNames.length === 0) return false;
+    return vocNames.some(keyword => productName.includes(keyword));
+  };
+
   // 비고 생성
   const getRemark = (item) => {
     const remarks = [];
@@ -174,9 +196,13 @@ export default function IncheonIncoming() {
     if (orderMap[key]) {
       remarks.push(`${orderMap[key]}개 윙 발송`);
     }
-    // 기타(1회성) 체크
+    // VOC 체크
+    if (isVoc(item.productName)) {
+      remarks.push('VOC');
+    }
+    // 특별관리 체크
     if (oneTimeMap[item.barcode]) {
-      remarks.push(oneTimeMap[item.barcode]);
+      remarks.push('특별관리');
     }
     // 대기필요 체크
     if (waitBarcodes.has(item.barcode)) {
@@ -427,6 +453,7 @@ export default function IncheonIncoming() {
                     {data.items.map((item, i) => {
                       const remark = getRemark(item);
                       const hasWing = orderMap[`${item.productName}||${item.optionName}`];
+                      const hasVoc = isVoc(item.productName);
                       const hasOneTime = oneTimeMap[item.barcode];
                       const hasWait = waitBarcodes.has(item.barcode);
                       return (
@@ -447,12 +474,20 @@ export default function IncheonIncoming() {
                                 {orderMap[`${item.productName}||${item.optionName}`]}개 윙 발송
                               </span>
                             )}
-                            {hasOneTime && (
+                            {hasVoc && (
                               <span style={{
                                 background: '#fce4ec', color: '#c62828', padding: '2px 6px',
                                 borderRadius: 4, fontSize: 11, fontWeight: 600, marginRight: 4,
                               }}>
-                                {oneTimeMap[item.barcode]}
+                                VOC
+                              </span>
+                            )}
+                            {hasOneTime && (
+                              <span style={{
+                                background: '#f3e5f5', color: '#7b1fa2', padding: '2px 6px',
+                                borderRadius: 4, fontSize: 11, fontWeight: 600, marginRight: 4,
+                              }}>
+                                특별관리
                               </span>
                             )}
                             {hasWait && (

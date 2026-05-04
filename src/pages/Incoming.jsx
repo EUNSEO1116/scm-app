@@ -1,10 +1,12 @@
 import { useState, useCallback, useRef } from 'react';
 import * as XLSX from 'xlsx';
 import XLSX_STYLE from 'xlsx-js-style';
+import { dbStoreGet } from '../utils/dbApi';
 
 const SHEET_ID = '1NXhW_gG0b-gXuVqrhbY9ErWi8uO_7pXIy-NTo4FbE1I';
 const CSV_BARCODE = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent('쿠팡바코드')}`;
 const TSV_CALC = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=tsv&gid=1349677364`;
+const CSV_SPECIAL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent('특별 관리 상품')}`;
 
 // 색상
 const COLOR_YELLOW = 'FFFFFF00';     // 고양, 시흥
@@ -66,6 +68,8 @@ export default function Incoming() {
   const [waitInput, setWaitInput] = useState('');
   const [showWaitInput, setShowWaitInput] = useState(false);
   const orderFileRef = useRef();
+  const [vocNames, setVocNames] = useState([]);
+  const [specialMap, setSpecialMap] = useState({}); // barcode → 기타(1회성) 존재 여부
 
   const processFile = useCallback(async (file) => {
     if (!file) return;
@@ -74,7 +78,10 @@ export default function Incoming() {
 
     try {
       // 1) Fetch 쿠팡바코드 (바코드→입고센터 매핑) + 재고계산기 (바코드→총재고/예상판매주/avg판매)
-      const [barcodeRes, calcRes] = await Promise.all([fetch(CSV_BARCODE), fetch(TSV_CALC)]);
+      const [barcodeRes, calcRes, specialRes, impData] = await Promise.all([
+        fetch(CSV_BARCODE), fetch(TSV_CALC), fetch(CSV_SPECIAL),
+        dbStoreGet('improvement_items').catch(() => null)
+      ]);
 
       // 쿠팡바코드: barcode(col6) → center(col12)
       const centerMap = {};
@@ -88,6 +95,31 @@ export default function Incoming() {
           if (barcode) centerMap[barcode] = center;
         }
       }
+
+      // 특별 관리 상품: barcode(col0) → 기타(1회성)(col8) 존재 여부
+      const newSpecialMap = {};
+      if (specialRes.ok) {
+        const csv = await specialRes.text();
+        const lines = csv.split('\n').filter(l => l.trim());
+        for (const line of lines) {
+          const cols = parseCsvRow(line);
+          const barcode = (cols[0] || '').trim();
+          const oneTime = (cols[8] || '').trim();
+          if (/^S\d+$/.test(barcode) && oneTime) newSpecialMap[barcode] = true;
+        }
+      }
+      setSpecialMap(newSpecialMap);
+
+      // VOC: 상품개선 DB에서 CSV·VOC 유형 + 시작전/처리중
+      const newVocNames = [];
+      if (Array.isArray(impData)) {
+        for (const item of impData) {
+          if (item.type === 'CSV·VOC' && (item.status === '시작전' || item.status === '처리중') && item.productName) {
+            newVocNames.push(item.productName);
+          }
+        }
+      }
+      setVocNames(newVocNames);
 
       // 재고계산기: barcode(col2) → { stock, incoming, ipgo, weeksCI }
       // col6=쿠팡재고, col7=그로스입고예정, col8=입고, col21=쿠팡재고+입고예정 예상판매주
@@ -316,11 +348,23 @@ export default function Incoming() {
     setShowWaitInput(false);
   }, [waitInput]);
 
-  // 비고 생성 (SKU 기준)
-  const getRemark = (sku) => {
+  // VOC 체크 (상품명 키워드 매칭)
+  const isVoc = (productName) => {
+    if (!productName || vocNames.length === 0) return false;
+    return vocNames.some(keyword => productName.includes(keyword));
+  };
+
+  // 비고 생성 (SKU + 라벨명 기준)
+  const getRemark = (sku, label) => {
     const remarks = [];
     if (orderMap[sku]) {
       remarks.push(`${orderMap[sku]}개 윙 발송`);
+    }
+    if (isVoc(label)) {
+      remarks.push('VOC');
+    }
+    if (specialMap[sku]) {
+      remarks.push('특별관리');
     }
     if (waitBarcodes.has(sku)) {
       remarks.push('대기필요');
@@ -352,7 +396,7 @@ export default function Incoming() {
         const r = sheet.rows[i];
         const origIdx = r.rowIdx; // 원본 행 인덱스
         const right = sheet.rightSideRows[origIdx] || ['', '', ''];
-        const remark = getRemark(r.sku);
+        const remark = getRemark(r.sku, r.label);
         wsData.push([
           r.boxNo, r.orderNo, r.sku, r.label, r.qty, r.center, remark, '',
           right[0], right[1], right[2],
@@ -677,13 +721,25 @@ export default function Incoming() {
                                   borderRadius: 4, fontSize: 11, fontWeight: 600, marginRight: 4,
                                 }}>{orderMap[r.sku]}개 윙 발송</span>
                               )}
+                              {isVoc(r.label) && (
+                                <span style={{
+                                  background: '#fce4ec', color: '#c62828', padding: '2px 6px',
+                                  borderRadius: 4, fontSize: 11, fontWeight: 600, marginRight: 4,
+                                }}>VOC</span>
+                              )}
+                              {specialMap[r.sku] && (
+                                <span style={{
+                                  background: '#f3e5f5', color: '#7b1fa2', padding: '2px 6px',
+                                  borderRadius: 4, fontSize: 11, fontWeight: 600, marginRight: 4,
+                                }}>특별관리</span>
+                              )}
                               {waitBarcodes.has(r.sku) && (
                                 <span style={{
                                   background: '#fff3e0', color: '#e65100', padding: '2px 6px',
                                   borderRadius: 4, fontSize: 11, fontWeight: 600,
                                 }}>대기필요</span>
                               )}
-                              {!orderMap[r.sku] && !waitBarcodes.has(r.sku) && '-'}
+                              {!orderMap[r.sku] && !isVoc(r.label) && !specialMap[r.sku] && !waitBarcodes.has(r.sku) && '-'}
                             </td>
                           </tr>
                         );
