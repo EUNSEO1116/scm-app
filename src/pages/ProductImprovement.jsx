@@ -141,7 +141,7 @@ export default function ProductImprovement() {
   const [items, setItems] = useState([]);
   const [loaded, setLoaded] = useState(false);
   const [showForm, setShowForm] = useState(false);
-  const [filterStatus, setFilterStatus] = useState('all');
+  const [filterStatus, setFilterStatus] = useState('active');
   const [filterType, setFilterType] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [cardFilter, setCardFilter] = useState(null);
@@ -284,7 +284,8 @@ export default function ProductImprovement() {
     else if (cardFilter === 'improve_wait') rows = rows.filter(r => IMPROVE_TYPES.includes(r.type) && r.status === '시작전');
     else if (cardFilter === 'improve_ing') rows = rows.filter(r => IMPROVE_TYPES.includes(r.type) && r.status === '처리중');
     else if (cardFilter === 'done') rows = rows.filter(r => r.status === '완료');
-    if (filterStatus !== 'all') rows = rows.filter(r => r.status === filterStatus);
+    if (filterStatus === 'active') rows = rows.filter(r => r.status !== '완료');
+    else if (filterStatus !== 'all') rows = rows.filter(r => r.status === filterStatus);
     if (filterType !== 'all') rows = rows.filter(r => r.type === filterType);
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
@@ -658,10 +659,11 @@ export default function ProductImprovement() {
               {IMP_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
             </select>
             <select className="filter-select" value={filterStatus} onChange={e => setFilterStatus(e.target.value)}>
+              <option value="active">진행중 (시작전+처리중)</option>
               <option value="all">전체 상태</option>
               {IMP_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
             </select>
-            <button className="btn btn-outline" onClick={() => { setSearchQuery(''); setFilterStatus('all'); setFilterType('all'); setCardFilter(null); }}>초기화</button>
+            <button className="btn btn-outline" onClick={() => { setSearchQuery(''); setFilterStatus('active'); setFilterType('all'); setCardFilter(null); }}>초기화</button>
             <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
               <button className="btn btn-outline" onClick={handleExcelDownload} disabled={excelDownloading || !items.length} style={{ fontSize: 13 }}>
                 {excelDownloading ? '다운로드 중...' : `엑셀 다운로드 (${items.length})`}
