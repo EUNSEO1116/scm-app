@@ -166,32 +166,55 @@ export default function ProductImprovement() {
   const [excelDownloading, setExcelDownloading] = useState(false);
   const [zipDownloading, setZipDownloading] = useState(false);
 
-  // localStorage + DB 이중 저장 (DB 화이트리스트 등록 전까지 localStorage가 주 저장소)
+  const [dbSyncFailed, setDbSyncFailed] = useState(false);
+
+  // localStorage + DB 이중 저장
   useEffect(() => {
     // localStorage에서 먼저 로드
+    let localItems = null;
+    let localImgs = null;
     try {
-      const localItems = JSON.parse(localStorage.getItem('improvement_items') || 'null');
+      localItems = JSON.parse(localStorage.getItem('improvement_items') || 'null');
       if (Array.isArray(localItems) && localItems.length > 0) setItems(localItems);
-      const localImgs = JSON.parse(localStorage.getItem('improvement_images') || 'null');
+      localImgs = JSON.parse(localStorage.getItem('improvement_images') || 'null');
       if (localImgs && typeof localImgs === 'object') setImpImages(localImgs);
     } catch { /* ignore */ }
-    // DB에서도 시도 (성공하면 병합)
+    // DB에서도 시도 (로컬과 비교 후 더 많은 쪽 사용)
     Promise.all([
       dbStoreGet('improvement_items'),
       dbStoreGet('improvement_images'),
     ]).then(([dbItems, dbImgs]) => {
-      if (Array.isArray(dbItems)) {
-        // DB가 메인: DB 데이터로 덮어쓰기
+      // items: 로컬이 더 많으면 로컬 유지 + DB에 동기화
+      if (Array.isArray(dbItems) && Array.isArray(localItems)) {
+        if (localItems.length > dbItems.length) {
+          setItems(localItems);
+          dbStoreSet('improvement_items', localItems);
+        } else {
+          setItems(dbItems);
+          localStorage.setItem('improvement_items', JSON.stringify(dbItems));
+        }
+      } else if (Array.isArray(dbItems)) {
         setItems(dbItems);
         localStorage.setItem('improvement_items', JSON.stringify(dbItems));
+      } else if (Array.isArray(localItems) && localItems.length > 0) {
+        dbStoreSet('improvement_items', localItems);
       }
+      // images: 로컬이 더 많으면 로컬 유지 + DB에 동기화
       if (dbImgs && typeof dbImgs === 'object') {
-        setImpImages(dbImgs);
-        localStorage.setItem('improvement_images', JSON.stringify(dbImgs));
+        const dbKeys = Object.keys(dbImgs).length;
+        const localKeys = localImgs ? Object.keys(localImgs).length : 0;
+        if (localKeys > dbKeys) {
+          setImpImages(localImgs);
+          dbStoreSet('improvement_images', localImgs);
+        } else {
+          setImpImages(dbImgs);
+          localStorage.setItem('improvement_images', JSON.stringify(dbImgs));
+        }
+      } else if (localImgs && Object.keys(localImgs).length > 0) {
+        dbStoreSet('improvement_images', localImgs);
       }
       setLoaded(true);
     }).catch(() => setLoaded(true));
-    setLoaded(true);
   }, []);
 
   // 감시 목록 바코드가 시트에 나타나면 알림 (적용완료 누를 때까지 영구 유지)
@@ -224,17 +247,27 @@ export default function ProductImprovement() {
     saveWatch(loadWatch().filter(w => w.barcode !== barcode));
   };
 
+  const dbSaveWithRetry = useCallback(async (key, data) => {
+    for (let i = 0; i < 3; i++) {
+      const ok = await dbStoreSet(key, data);
+      if (ok) { setDbSyncFailed(false); return true; }
+      await new Promise(r => setTimeout(r, 1000));
+    }
+    setDbSyncFailed(true);
+    return false;
+  }, []);
+
   const saveItems = useCallback((updated) => {
     setItems(updated);
     localStorage.setItem('improvement_items', JSON.stringify(updated));
-    dbStoreSet('improvement_items', updated).catch(() => {});
-  }, []);
+    dbSaveWithRetry('improvement_items', updated);
+  }, [dbSaveWithRetry]);
 
   const saveImagesDb = useCallback((updated) => {
     setImpImages(updated);
     localStorage.setItem('improvement_images', JSON.stringify(updated));
-    dbStoreSet('improvement_images', updated).catch(() => {});
-  }, []);
+    dbSaveWithRetry('improvement_images', updated);
+  }, [dbSaveWithRetry]);
 
   const suggestions = useMemo(() => {
     if (!productSearch || productSearch.length < 1) return [];
@@ -562,6 +595,18 @@ export default function ProductImprovement() {
 
   return (
     <div>
+      {/* DB 저장 실패 알림 */}
+      {dbSyncFailed && (
+        <div style={{ marginBottom: 16, background: '#ffebee', border: '1px solid #ef5350', borderRadius: 12, padding: 16, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <span style={{ fontWeight: 600, fontSize: 14, color: '#c62828' }}>
+            DB 저장 실패 — 현재 로컬에만 저장됨. 다른 컴퓨터에서 보이지 않을 수 있습니다.
+          </span>
+          <button className="btn btn-sm" style={{ fontSize: 12, background: '#c62828', color: '#fff', border: 'none', borderRadius: 6, padding: '4px 12px' }}
+            onClick={() => { dbSaveWithRetry('improvement_items', items); dbSaveWithRetry('improvement_images', impImages); }}>
+            재시도
+          </button>
+        </div>
+      )}
       {/* 특별관리 미등록 알림 */}
       {syncAlerts.length > 0 && (
         <div style={{ marginBottom: 16, background: '#fff3e0', border: '1px solid #ffb74d', borderRadius: 12, padding: 16 }}>
