@@ -596,6 +596,9 @@ export default function ProductImprovement() {
 
   return (
     <div>
+      <div style={{ textAlign: 'center', fontSize: 10, color: '#bbb', letterSpacing: '0.3px', marginBottom: 12, lineHeight: 1 }}>
+        CS=입고요청 시 출력 / 상품문제 &amp; 재수배 발주시 출력 / 특별관리 = 발주,홈대시보드알림용
+      </div>
       {/* DB 저장 실패 알림 */}
       {dbSyncFailed && (
         <div style={{ marginBottom: 16, background: '#ffebee', border: '1px solid #ef5350', borderRadius: 12, padding: 16, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
