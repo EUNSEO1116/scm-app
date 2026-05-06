@@ -265,14 +265,20 @@ export default function OrderRequest() {
         const orderProductNames = rows.map(r => normalize(r.productName));
         const impImgData = (dbImpImages && typeof dbImpImages === 'object') ? dbImpImages : {};
         impItems = dbImpItems
-          .filter(imp => imp.type === '재수배' && (imp.status === '시작전' || imp.status === '처리중'))
+          .filter(imp => (imp.type === '재수배' || imp.type === '상품문제') && (imp.status === '시작전' || imp.status === '처리중'))
           .filter(imp => {
             const impName = normalize(imp.productName);
             if (!impName) return false;
-            return orderProductNames.some(orderName => orderName.includes(impName));
+            const keywords = impName.split(/\s+/).filter(k => k.length > 0);
+            if (keywords.length === 0) return false;
+            return orderProductNames.some(orderName => {
+              const matched = keywords.filter(k => orderName.includes(k)).length;
+              return matched >= Math.ceil(keywords.length * 0.7);
+            });
           })
           .map(imp => ({
             source: 'improvement',
+            impType: imp.type,
             productName: imp.productName,
             barcode: imp.barcode || '',
             images: Array.isArray(impImgData[imp.id]) ? impImgData[imp.id] : [],
@@ -496,7 +502,7 @@ export default function OrderRequest() {
             }} onClick={e => e.stopPropagation()}>
               {/* 헤더 */}
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-                <h3 style={{ margin: 0, fontSize: 16 }}>{cur && cur.source === 'improvement' ? '🔄 상품개선 재수배 알림' : '📷 이슈관리 등록 사진'}</h3>
+                <h3 style={{ margin: 0, fontSize: 16 }}>{cur && cur.source === 'improvement' ? '🔄 상품개선 알림' : '📷 이슈관리 등록 사진'}</h3>
                 <button onClick={() => setPhotoModal(null)} style={{
                   background: 'none', border: 'none', fontSize: 20, cursor: 'pointer', color: '#666',
                 }}>✕</button>
@@ -517,7 +523,7 @@ export default function OrderRequest() {
                       display: 'inline-block',
                       background: cur.source === 'improvement' ? '#6a1b9a' : '#1976d2',
                       color: '#fff', padding: '2px 10px', borderRadius: 4, fontSize: 12, fontWeight: 600,
-                    }}>{cur.source === 'improvement' ? '상품개선 · 재수배' : '이슈관리 사진'}</span>
+                    }}>{cur.source === 'improvement' ? `상품개선 · ${cur.impType || '재수배'}` : '이슈관리 사진'}</span>
                   </div>
 
                   <div style={{ padding: 16, background: '#f8f9fa', borderRadius: 8, border: '1px solid #e9ecef' }}>
