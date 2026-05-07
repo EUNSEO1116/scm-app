@@ -24,11 +24,11 @@ const BRAND_CODE = {
   '원데이홈': 'AE-O',
 };
 
-// 경기광주/안성 센터면 코드 뒤에 2 붙임
+// 경기광주/안성 센터면 AE-I, AE-HM만 코드 뒤에 2 붙임
 function getBrandCode(brand, center) {
   const base = BRAND_CODE[brand] || 'AE-X';
   if (center && (center.includes('경기광주') || center.includes('안성'))) {
-    return base + '2';
+    if (base === 'AE-I' || base === 'AE-HM') return base + '2';
   }
   return base;
 }
