@@ -19,6 +19,7 @@ import Home from './pages/Home';
 import Sales from './pages/Sales';
 import Placeholder from './pages/Placeholder';
 import IncheonIncoming from './pages/IncheonIncoming';
+import ClosedProducts from './pages/ClosedProducts';
 
 function App() {
   return (
@@ -31,6 +32,7 @@ function App() {
           <Route path="/inventory/order" element={<OrderRequest />} />
           <Route path="/inventory/orderbook" element={<OrderBook />} />
           <Route path="/inventory/incheon" element={<IncheonIncoming />} />
+          <Route path="/inventory/closed" element={<ClosedProducts />} />
           <Route path="/fbc" element={<FbcCalculator />} />
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/fbc/items" element={<FbcItems />} />

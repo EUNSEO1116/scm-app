@@ -128,7 +128,7 @@ export default function Home() {
   const [alerts, setAlerts] = useState({ newSurge: [], checkCount: 0, syncCount: 0 });
   const [dragData, setDragData] = useState(null);
   const [dragOverKey, setDragOverKey] = useState(null);
-  const [dashboardData, setDashboardData] = useState({ availableCount: 0, availableCost: 0, badCount: 0, badCost: 0, soldoutRate: null });
+  const [dashboardData, setDashboardData] = useState({ availableCount: 0, availableCost: 0, longTermCount: 0, longTermCost: 0, soldoutRate: null });
   const [addingDay, setAddingDay] = useState(null); // 메모 추가할 날짜 키
   const [memoText, setMemoText] = useState('');
 
@@ -373,17 +373,26 @@ export default function Home() {
           if (bc) costMap[bc] = cost;
         }
 
-        let availableCount = 0, availableCost = 0, badCount = 0, badCost = 0;
+        // 마감 상품 키워드 로드 (장기재고 판정용)
+        let closedKeywords = [];
+        try {
+          const kwData = await dbStoreGet('closed_products');
+          if (Array.isArray(kwData)) closedKeywords = kwData.map(k => k.keyword);
+        } catch {}
+
+        let totalCount = 0, totalCost = 0, longTermCount = 0, longTermCost = 0;
         for (let i = 1; i < tsvLines.length; i++) {
           const cols = tsvLines[i].split('\t');
           const barcode = (cols[2] || '').trim();
-          const status = (cols[5] || '').trim();
+          const productName = (cols[3] || '').trim();
           const totalStock = Number(cols[14]) || 0;
           const unitCost = costMap[barcode] || 0;
-          const isBad = status.includes('최종마감') || status.includes('마감대상');
-          if (isBad) { badCount += totalStock; badCost += totalStock * unitCost; }
-          else { availableCount += totalStock; availableCost += totalStock * unitCost; }
+          const isLongTerm = closedKeywords.length > 0 && closedKeywords.some(kw => productName.includes(kw));
+          if (isLongTerm) { longTermCount += totalStock; longTermCost += totalStock * unitCost; }
+          totalCount += totalStock; totalCost += totalStock * unitCost;
         }
+        const availableCount = totalCount - longTermCount;
+        const availableCost = totalCost - longTermCost;
 
         // 품절률: localStorage soldout_rate_snapshots에서 이번 달 평균
         let soldoutRate = null;
@@ -401,7 +410,7 @@ export default function Home() {
           if (days > 0) soldoutRate = Math.round(rateSum / days * 100) / 100;
         } catch {}
 
-        setDashboardData({ availableCount, availableCost, badCount, badCost, soldoutRate });
+        setDashboardData({ availableCount, availableCost, longTermCount, longTermCost, soldoutRate });
       } catch (e) { console.error('Dashboard data load error:', e); }
     })();
   }, []);
@@ -421,20 +430,20 @@ export default function Home() {
       soldoutRate: dashboardData.soldoutRate,
       availableCount: dashboardData.availableCount,
       availableCost: dashboardData.availableCost,
-      badCount: dashboardData.badCount,
-      badCost: dashboardData.badCost,
+      longTermCount: dashboardData.longTermCount,
+      longTermCost: dashboardData.longTermCost,
       updatedAt: now.toISOString(),
     };
     await dbStoreSet(`dashboard_history_${yearStr}`, history);
 
     // CSV 생성
-    const header = '월,월 품절률(%),가용 재고(개),가용 재고 총 원가(원),악성 재고(개),악성 재고 원가(원),업데이트일시';
+    const header = '월,월 품절률(%),가용 재고(개),가용 재고 총 원가(원),장기 재고(개),장기 재고 총 원가(원),업데이트일시';
     const csvRows = [header];
     for (let m = 1; m <= 12; m++) {
       const key = `${yearStr}-${String(m).padStart(2, '0')}`;
       const d = history[key];
       if (d) {
-        csvRows.push(`${yearStr}년 ${m}월,${d.soldoutRate ?? ''},${d.availableCount},${d.availableCost.toLocaleString()},${d.badCount},${d.badCost.toLocaleString()},${d.updatedAt || ''}`);
+        csvRows.push(`${yearStr}년 ${m}월,${d.soldoutRate ?? ''},${d.availableCount},${d.availableCost.toLocaleString()},${d.longTermCount ?? d.badCount ?? 0},${(d.longTermCost ?? d.badCost ?? 0).toLocaleString()},${d.updatedAt || ''}`);
       } else {
         csvRows.push(`${yearStr}년 ${m}월,,,,,,`);
       }
@@ -681,8 +690,8 @@ export default function Home() {
           }}>
             {/* 헤더 */}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', borderBottom: '1px solid #e0e0e0' }}>
-              {['월 품절률', '가용 재고', '가용 재고 총 원가', '악성 재고', '악성 재고 원가'].map((title, i) => {
-                const bg = i === 0 ? '#f0f0f0' : i <= 2 ? '#dceefb' : '#fde8e8';
+              {['월 품절률', '가용 재고', '가용 재고 총 원가', '장기 재고', '장기 재고 총 원가'].map((title, i) => {
+                const bg = i === 0 ? '#f0f0f0' : i <= 2 ? '#dceefb' : '#fdf5e8';
                 return (
                   <div key={title} style={{
                     background: bg, padding: '10px 8px', textAlign: 'center',
@@ -698,10 +707,10 @@ export default function Home() {
                 dashboardData.soldoutRate !== null ? `${dashboardData.soldoutRate}%` : '—%',
                 `${dashboardData.availableCount.toLocaleString()}개`,
                 `${dashboardData.availableCost.toLocaleString()}원`,
-                `${dashboardData.badCount.toLocaleString()}개`,
-                `${dashboardData.badCost.toLocaleString()}원`,
+                `${dashboardData.longTermCount.toLocaleString()}개`,
+                `${dashboardData.longTermCost.toLocaleString()}원`,
               ].map((val, i) => {
-                const bg = i === 0 ? '#fff' : i <= 2 ? '#f0f7ff' : '#fff5f5';
+                const bg = i === 0 ? '#fff' : i <= 2 ? '#f0f7ff' : '#fff8f0';
                 return (
                   <div key={i} style={{
                     background: bg, padding: '14px 8px', textAlign: 'center',
@@ -713,8 +722,8 @@ export default function Home() {
             </div>
             {/* 설명 */}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)' }}>
-              {['판매중 품절률', '판매중 의 총 재고', '판매중 재고의 총 원가', '최종마감 수량', '최종마감 총 원가 합 (소진가능 재고 포함)'].map((desc, i) => {
-                const bg = i === 0 ? '#fff' : i <= 2 ? '#f7fbff' : '#fffafa';
+              {['판매중 품절률', '전체 재고 - 장기재고', '가용 재고의 총 원가', '장기재고 수량', '장기재고 총 원가 합'].map((desc, i) => {
+                const bg = i === 0 ? '#fff' : i <= 2 ? '#f7fbff' : '#fffcf5';
                 return (
                   <div key={i} style={{
                     background: bg, padding: '8px 6px', textAlign: 'center',
