@@ -43,12 +43,22 @@ export default function ClosedProducts() {
 
   // 키워드 추가
   const handleAdd = async () => {
-    const kw = keyword.trim();
-    if (!kw) return;
-    if (closedList.some(item => item.keyword === kw)) {
-      alert('이미 등록된 키워드입니다.');
+    // 쉼표 또는 줄바꿈으로 분리하여 여러 키워드 지원
+    const keywords = keyword.split(/[,\n]/).map(k => k.trim()).filter(k => k);
+    if (keywords.length === 0) return;
+
+    const existingKeys = closedList.map(item => item.keyword);
+    const duplicates = keywords.filter(kw => existingKeys.includes(kw));
+    const newKeywords = keywords.filter(kw => !existingKeys.includes(kw));
+
+    // 입력 내에서도 중복 제거
+    const uniqueNew = [...new Set(newKeywords)];
+
+    if (duplicates.length > 0) {
+      alert(`중복된 키워드가 있어 추가되지 않았습니다: ${duplicates.join(', ')}`);
       return;
     }
+    if (uniqueNew.length === 0) return;
 
     setLoading(true);
     let rows = sheetRows;
@@ -57,11 +67,14 @@ export default function ClosedProducts() {
       setSheetRows(rows);
     }
 
-    const matched = rows
-      .filter(r => r.productName.includes(kw))
-      .map(r => ({ barcode: r.barcode, name: r.productName, stock: r.totalStock }));
+    const additions = uniqueNew.map(kw => ({
+      keyword: kw,
+      products: rows
+        .filter(r => r.productName.includes(kw))
+        .map(r => ({ barcode: r.barcode, name: r.productName, stock: r.totalStock })),
+    }));
 
-    const newList = [...closedList, { keyword: kw, products: matched }];
+    const newList = [...closedList, ...additions];
     setClosedList(newList);
     await dbStoreSet(DB_KEY, newList);
     setKeyword('');
@@ -105,7 +118,7 @@ export default function ClosedProducts() {
           value={keyword}
           onChange={e => setKeyword(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && handleAdd()}
-          placeholder="마감 상품 키워드 입력"
+          placeholder="마감 상품 키워드 입력 (쉼표로 여러 개 가능)"
           style={{
             flex: 1, padding: '10px 14px', fontSize: 14,
             border: '1px solid #d0d0d0', borderRadius: 8, outline: 'none',
