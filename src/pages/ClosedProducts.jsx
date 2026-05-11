@@ -10,6 +10,7 @@ export default function ClosedProducts() {
   const [closedList, setClosedList] = useState([]);
   const [loading, setLoading] = useState(false);
   const [sheetRows, setSheetRows] = useState([]);
+  const [dupModal, setDupModal] = useState(null); // { duplicates: [...] }
 
   // 재고계산기 시트 로드
   const loadSheet = useCallback(async () => {
@@ -44,7 +45,7 @@ export default function ClosedProducts() {
   // 키워드 추가
   const handleAdd = async () => {
     // 쉼표 또는 줄바꿈으로 분리하여 여러 키워드 지원
-    const keywords = keyword.split(/[,\n]/).map(k => k.trim()).filter(k => k);
+    const keywords = keyword.split(/\n/).map(k => k.trim()).filter(k => k);
     if (keywords.length === 0) return;
 
     const existingKeys = closedList.map(item => item.keyword);
@@ -55,7 +56,7 @@ export default function ClosedProducts() {
     const uniqueNew = [...new Set(newKeywords)];
 
     if (duplicates.length > 0) {
-      alert(`중복된 키워드가 있어 추가되지 않았습니다: ${duplicates.join(', ')}`);
+      setDupModal({ duplicates });
       return;
     }
     if (uniqueNew.length === 0) return;
@@ -113,15 +114,15 @@ export default function ClosedProducts() {
       <div style={{
         display: 'flex', gap: 8, marginBottom: 16, alignItems: 'center',
       }}>
-        <input
-          type="text"
+        <textarea
           value={keyword}
           onChange={e => setKeyword(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && handleAdd()}
-          placeholder="마감 상품 키워드 입력 (쉼표로 여러 개 가능)"
+          placeholder="마감 상품 키워드 입력 (줄바꿈으로 여러 개 가능)"
+          rows={keyword.includes('\n') ? 4 : 1}
           style={{
             flex: 1, padding: '10px 14px', fontSize: 14,
             border: '1px solid #d0d0d0', borderRadius: 8, outline: 'none',
+            resize: 'vertical', fontFamily: 'inherit',
           }}
         />
         <button
@@ -231,6 +232,42 @@ export default function ClosedProducts() {
       {!loading && closedList.length === 0 && (
         <div style={{ textAlign: 'center', padding: 40, color: '#999', fontSize: 14 }}>
           등록된 마감 상품 키워드가 없습니다
+        </div>
+      )}
+
+      {/* 중복 키워드 모달 */}
+      {dupModal && (
+        <div style={{
+          position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+          background: 'rgba(0,0,0,0.4)', display: 'flex', justifyContent: 'center', alignItems: 'center',
+          zIndex: 9999,
+        }} onClick={() => setDupModal(null)}>
+          <div style={{
+            background: '#fff', borderRadius: 14, padding: '28px 32px', minWidth: 320, maxWidth: 420,
+            boxShadow: '0 8px 30px rgba(0,0,0,0.18)',
+          }} onClick={e => e.stopPropagation()}>
+            <div style={{ fontSize: 16, fontWeight: 700, color: '#c00', marginBottom: 16 }}>
+              중복된 키워드가 있습니다
+            </div>
+            <div style={{ fontSize: 13, color: '#666', marginBottom: 12 }}>
+              아래 키워드가 이미 등록되어 있어 추가되지 않았습니다.
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 20 }}>
+              {dupModal.duplicates.map(kw => (
+                <span key={kw} style={{
+                  padding: '6px 14px', background: '#fee', color: '#c00',
+                  borderRadius: 20, fontSize: 14, fontWeight: 600, border: '1px solid #fcc',
+                }}>{kw}</span>
+              ))}
+            </div>
+            <div style={{ fontSize: 12, color: '#999', marginBottom: 16 }}>
+              중복 키워드를 제거한 후 다시 시도해주세요.
+            </div>
+            <button onClick={() => setDupModal(null)} style={{
+              width: '100%', padding: '10px 0', fontSize: 14, fontWeight: 700,
+              background: '#222', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer',
+            }}>확인</button>
+          </div>
         </div>
       )}
     </div>
