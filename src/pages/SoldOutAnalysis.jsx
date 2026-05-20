@@ -79,6 +79,10 @@ export default function SoldOutAnalysis() {
   const [toast, setToast] = useState(null);
   const [excludeSet, setExcludeSet] = useState(new Set());
   const [reasonEditing, setReasonEditing] = useState({});
+  const [selected, setSelected] = useState(new Set());
+  const [batchReason, setBatchReason] = useState('');
+  const [showBatchInput, setShowBatchInput] = useState(false);
+  const [editingReason, setEditingReason] = useState(null); // 개별 사유 편집 중인 optionId
 
   const showToast = (type, title, msg) => { setToast({ type, title, message: msg }); setTimeout(() => setToast(null), 3500); };
 
@@ -95,6 +99,29 @@ export default function SoldOutAnalysis() {
     await dbStoreSet('soldout_analysis_exclude', data);
     setExcludeSet(new Set(data.map(i => i.optionId)));
     showToast('success', '제외 완료', `${r.productName} - ${r.optionName} 품절률에서 제외`);
+  };
+
+  const toggleSelect = (optionId) => {
+    setSelected(prev => { const n = new Set(prev); n.has(optionId) ? n.delete(optionId) : n.add(optionId); return n; });
+  };
+
+  const saveBatchReason = async () => {
+    if (!batchReason.trim() || selected.size === 0) return;
+    const updated = { ...tracker };
+    for (const id of selected) {
+      if (updated[id]) updated[id].reason = batchReason.trim();
+    }
+    setTracker(updated);
+    await dbStoreSet(SOLDOUT_TRACKER_KEY, updated);
+    if (viewingDate === todayStr() && cachedResult) {
+      const updatedCache = { ...cachedResult, trackerSnapshot: updated };
+      setCachedResult(updatedCache);
+      await dbStoreSet(`soldout_analysis_cached_${todayStr()}`, updatedCache);
+    }
+    showToast('success', '저장', `${selected.size}개 품목 사유 저장 완료`);
+    setSelected(new Set());
+    setBatchReason('');
+    setShowBatchInput(false);
   };
 
   const saveReason = async (optionId, reason) => {
@@ -191,18 +218,23 @@ export default function SoldOutAnalysis() {
       }
       await dbStoreSet('soldout_analysis_stock_tracker', stockTracker);
 
-      // 분석
+      // 분석: 전체 유효상품 카운트(품절률용) + 품절/위기 목록 생성
       const exSet = new Set((exData || []).map(i => i.optionId));
       const results = [], soldoutIds = [];
+      // 품절률용: 전체 유효 상품 수 / 품절 수 (기존 로직과 동일)
+      const validItems = []; // { optionId, coupangStock } - 유효 전체 상품
       for (const item of upload.items) {
         const bc = bcMap[item.optionId]; if (!bc) continue;
         if (!cMap[item.optionId]) continue;
         if (shouldExclude(bc.status)) continue;
-        // 신규 상품: 7일간 한 번도 재고 > 0이 된 적 없으면 품절 아님
+        // 신규 상품: 7일간 한 번도 재고 > 0이 된 적 없으면 제외
         if (bc.status.includes('신규') && item.coupangStock === 0) {
           const entry = stockTracker[item.optionId];
           if (!entry || !entry.records.some(r => r.stock > 0)) continue;
         }
+        // 유효 상품 (품절률 분모)
+        validItems.push({ optionId: item.optionId, coupangStock: item.coupangStock });
+
         const calc = cMap[item.optionId], barcode = bc.barcode || calc.barcode || '';
         const cs = item.coupangStock, inc = calc.incoming||0, ipgo = calc.ipgo||0;
         const bh = calc.bhStock||0, tot = calc.totalStock||0, a3 = avgMap[item.optionId]||0;
@@ -222,14 +254,14 @@ export default function SoldOutAnalysis() {
       for (const id of Object.keys(trk)) { if (!soldoutIds.includes(id)) delete trk[id]; }
       await dbStoreSet(SOLDOUT_TRACKER_KEY, trk); setTracker(trk);
 
-      // 품절률 스냅샷
-      const rTotal = upload.items.filter(it => { const b = bcMap[it.optionId]; return b && !shouldExclude(b.status) && cMap[it.optionId] && !exSet.has(it.optionId); }).length;
-      const rSold = upload.items.filter(it => { const b = bcMap[it.optionId]; return b && !shouldExclude(b.status) && cMap[it.optionId] && !exSet.has(it.optionId) && it.coupangStock === 0; }).length;
+      // 품절률 스냅샷 (전체 유효 상품 기준, 제외 품목 빼고)
+      const rTotal = validItems.filter(it => !exSet.has(it.optionId)).length;
+      const rSold = validItems.filter(it => !exSet.has(it.optionId) && it.coupangStock === 0).length;
       const rate = rTotal > 0 ? Math.round(rSold / rTotal * 10000) / 100 : 0;
       try { const ex = await dbStoreGet('soldout_analysis_rate_snapshots') || {}; ex[today] = { date: today, total: rTotal, soldout: rSold, rate }; await dbStoreSet('soldout_analysis_rate_snapshots', ex); } catch {}
 
-      // 캐시 저장
-      const cached = { items: results, updatedAt: new Date().toISOString(), rate, trackerSnapshot: trk };
+      // 캐시 저장 (validItems + 제외 스냅샷 포함)
+      const cached = { items: results, updatedAt: new Date().toISOString(), rate, trackerSnapshot: trk, validItems, excludeSnapshot: [...exSet] };
       await dbStoreSet(`soldout_analysis_cached_${today}`, cached);
       setCachedResult(cached); setLastUpdatedAt(cached.updatedAt); setExcludeSet(exSet);
       showToast('success', '업데이트 완료', `${results.length}개 품절/위기 품목 갱신`);
@@ -250,14 +282,25 @@ export default function SoldOutAnalysis() {
     }));
   }, [cachedResult, tracker, viewingDate]);
 
-  // 통계
+  // 통계 (품절률 = 전체 유효상품 중 재고0 비율)
+  // 오늘 → 현재 excludeSet 실시간 반영 / 과거 → 캐시의 excludeSnapshot 사용
   const stats = useMemo(() => {
     const soldout = analysisData.filter(r => r.riskLevel === '품절').length;
     const risk = analysisData.filter(r => r.riskLevel === '품절위기').length;
     const inOrder = analysisData.filter(r => r.orderStatus === 'wing_on' || r.orderStatus === 'check').length;
-    const rate = cachedResult?.rate || 0;
+    const valid = cachedResult?.validItems || [];
+    const isToday = viewingDate === todayStr();
+    const exSource = isToday ? excludeSet : new Set(cachedResult?.excludeSnapshot || []);
+    const rateTotal = valid.filter(it => !exSource.has(it.optionId)).length;
+    const rateSoldout = valid.filter(it => !exSource.has(it.optionId) && it.coupangStock === 0).length;
+    const rate = rateTotal > 0 ? Math.round(rateSoldout / rateTotal * 10000) / 100 : 0;
     return { total: analysisData.length, soldout, risk, inOrder, rate };
-  }, [analysisData, cachedResult]);
+  }, [analysisData, cachedResult, excludeSet, viewingDate]);
+
+  // 화면 표시용 제외 셋 (오늘=실시간, 과거=스냅샷)
+  const displayExcludeSet = useMemo(() => {
+    return viewingDate === todayStr() ? excludeSet : new Set(cachedResult?.excludeSnapshot || []);
+  }, [viewingDate, excludeSet, cachedResult]);
 
   const statusOptions = useMemo(() => { const s = new Set(analysisData.map(i => i.status).filter(Boolean)); return ['전체', ...Array.from(s).sort()]; }, [analysisData]);
 
@@ -333,6 +376,11 @@ export default function SoldOutAnalysis() {
               <span style={{ margin: '0 4px', color: 'var(--border)' }}>|</span>
               {statusOptions.map(s => <button key={s} onClick={() => setStatusFilter(s)} className={`filter-btn${statusFilter === s ? ' active' : ''}`}>{s}</button>)}
               <div style={{ flex: 1 }} />
+              {selected.size > 0 && (
+                <button className="btn btn-primary btn-sm" onClick={() => setShowBatchInput(true)}>
+                  {selected.size}개 사유 입력
+                </button>
+              )}
               <span style={{ fontSize: 13, fontWeight: 700, padding: '4px 10px', borderRadius: 8, background: stats.rate > 10 ? '#fef0ef' : stats.rate > 5 ? '#fff8f0' : '#f0faf0', color: stats.rate > 10 ? '#d93025' : stats.rate > 5 ? '#e65100' : '#2e7d32' }}>품절률 {stats.rate}%</span>
               <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{fmt(filtered.length)}개</span>
             </>}
@@ -386,15 +434,17 @@ export default function SoldOutAnalysis() {
         <div className="table-wrapper" style={{ maxHeight: 'calc(100vh - 340px)', overflowY: 'auto' }}>
           <table className="data-table">
             <thead><tr>
+              <th style={{ width: 32 }}><input type="checkbox" checked={filtered.filter(r => r.riskLevel === '품절').length > 0 && filtered.filter(r => r.riskLevel === '품절').every(r => selected.has(r.optionId))} onChange={() => { const ids = filtered.filter(r => r.riskLevel === '품절').map(r => r.optionId); const allSel = ids.every(id => selected.has(id)); setSelected(allSel ? new Set() : new Set(ids)); }} style={{ cursor: 'pointer' }} /></th>
               <th style={{ width: 56 }}>상태</th><th style={{ width: 44 }}>등급</th><th>옵션ID</th><th style={{ maxWidth: 200 }}>상품명</th><th>옵션명</th><th>입고예상</th><th>쿠팡재고</th><th>박스히어로</th><th>총재고</th><th>3일평균</th><th>예상주</th><th style={{ width: 80 }}>발주현황</th><th>품절일</th><th>사유</th><th style={{ width: 44 }}>제외</th>
             </tr></thead>
             <tbody>
               {filtered.length === 0 ? (
-                <tr><td colSpan={15} style={{ textAlign: 'center', padding: 40, color: 'var(--text-secondary)' }}>해당 조건의 품목이 없습니다</td></tr>
+                <tr><td colSpan={16} style={{ textAlign: 'center', padding: 40, color: 'var(--text-secondary)' }}>해당 조건의 품목이 없습니다</td></tr>
               ) : filtered.map(r => {
                 const rc = RISK_CONFIG[r.riskLevel];
                 return (
-                  <tr key={r.optionId} className={r.riskLevel === '품절' ? 'row-emergency' : ''} style={excludeSet.has(r.optionId) ? { opacity: 0.45 } : {}}>
+                  <tr key={r.optionId} className={r.riskLevel === '품절' ? 'row-emergency' : ''} style={{ ...(displayExcludeSet.has(r.optionId) ? { opacity: 0.45 } : {}), ...(selected.has(r.optionId) ? { background: '#e8f0fe' } : {}) }}>
+                    <td className="center">{r.riskLevel === '품절' && <input type="checkbox" checked={selected.has(r.optionId)} onChange={() => toggleSelect(r.optionId)} style={{ cursor: 'pointer' }} />}</td>
                     <td><span className={`alert-badge ${rc.cls}`} style={{ fontSize: 10, padding: '1px 6px' }}>{rc.emoji} {rc.label}</span></td>
                     <td><span className={`alert-badge ${r.status === '효자' ? 'normal' : r.status?.includes('신규') ? 'excess' : 'no-sales'}`} style={{ fontSize: 10, padding: '1px 6px' }}>{r.status || '-'}</span></td>
                     <td style={{ fontSize: 11, color: '#888' }}>{r.optionId}</td>
@@ -412,16 +462,28 @@ export default function SoldOutAnalysis() {
                       : <span className="alert-badge emergency" style={{ padding: '3px 10px' }}>⚠️ 발주필요</span>}
                     </td>
                     <td className="center">{r.riskLevel === '품절' ? <span style={{ fontWeight: 700, color: r.days >= 7 ? '#d93025' : r.days >= 3 ? '#e65100' : 'var(--text)' }}>{r.days}일</span> : '-'}</td>
-                    <td style={{ fontSize: 11, maxWidth: 160 }}>
+                    <td style={{ fontSize: 11, maxWidth: 180 }}>
                       {r.riskLevel === '품절' ? (
-                        <div style={{ display: 'flex', gap: 4 }}>
-                          <input type="text" placeholder="사유" defaultValue={r.reason} onChange={e => setReasonEditing(p => ({ ...p, [r.optionId]: e.target.value }))} onKeyDown={e => { if (e.key === 'Enter') saveReason(r.optionId, e.target.value); }} className="edit-input" style={{ flex: 1, minWidth: 0 }} />
-                          <button onClick={() => saveReason(r.optionId, reasonEditing[r.optionId] ?? r.reason)} className="btn btn-primary btn-sm" style={{ fontSize: 11, padding: '2px 8px' }}>저장</button>
-                        </div>
+                        editingReason === r.optionId ? (
+                          <div style={{ display: 'flex', gap: 4 }}>
+                            <input type="text" placeholder="사유 입력" defaultValue={r.reason} autoFocus
+                              onChange={e => setReasonEditing(p => ({ ...p, [r.optionId]: e.target.value }))}
+                              onKeyDown={e => { if (e.key === 'Enter') { saveReason(r.optionId, e.target.value); setEditingReason(null); } if (e.key === 'Escape') setEditingReason(null); }}
+                              onBlur={() => setTimeout(() => setEditingReason(null), 150)}
+                              className="edit-input" style={{ flex: 1, minWidth: 0 }} />
+                            <button onClick={() => { saveReason(r.optionId, reasonEditing[r.optionId] ?? r.reason); setEditingReason(null); }} className="btn btn-primary btn-sm" style={{ fontSize: 11, padding: '2px 8px' }}>저장</button>
+                          </div>
+                        ) : r.reason ? (
+                          <span onClick={() => setEditingReason(r.optionId)} style={{ cursor: 'pointer', display: 'inline-block', padding: '2px 8px', borderRadius: 6, background: '#f3eef8', color: '#7c4dbd', fontWeight: 600, fontSize: 11, maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.reason}>
+                            {r.reason}
+                          </span>
+                        ) : (
+                          <span onClick={() => setEditingReason(r.optionId)} style={{ cursor: 'pointer', color: '#ccc', fontSize: 11 }}>클릭하여 입력</span>
+                        )
                       ) : <span style={{ color: '#666' }}>{r.riskReason}</span>}
                     </td>
                     <td className="center">
-                      {excludeSet.has(r.optionId) ? <span style={{ fontSize: 11, color: '#1e8e3e', fontWeight: 600 }}>제외</span>
+                      {displayExcludeSet.has(r.optionId) ? <span style={{ fontSize: 11, color: '#1e8e3e', fontWeight: 600 }}>제외</span>
                       : <button onClick={() => addExclude(r)} title="품절률 제외" style={{ width: 24, height: 24, borderRadius: 6, border: 'none', cursor: 'pointer', background: '#f1f3f4', color: '#999', fontSize: 12, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>✕</button>}
                     </td>
                   </tr>
@@ -433,6 +495,33 @@ export default function SoldOutAnalysis() {
       </>}
 
       {cachedResult && <div style={{ fontSize: 11, color: 'var(--text-secondary)', padding: '8px 4px 0' }}>최종마감·품질확인서·마감대상 제외 | 쿠팡재고=업로드 엑셀 | 그 외=스프레드시트 | 품절위기=1주 미만 또는 3일내 소진</div>}
+
+      {/* 일괄 사유 입력 모달 */}
+      {showBatchInput && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }} onClick={() => setShowBatchInput(false)}>
+          <div style={{ background: '#fff', borderRadius: 12, padding: 24, minWidth: 400, boxShadow: '0 8px 32px rgba(0,0,0,0.2)' }} onClick={e => e.stopPropagation()}>
+            <h3 style={{ marginBottom: 12, fontSize: 16 }}>{selected.size}개 품목 사유 입력</h3>
+            <div style={{ fontSize: 12, color: '#666', marginBottom: 12, maxHeight: 120, overflowY: 'auto' }}>
+              {analysisData.filter(r => selected.has(r.optionId)).map(r => (
+                <div key={r.optionId} style={{ padding: '2px 0' }}>{r.productName} - {r.optionName}</div>
+              ))}
+            </div>
+            <input
+              className="search-input"
+              style={{ width: '100%', minWidth: 'auto', marginBottom: 12 }}
+              placeholder="사유를 입력하세요 (예: 재발주 완료, 생산중 6/3 입고예정)"
+              value={batchReason}
+              onChange={e => setBatchReason(e.target.value)}
+              autoFocus
+              onKeyDown={e => e.key === 'Enter' && saveBatchReason()}
+            />
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button className="btn btn-outline btn-sm" onClick={() => setShowBatchInput(false)}>취소</button>
+              <button className="btn btn-primary btn-sm" onClick={saveBatchReason}>적용</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <style>{`
         @keyframes slideIn { from { opacity: 0; transform: translateX(40px); } to { opacity: 1; transform: translateX(0); } }
