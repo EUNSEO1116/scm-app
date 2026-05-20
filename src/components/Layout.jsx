@@ -22,6 +22,13 @@ const navItems = [
     { label: '제외 품목 관리', path: '/soldout/exclude' },
     { label: '품절 기록', path: '/soldout/history' },
   ]},
+  { id: 'soldout-analysis', label: '품절 분석', icon: 'soldoutAnalysis', children: [
+    { label: '(NEW)품절 현황', path: '/soldout-analysis' },
+    { label: '(NEW)품절기록', path: '/soldout-analysis/history' },
+    { label: '(NEW)제외품목관리', path: '/soldout-analysis/exclude' },
+    { label: '(NEW)월 품절률', path: '/soldout-analysis/rate' },
+    { label: '데이터 업로드', path: '/soldout-analysis/upload' },
+  ]},
   { id: 'issue', label: '이슈관리', icon: 'issue', children: [
     { label: '특별관리', path: '/issue' },
     { label: '상품개선', path: '/issue/improvement' },
@@ -38,6 +45,7 @@ const icons = {
   sales: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 3v18h18"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/></svg>,
   soldout: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18.36 6.64A9 9 0 015.64 18.36M5.64 5.64A9 9 0 0118.36 18.36"/><line x1="1" y1="1" x2="23" y2="23"/></svg>,
   issue: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>,
+  soldoutAnalysis: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 21H3V3"/><path d="M21 7l-5 5-4-4-3 3"/><circle cx="21" cy="7" r="1.5"/><circle cx="16" cy="12" r="1.5"/><circle cx="12" cy="8" r="1.5"/><circle cx="9" cy="11" r="1.5"/></svg>,
   supplies: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/></svg>,
 };
 
@@ -59,6 +67,11 @@ const pageTitles = {
   '/soldout/history': '품절 기록',
   '/issue': '특별관리',
   '/issue/improvement': '상품개선',
+  '/soldout-analysis': '(NEW)품절 현황',
+  '/soldout-analysis/history': '(NEW)품절기록',
+  '/soldout-analysis/exclude': '(NEW)제외품목관리',
+  '/soldout-analysis/rate': '(NEW)월 품절률',
+  '/soldout-analysis/upload': '데이터 업로드',
   '/supplies': '부자재 목록',
   '/supplies/order': '부자재 발주',
 };

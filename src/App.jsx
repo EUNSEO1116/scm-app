@@ -20,6 +20,11 @@ import Sales from './pages/Sales';
 import Placeholder from './pages/Placeholder';
 import IncheonIncoming from './pages/IncheonIncoming';
 import ClosedProducts from './pages/ClosedProducts';
+import SoldOutAnalysis from './pages/SoldOutAnalysis';
+import SoldOutAnalysisHistory from './pages/SoldOutAnalysisHistory';
+import SoldOutAnalysisExclude from './pages/SoldOutAnalysisExclude';
+import SoldOutAnalysisRate from './pages/SoldOutAnalysisRate';
+import SoldOutAnalysisUpload from './pages/SoldOutAnalysisUpload';
 
 function App() {
   return (
@@ -41,6 +46,11 @@ function App() {
           <Route path="/soldout/rate" element={<SoldOutRate />} />
           <Route path="/soldout/exclude" element={<SoldOutExclude />} />
           <Route path="/soldout/history" element={<SoldOutHistory />} />
+          <Route path="/soldout-analysis" element={<SoldOutAnalysis />} />
+          <Route path="/soldout-analysis/history" element={<SoldOutAnalysisHistory />} />
+          <Route path="/soldout-analysis/exclude" element={<SoldOutAnalysisExclude />} />
+          <Route path="/soldout-analysis/rate" element={<SoldOutAnalysisRate />} />
+          <Route path="/soldout-analysis/upload" element={<SoldOutAnalysisUpload />} />
           <Route path="/issue" element={<IssueManagement />} />
           <Route path="/issue/improvement" element={<ProductImprovement />} />
           <Route path="/supplies" element={<SuppliesList />} />

@@ -1,0 +1,445 @@
+import { useState, useEffect, useMemo } from 'react';
+import { dbStoreGet, dbStoreSet } from '../utils/dbApi';
+
+const SHEET_ID = '1NXhW_gG0b-gXuVqrhbY9ErWi8uO_7pXIy-NTo4FbE1I';
+const CSV_BARCODE = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent('쿠팡바코드')}`;
+const TSV_CALC = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=tsv&gid=1349677364`;
+const CSV_ORDER = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent('발주장부')}`;
+
+const STORE_KEY_PREFIX = 'soldout_analysis_';
+const SOLDOUT_TRACKER_KEY = 'soldout_analysis_tracker';
+const EXCLUDE_KEYWORDS = ['최종마감', '품질확인서', '마감대상'];
+const CRISIS_DAYS_THRESHOLD = 3;
+const WING_ON_STATUSES = ['CN 창고도착', '부분출고 대기', '출고 완료', '출고 대기', '출고완료'];
+
+function parseCsvRow(line) {
+  const result = []; let current = ''; let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (inQuotes) { if (ch === '"' && line[i+1] === '"') { current += '"'; i++; } else if (ch === '"') inQuotes = false; else current += ch; }
+    else { if (ch === '"') inQuotes = true; else if (ch === ',') { result.push(current); current = ''; } else current += ch; }
+  }
+  result.push(current); return result;
+}
+function safeNum(v) { if (v === '' || v === '-' || v == null) return 0; const n = Number(v); return isNaN(n) ? 0 : n; }
+function todayStr() { return new Date().toISOString().slice(0, 10).replace(/-/g, ''); }
+function dateToKey(d) { return `${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}`; }
+function keyToDisplay(k) { return `${k.slice(0,4)}-${k.slice(4,6)}-${k.slice(6,8)}`; }
+function fmt(n) { if (n == null) return '-'; return Number(n).toLocaleString('ko-KR'); }
+function fmtDec(n, d=1) { const num = Number(n); return isNaN(num) ? '-' : num.toFixed(d); }
+function shouldExclude(s) { return s ? EXCLUDE_KEYWORDS.some(kw => s.includes(kw)) : false; }
+
+function parseOrderDateSort(dateStr) { const m = (dateStr||'').match(/(\d+)월\s*(\d+)일/); return m ? Number(m[1])*100+Number(m[2]) : 9999; }
+function parseShipDate(str) { if (!str) return null; const m = str.match(/(\d+)\/(\d+)/); return m ? new Date(new Date().getFullYear(), parseInt(m[1],10)-1, parseInt(m[2],10)) : null; }
+function addDays(date, days) { const d = new Date(date); d.setDate(d.getDate()+days); return d; }
+function fmtDate(d) { return `${d.getMonth()+1}/${d.getDate()}`; }
+
+function parseOrderBook(csv) {
+  const skuMap = new Map(), skuArrival = new Map();
+  if (!csv) return { skuMap, skuArrival };
+  const lines = csv.split('\n').filter(l => l.trim()), skuOrders = {};
+  for (let i = 1; i < lines.length; i++) {
+    const cols = parseCsvRow(lines[i]), sku = (cols[2]||'').trim(), cnStatus = (cols[8]||'').trim();
+    const shipDate = (cols[10]||'').trim(), orderDate = (cols[16]||'').trim();
+    if (!sku) continue;
+    const isWingOn = WING_ON_STATUSES.some(s => cnStatus.includes(s));
+    const prev = skuMap.get(sku);
+    if (!prev || (isWingOn && prev !== 'wing_on')) skuMap.set(sku, isWingOn ? 'wing_on' : 'check');
+    if (!skuOrders[sku]) skuOrders[sku] = [];
+    skuOrders[sku].push({ cnStatus, shipDate, orderDate });
+  }
+  const today = new Date();
+  for (const [sku, orders] of Object.entries(skuOrders)) {
+    orders.sort((a, b) => parseOrderDateSort(a.orderDate) - parseOrderDateSort(b.orderDate));
+    const cn = orders[0].cnStatus; let arrival = null;
+    if (cn.includes('출고 완료') || cn.includes('출고완료')) { const sd = parseShipDate(orders[0].shipDate); if (sd) arrival = addDays(sd, 3); }
+    else if (cn.includes('CN 창고도착') || cn.includes('작업 대기') || cn.includes('출고 대기') || (cn.includes('내륙') && cn.includes('운송'))) arrival = addDays(today, 4);
+    else if (cn === '업체발송대기') arrival = addDays(today, 8);
+    if (arrival) skuArrival.set(sku, fmtDate(arrival));
+  }
+  return { skuMap, skuArrival };
+}
+
+const RISK_CONFIG = {
+  '품절': { emoji: '🔴', cls: 'soldout', label: '품절' },
+  '품절위기': { emoji: '🟠', cls: 'risk', label: '품절위기' },
+};
+
+export default function SoldOutAnalysis() {
+  const [loading, setLoading] = useState(true);
+  const [updating, setUpdating] = useState(false);
+  const [cachedResult, setCachedResult] = useState(null);
+  const [lastUpdatedAt, setLastUpdatedAt] = useState(null);
+  const [viewingDate, setViewingDate] = useState(todayStr());
+  const [tracker, setTracker] = useState({});
+  const [riskFilter, setRiskFilter] = useState('all');
+  const [statusFilter, setStatusFilter] = useState('전체');
+  const [calendarDate, setCalendarDate] = useState(new Date());
+  const [showCalendar, setShowCalendar] = useState(false);
+  const [toast, setToast] = useState(null);
+  const [excludeSet, setExcludeSet] = useState(new Set());
+  const [reasonEditing, setReasonEditing] = useState({});
+
+  const showToast = (type, title, msg) => { setToast({ type, title, message: msg }); setTimeout(() => setToast(null), 3500); };
+
+  const calcDays = (startDate) => {
+    if (!startDate) return 1;
+    const s = `${startDate.slice(0,4)}-${startDate.slice(4,6)}-${startDate.slice(6,8)}`;
+    return Math.max(1, Math.floor((new Date() - new Date(s)) / 86400000) + 1);
+  };
+
+  const addExclude = async (r) => {
+    if (excludeSet.has(r.optionId)) return;
+    const data = await dbStoreGet('soldout_analysis_exclude') || [];
+    data.push({ optionId: r.optionId, productName: r.productName, optionName: r.optionName, status: r.status, barcode: r.barcode, excludedAt: new Date().toISOString() });
+    await dbStoreSet('soldout_analysis_exclude', data);
+    setExcludeSet(new Set(data.map(i => i.optionId)));
+    showToast('success', '제외 완료', `${r.productName} - ${r.optionName} 품절률에서 제외`);
+  };
+
+  const saveReason = async (optionId, reason) => {
+    const updated = { ...tracker };
+    if (updated[optionId]) {
+      updated[optionId].reason = reason;
+      setTracker(updated);
+      await dbStoreSet(SOLDOUT_TRACKER_KEY, updated);
+      // 오늘 캐시의 trackerSnapshot도 업데이트
+      if (viewingDate === todayStr() && cachedResult) {
+        const updatedCache = { ...cachedResult, trackerSnapshot: updated };
+        setCachedResult(updatedCache);
+        await dbStoreSet(`soldout_analysis_cached_${todayStr()}`, updatedCache);
+      }
+      showToast('success', '저장', '사유 저장 완료');
+    }
+  };
+
+  // === 초기 로드: DB 캐시만 (빠름) ===
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      const today = todayStr();
+      const [cached, trk, exData] = await Promise.all([
+        dbStoreGet(`soldout_analysis_cached_${today}`),
+        dbStoreGet(SOLDOUT_TRACKER_KEY),
+        dbStoreGet('soldout_analysis_exclude'),
+      ]);
+      setCachedResult(cached);
+      if (cached) setLastUpdatedAt(cached.updatedAt);
+      setTracker(trk || {});
+      setExcludeSet(new Set((exData || []).map(i => i.optionId)));
+      setLoading(false);
+    })();
+  }, []);
+
+  // === 업데이트 버튼: 스프레드시트 + 엑셀 데이터 → 계산 → DB 캐시 ===
+  const handleUpdate = async () => {
+    setUpdating(true);
+    try {
+      const today = todayStr();
+      const [barcodeRes, calcRes, orderRes, upload, exData] = await Promise.all([
+        fetch(CSV_BARCODE), fetch(TSV_CALC), fetch(CSV_ORDER),
+        dbStoreGet(`${STORE_KEY_PREFIX}${today}`),
+        dbStoreGet('soldout_analysis_exclude'),
+      ]);
+      if (!upload || !upload.items) {
+        showToast('error', '실패', '오늘 업로드 데이터가 없습니다. 데이터 업로드를 먼저 해주세요.');
+        setUpdating(false); return;
+      }
+
+      // 3일 평균
+      const avg3dKeys = [];
+      for (let i = 0; i < 3; i++) { const d = new Date(+today.slice(0,4), +today.slice(4,6)-1, +today.slice(6,8)-i); avg3dKeys.push(dateToKey(d)); }
+      const avg3dSets = await Promise.all(avg3dKeys.map(k => dbStoreGet(`${STORE_KEY_PREFIX}${k}`).catch(() => null)));
+      const salesBy = {};
+      for (const ds of avg3dSets) { if (!ds?.items) continue; for (const it of ds.items) { if (!salesBy[it.optionId]) salesBy[it.optionId] = { t: 0, c: 0 }; salesBy[it.optionId].t += (it.salesQty||0); salesBy[it.optionId].c++; } }
+      const avgMap = {}; for (const [id, v] of Object.entries(salesBy)) avgMap[id] = v.c > 0 ? v.t / v.c : 0;
+
+      // 쿠팡바코드
+      const bcCsv = await barcodeRes.text(); const bcLines = bcCsv.split('\n').filter(l => l.trim()); const bcMap = {};
+      for (let i = 1; i < bcLines.length; i++) { const c = parseCsvRow(bcLines[i]); const oid = (c[1]||'').trim(); if (oid) bcMap[oid] = { productName: (c[3]||'').trim(), optionName: (c[4]||'').trim(), status: (c[9]||'').trim(), barcode: (c[5]||'').trim() }; }
+
+      // 재고계산기
+      const calcTsv = await calcRes.text(); const cLines = calcTsv.split('\n').filter(l => l.trim()); const cMap = {};
+      for (let i = 1; i < cLines.length; i++) { const c = cLines[i].split('\t'); const oid = (c[1]||'').trim(); if (oid) cMap[oid] = { barcode: (c[2]||'').trim(), incoming: safeNum(c[7]), ipgo: safeNum(c[8]), bhStock: safeNum(c[9]), totalStock: safeNum(c[14]) }; }
+
+      // 발주장부
+      const orderCsv = await orderRes.text();
+      const { skuMap: oSkus, skuArrival: oArr } = parseOrderBook(orderCsv);
+
+      // 신규 상품 재고 추적 (최근 7일 업로드 데이터 전체 스캔)
+      const stockTracker = {};
+      const stKeys = [];
+      for (let i = 0; i < 7; i++) {
+        const d = new Date(+today.slice(0,4), +today.slice(4,6)-1, +today.slice(6,8)-i);
+        stKeys.push(dateToKey(d));
+      }
+      const stDatasets = await Promise.all(stKeys.map(k => dbStoreGet(`${STORE_KEY_PREFIX}${k}`).catch(() => null)));
+      for (let di = 0; di < stDatasets.length; di++) {
+        const ds = stDatasets[di];
+        if (!ds?.items) continue;
+        const dateKey = stKeys[di];
+        for (const item of ds.items) {
+          const bc = bcMap[item.optionId];
+          if (!bc || !bc.status.includes('신규')) continue;
+          const oid = item.optionId;
+          if (!stockTracker[oid]) stockTracker[oid] = { records: [], firstSeen: dateKey };
+          const entry = stockTracker[oid];
+          if (!entry.records.find(r => r.date === dateKey)) {
+            entry.records.push({ date: dateKey, stock: item.coupangStock });
+          }
+        }
+      }
+      await dbStoreSet('soldout_analysis_stock_tracker', stockTracker);
+
+      // 분석
+      const exSet = new Set((exData || []).map(i => i.optionId));
+      const results = [], soldoutIds = [];
+      for (const item of upload.items) {
+        const bc = bcMap[item.optionId]; if (!bc) continue;
+        if (!cMap[item.optionId]) continue;
+        if (shouldExclude(bc.status)) continue;
+        // 신규 상품: 7일간 한 번도 재고 > 0이 된 적 없으면 품절 아님
+        if (bc.status.includes('신규') && item.coupangStock === 0) {
+          const entry = stockTracker[item.optionId];
+          if (!entry || !entry.records.some(r => r.stock > 0)) continue;
+        }
+        const calc = cMap[item.optionId], barcode = bc.barcode || calc.barcode || '';
+        const cs = item.coupangStock, inc = calc.incoming||0, ipgo = calc.ipgo||0;
+        const bh = calc.bhStock||0, tot = calc.totalStock||0, a3 = avgMap[item.optionId]||0;
+        const wk = a3 > 0 ? (cs + inc) / (a3 * 7) : 0;
+        let rl = null, rr = '', fa = '';
+        if (cs === 0) { rl = '품절'; soldoutIds.push(item.optionId); if (inc > 0 || ipgo > 0) { const t = new Date(); t.setDate(t.getDate()+1); fa = `${t.getMonth()+1}/${t.getDate()}`; rr = `입고예정 ${inc+ipgo}개`; } else rr = bh > 0 ? 'BH재고 있음' : '재고 없음'; }
+        else if (inc > 0 || ipgo > 0) continue;
+        else if (a3 > 0) { const dl = cs / a3; if (wk > 0 && wk < 1) { rl = '품절위기'; rr = `예상 ${fmtDec(wk)}주`; } else if (dl < CRISIS_DAYS_THRESHOLD) { rl = '품절위기'; rr = `${fmtDec(dl)}일분`; } }
+        if (!rl) continue;
+        results.push({ optionId: item.optionId, barcode, productName: item.productName || bc.productName, optionName: item.optionName || bc.optionName, status: bc.status, coupangStock: cs, incoming: inc, ipgo, bhStock: bh, totalStock: tot, avg3d: a3, weeksStockIncoming: wk, salesQty: item.salesQty, riskLevel: rl, riskReason: rr, orderStatus: oSkus.get(barcode)||null, arrivalEst: fa || (oArr.get(barcode)||'') });
+      }
+      results.sort((a, b) => { if (a.riskLevel !== b.riskLevel) return a.riskLevel === '품절' ? -1 : 1; return b.avg3d - a.avg3d; });
+
+      // 추적기
+      const trk = await dbStoreGet(SOLDOUT_TRACKER_KEY) || {};
+      for (const id of soldoutIds) { if (!trk[id]) trk[id] = { startDate: today, reason: '' }; }
+      for (const id of Object.keys(trk)) { if (!soldoutIds.includes(id)) delete trk[id]; }
+      await dbStoreSet(SOLDOUT_TRACKER_KEY, trk); setTracker(trk);
+
+      // 품절률 스냅샷
+      const rTotal = upload.items.filter(it => { const b = bcMap[it.optionId]; return b && !shouldExclude(b.status) && cMap[it.optionId] && !exSet.has(it.optionId); }).length;
+      const rSold = upload.items.filter(it => { const b = bcMap[it.optionId]; return b && !shouldExclude(b.status) && cMap[it.optionId] && !exSet.has(it.optionId) && it.coupangStock === 0; }).length;
+      const rate = rTotal > 0 ? Math.round(rSold / rTotal * 10000) / 100 : 0;
+      try { const ex = await dbStoreGet('soldout_analysis_rate_snapshots') || {}; ex[today] = { date: today, total: rTotal, soldout: rSold, rate }; await dbStoreSet('soldout_analysis_rate_snapshots', ex); } catch {}
+
+      // 캐시 저장
+      const cached = { items: results, updatedAt: new Date().toISOString(), rate, trackerSnapshot: trk };
+      await dbStoreSet(`soldout_analysis_cached_${today}`, cached);
+      setCachedResult(cached); setLastUpdatedAt(cached.updatedAt); setExcludeSet(exSet);
+      showToast('success', '업데이트 완료', `${results.length}개 품절/위기 품목 갱신`);
+    } catch (e) { console.error(e); showToast('error', '실패', '스프레드시트 연동 오류'); }
+    setUpdating(false);
+  };
+
+  // === 분석 데이터: 캐시 + 사유 합침 ===
+  const analysisData = useMemo(() => {
+    if (!cachedResult?.items) return [];
+    // 오늘이면 현재 tracker, 과거 날짜면 캐시에 저장된 trackerSnapshot 사용
+    const isToday = viewingDate === todayStr();
+    const trkSource = isToday ? tracker : (cachedResult.trackerSnapshot || {});
+    return cachedResult.items.map(r => ({
+      ...r,
+      days: trkSource[r.optionId] ? calcDays(trkSource[r.optionId].startDate) : 1,
+      reason: trkSource[r.optionId]?.reason || '',
+    }));
+  }, [cachedResult, tracker, viewingDate]);
+
+  // 통계
+  const stats = useMemo(() => {
+    const soldout = analysisData.filter(r => r.riskLevel === '품절').length;
+    const risk = analysisData.filter(r => r.riskLevel === '품절위기').length;
+    const inOrder = analysisData.filter(r => r.orderStatus === 'wing_on' || r.orderStatus === 'check').length;
+    const rate = cachedResult?.rate || 0;
+    return { total: analysisData.length, soldout, risk, inOrder, rate };
+  }, [analysisData, cachedResult]);
+
+  const statusOptions = useMemo(() => { const s = new Set(analysisData.map(i => i.status).filter(Boolean)); return ['전체', ...Array.from(s).sort()]; }, [analysisData]);
+
+  const filtered = useMemo(() => {
+    let rows = analysisData;
+    if (riskFilter === '품절') rows = rows.filter(r => r.riskLevel === '품절');
+    else if (riskFilter === '품절위기') rows = rows.filter(r => r.riskLevel === '품절위기');
+    else if (riskFilter === 'inOrder') rows = rows.filter(r => r.orderStatus === 'wing_on' || r.orderStatus === 'check');
+    if (statusFilter !== '전체') rows = rows.filter(r => r.status === statusFilter);
+    return rows;
+  }, [analysisData, riskFilter, statusFilter]);
+
+  // 달력
+  const calYear = calendarDate.getFullYear(), calMonth = calendarDate.getMonth();
+  const firstDay = new Date(calYear, calMonth, 1).getDay();
+  const daysInMonth = new Date(calYear, calMonth + 1, 0).getDate();
+  const calendarDays = useMemo(() => { const d = []; for (let i = 0; i < firstDay; i++) d.push(null); for (let i = 1; i <= daysInMonth; i++) d.push(i); return d; }, [firstDay, daysInMonth]);
+
+  const handleCalendarDateClick = async (day) => {
+    if (!day) return;
+    const key = dateToKey(new Date(calYear, calMonth, day));
+    setViewingDate(key); setShowCalendar(false);
+    const cached = await dbStoreGet(`soldout_analysis_cached_${key}`);
+    setCachedResult(cached || null);
+    if (cached) setLastUpdatedAt(cached.updatedAt);
+    else setLastUpdatedAt(null);
+  };
+  const goToToday = async () => {
+    const t = todayStr(); setViewingDate(t);
+    const cached = await dbStoreGet(`soldout_analysis_cached_${t}`);
+    setCachedResult(cached || null); if (cached) setLastUpdatedAt(cached.updatedAt);
+  };
+  const prevMonth = () => setCalendarDate(new Date(calYear, calMonth - 1, 1));
+  const nextMonth = () => setCalendarDate(new Date(calYear, calMonth + 1, 1));
+  const todayKey = todayStr();
+
+  if (loading) return <div style={{ textAlign: 'center', padding: 80, color: 'var(--text-secondary)' }}><div style={{ fontSize: 32, marginBottom: 12 }}>⏳</div>불러오는 중...</div>;
+
+  return (
+    <div>
+      {toast && (
+        <div style={{ position: 'fixed', top: 32, right: 32, zIndex: 9999, display: 'flex', alignItems: 'flex-start', gap: 12, padding: '16px 20px', borderRadius: 12, background: toast.type === 'success' ? '#e6f4ea' : '#fce8e6', border: `1px solid ${toast.type === 'success' ? '#1e8e3e' : '#d93025'}`, boxShadow: '0 8px 24px rgba(0,0,0,0.15)', animation: 'slideIn 0.3s ease', minWidth: 300 }}>
+          <div style={{ width: 32, height: 32, borderRadius: '50%', background: toast.type === 'success' ? '#1e8e3e' : '#d93025', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5"><path d="M20 6L9 17l-5-5"/></svg>
+          </div>
+          <div><div style={{ fontWeight: 700, fontSize: 14, color: toast.type === 'success' ? '#1e8e3e' : '#d93025' }}>{toast.title}</div><div style={{ fontSize: 13, color: '#333', marginTop: 2 }}>{toast.message}</div></div>
+        </div>
+      )}
+
+      {/* 데이터 없을 때 */}
+      {!cachedResult && (
+        <div className="card" style={{ marginBottom: 20, padding: 24, textAlign: 'center', color: 'var(--text-secondary)' }}>
+          <div style={{ fontSize: 24, marginBottom: 8 }}>📊</div>
+          <div style={{ fontSize: 14, fontWeight: 600 }}>{keyToDisplay(viewingDate)} 분석 데이터가 없습니다</div>
+          <div style={{ fontSize: 13, marginTop: 4 }}>
+            {viewingDate === todayStr() ? '아래 업데이트 버튼을 눌러 스프레드시트에서 데이터를 가져오세요.' : '해당 날짜에 업데이트된 기록이 없습니다.'}
+          </div>
+          {viewingDate !== todayStr() && (
+            <button onClick={goToToday} style={{ marginTop: 12, padding: '6px 16px', borderRadius: 6, border: '1px solid var(--primary)', background: '#fff', color: 'var(--primary)', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>오늘로 돌아가기</button>
+          )}
+        </div>
+      )}
+
+      {/* 필터 바 */}
+      <div className="card" style={{ marginBottom: 16, position: 'relative', overflow: 'visible' }}>
+        <div className="card-body">
+          <div className="filter-bar">
+            {cachedResult && <>
+              <button className={`filter-btn${riskFilter === 'all' ? ' active' : ''}`} onClick={() => setRiskFilter('all')}>전체 ({stats.total})</button>
+              <button className={`filter-btn${riskFilter === '품절' ? ' active' : ''}`} style={riskFilter === '품절' ? { background: '#c5221f', borderColor: '#c5221f' } : {}} onClick={() => setRiskFilter(riskFilter === '품절' ? 'all' : '품절')}>🔴 품절 ({stats.soldout})</button>
+              <button className={`filter-btn${riskFilter === '품절위기' ? ' active' : ''}`} style={riskFilter === '품절위기' ? { background: '#e65100', borderColor: '#e65100' } : {}} onClick={() => setRiskFilter(riskFilter === '품절위기' ? 'all' : '품절위기')}>🟠 위기 ({stats.risk})</button>
+              <button className={`filter-btn${riskFilter === 'inOrder' ? ' active' : ''}`} style={riskFilter === 'inOrder' ? { background: '#00897b', borderColor: '#00897b' } : {}} onClick={() => setRiskFilter(riskFilter === 'inOrder' ? 'all' : 'inOrder')}>✈️ 발주 ({stats.inOrder})</button>
+              <span style={{ margin: '0 4px', color: 'var(--border)' }}>|</span>
+              {statusOptions.map(s => <button key={s} onClick={() => setStatusFilter(s)} className={`filter-btn${statusFilter === s ? ' active' : ''}`}>{s}</button>)}
+              <div style={{ flex: 1 }} />
+              <span style={{ fontSize: 13, fontWeight: 700, padding: '4px 10px', borderRadius: 8, background: stats.rate > 10 ? '#fef0ef' : stats.rate > 5 ? '#fff8f0' : '#f0faf0', color: stats.rate > 10 ? '#d93025' : stats.rate > 5 ? '#e65100' : '#2e7d32' }}>품절률 {stats.rate}%</span>
+              <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{fmt(filtered.length)}개</span>
+            </>}
+            {viewingDate === todayStr() && !cachedResult && (
+              <button onClick={handleUpdate} disabled={updating} className="btn btn-primary btn-sm" style={{ whiteSpace: 'nowrap' }}>
+                {updating ? '갱신 중...' : '🔄 업데이트'}
+              </button>
+            )}
+            <button onClick={() => setShowCalendar(!showCalendar)} style={{ width: 32, height: 32, borderRadius: 8, border: '1px solid var(--border)', background: showCalendar ? 'var(--primary)' : '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={showCalendar ? '#fff' : '#555'} strokeWidth="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
+            </button>
+          </div>
+          {lastUpdatedAt && <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 4 }}>마지막 업데이트: {new Date(lastUpdatedAt).toLocaleString('ko-KR')}</div>}
+        </div>
+
+        {showCalendar && (
+          <>
+            <div onClick={() => setShowCalendar(false)} style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 999 }} />
+            <div style={{ position: 'absolute', top: '100%', right: 20, marginTop: 8, zIndex: 1000, background: '#fff', borderRadius: 12, boxShadow: '0 8px 32px rgba(0,0,0,0.18)', border: '1px solid var(--border)', width: 340, padding: 20, animation: 'fadeIn 0.15s ease' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+                <button onClick={prevMonth} style={calBtnStyle}>◀</button>
+                <span style={{ fontWeight: 700, fontSize: 15 }}>{calYear}년 {calMonth+1}월</span>
+                <button onClick={nextMonth} style={calBtnStyle}>▶</button>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 2, textAlign: 'center' }}>
+                {['일','월','화','수','목','금','토'].map(d => <div key={d} style={{ padding: 6, fontSize: 11, fontWeight: 700, color: 'var(--text-secondary)' }}>{d}</div>)}
+                {calendarDays.map((day, idx) => {
+                  if (!day) return <div key={`e${idx}`} />;
+                  const key = dateToKey(new Date(calYear, calMonth, day));
+                  const isToday = key === todayKey, isSel = key === viewingDate;
+                  return <div key={key} onClick={() => handleCalendarDateClick(day)} style={{ padding: '8px 2px', borderRadius: 8, cursor: 'pointer', fontSize: 13, background: isSel ? 'var(--primary)' : isToday ? 'var(--primary-light)' : 'transparent', color: isSel ? '#fff' : isToday ? 'var(--primary)' : 'var(--text)', fontWeight: isToday || isSel ? 700 : 400, border: isToday && !isSel ? '2px solid var(--primary)' : '2px solid transparent' }}
+                    onMouseOver={e => { if (!isSel) e.currentTarget.style.background = '#f1f3f4'; }}
+                    onMouseOut={e => { if (!isSel) e.currentTarget.style.background = isToday ? 'var(--primary-light)' : 'transparent'; }}
+                  >{day}</div>;
+                })}
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* 테이블 */}
+      {cachedResult && <>
+        <div style={{ padding: '0 0 8px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <span style={{ fontSize: 14, fontWeight: 700 }}>
+            품절 현황 ({filtered.length}개)
+            <span style={{ fontSize: 13, fontWeight: 400, color: 'var(--text-secondary)', marginLeft: 8 }}>{keyToDisplay(viewingDate)}</span>
+          </span>
+          {viewingDate !== todayStr() && <button onClick={goToToday} style={{ padding: '5px 12px', borderRadius: 6, border: '1px solid var(--primary)', background: '#fff', color: 'var(--primary)', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>오늘로 돌아가기</button>}
+        </div>
+        <div className="table-wrapper" style={{ maxHeight: 'calc(100vh - 340px)', overflowY: 'auto' }}>
+          <table className="data-table">
+            <thead><tr>
+              <th style={{ width: 56 }}>상태</th><th style={{ width: 44 }}>등급</th><th>옵션ID</th><th style={{ maxWidth: 200 }}>상품명</th><th>옵션명</th><th>입고예상</th><th>쿠팡재고</th><th>박스히어로</th><th>총재고</th><th>3일평균</th><th>예상주</th><th style={{ width: 80 }}>발주현황</th><th>품절일</th><th>사유</th><th style={{ width: 44 }}>제외</th>
+            </tr></thead>
+            <tbody>
+              {filtered.length === 0 ? (
+                <tr><td colSpan={15} style={{ textAlign: 'center', padding: 40, color: 'var(--text-secondary)' }}>해당 조건의 품목이 없습니다</td></tr>
+              ) : filtered.map(r => {
+                const rc = RISK_CONFIG[r.riskLevel];
+                return (
+                  <tr key={r.optionId} className={r.riskLevel === '품절' ? 'row-emergency' : ''} style={excludeSet.has(r.optionId) ? { opacity: 0.45 } : {}}>
+                    <td><span className={`alert-badge ${rc.cls}`} style={{ fontSize: 10, padding: '1px 6px' }}>{rc.emoji} {rc.label}</span></td>
+                    <td><span className={`alert-badge ${r.status === '효자' ? 'normal' : r.status?.includes('신규') ? 'excess' : 'no-sales'}`} style={{ fontSize: 10, padding: '1px 6px' }}>{r.status || '-'}</span></td>
+                    <td style={{ fontSize: 11, color: '#888' }}>{r.optionId}</td>
+                    <td style={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis' }} title={r.productName}>{r.productName}</td>
+                    <td>{r.optionName}</td>
+                    <td className="center" style={{ fontSize: 11, color: r.arrivalEst ? '#1a73e8' : '#ccc', fontWeight: r.arrivalEst ? 600 : 400 }}>{r.arrivalEst || '-'}</td>
+                    <td className="num" style={{ color: r.coupangStock === 0 ? '#c5221f' : '', fontWeight: r.coupangStock === 0 ? 700 : 400 }}>{fmt(r.coupangStock)}</td>
+                    <td className="num">{r.bhStock > 0 ? <span style={{ color: '#2e7d32' }}>{fmt(r.bhStock)}</span> : '-'}</td>
+                    <td className="num" style={{ fontWeight: 600 }}>{fmt(r.totalStock)}</td>
+                    <td className="num">{r.avg3d > 0 ? fmtDec(r.avg3d) : '-'}</td>
+                    <td className="num" style={{ color: r.weeksStockIncoming > 0 && r.weeksStockIncoming < 1 ? '#e65100' : '' }}>{r.weeksStockIncoming > 0 ? fmtDec(r.weeksStockIncoming) + '주' : '-'}</td>
+                    <td className="center">
+                      {r.orderStatus === 'wing_on' ? <span className="alert-badge" style={{ background: '#e8f5e9', color: '#2e7d32', padding: '3px 10px' }}>✈️ 윙ON</span>
+                      : r.orderStatus === 'check' ? <span className="alert-badge" style={{ background: '#fff3e0', color: '#e65100', padding: '3px 10px' }}>📋 장부확인</span>
+                      : <span className="alert-badge emergency" style={{ padding: '3px 10px' }}>⚠️ 발주필요</span>}
+                    </td>
+                    <td className="center">{r.riskLevel === '품절' ? <span style={{ fontWeight: 700, color: r.days >= 7 ? '#d93025' : r.days >= 3 ? '#e65100' : 'var(--text)' }}>{r.days}일</span> : '-'}</td>
+                    <td style={{ fontSize: 11, maxWidth: 160 }}>
+                      {r.riskLevel === '품절' ? (
+                        <div style={{ display: 'flex', gap: 4 }}>
+                          <input type="text" placeholder="사유" defaultValue={r.reason} onChange={e => setReasonEditing(p => ({ ...p, [r.optionId]: e.target.value }))} onKeyDown={e => { if (e.key === 'Enter') saveReason(r.optionId, e.target.value); }} className="edit-input" style={{ flex: 1, minWidth: 0 }} />
+                          <button onClick={() => saveReason(r.optionId, reasonEditing[r.optionId] ?? r.reason)} className="btn btn-primary btn-sm" style={{ fontSize: 11, padding: '2px 8px' }}>저장</button>
+                        </div>
+                      ) : <span style={{ color: '#666' }}>{r.riskReason}</span>}
+                    </td>
+                    <td className="center">
+                      {excludeSet.has(r.optionId) ? <span style={{ fontSize: 11, color: '#1e8e3e', fontWeight: 600 }}>제외</span>
+                      : <button onClick={() => addExclude(r)} title="품절률 제외" style={{ width: 24, height: 24, borderRadius: 6, border: 'none', cursor: 'pointer', background: '#f1f3f4', color: '#999', fontSize: 12, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>✕</button>}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </>}
+
+      {cachedResult && <div style={{ fontSize: 11, color: 'var(--text-secondary)', padding: '8px 4px 0' }}>최종마감·품질확인서·마감대상 제외 | 쿠팡재고=업로드 엑셀 | 그 외=스프레드시트 | 품절위기=1주 미만 또는 3일내 소진</div>}
+
+      <style>{`
+        @keyframes slideIn { from { opacity: 0; transform: translateX(40px); } to { opacity: 1; transform: translateX(0); } }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
+      `}</style>
+    </div>
+  );
+}
+
+const calBtnStyle = { width: 32, height: 32, borderRadius: 8, border: '1px solid var(--border)', background: '#fff', cursor: 'pointer', fontSize: 12, display: 'flex', alignItems: 'center', justifyContent: 'center' };
