@@ -93,11 +93,29 @@ export default function SoldOutAnalysis() {
   };
 
   const addExclude = async (r) => {
-    if (excludeSet.has(r.optionId)) return;
+    if (viewingDate === todayStr() && excludeSet.has(r.optionId)) return;
     const data = await dbStoreGet('soldout_analysis_exclude') || [];
     data.push({ optionId: r.optionId, productName: r.productName, optionName: r.optionName, status: r.status, barcode: r.barcode, excludedAt: new Date().toISOString() });
     await dbStoreSet('soldout_analysis_exclude', data);
-    setExcludeSet(new Set(data.map(i => i.optionId)));
+    const newExSet = new Set(data.map(i => i.optionId));
+    setExcludeSet(newExSet);
+    // 오늘 캐시 스냅샷의 excludeSnapshot도 갱신
+    const today = todayStr();
+    const cached = await dbStoreGet(`soldout_analysis_cached_${today}`);
+    if (cached) {
+      cached.excludeSnapshot = [...newExSet];
+      await dbStoreSet(`soldout_analysis_cached_${today}`, cached);
+      if (viewingDate === today) setCachedResult(cached);
+    }
+    // 과거 날짜를 보고 있으면 해당 스냅샷에도 반영
+    if (viewingDate !== today) {
+      const pastCached = await dbStoreGet(`soldout_analysis_cached_${viewingDate}`);
+      if (pastCached) {
+        pastCached.excludeSnapshot = [...newExSet];
+        await dbStoreSet(`soldout_analysis_cached_${viewingDate}`, pastCached);
+        setCachedResult(pastCached);
+      }
+    }
     showToast('success', '제외 완료', `${r.productName} - ${r.optionName} 품절률에서 제외`);
   };
 
@@ -150,10 +168,16 @@ export default function SoldOutAnalysis() {
         dbStoreGet(SOLDOUT_TRACKER_KEY),
         dbStoreGet('soldout_analysis_exclude'),
       ]);
+      setTracker(trk || {});
+      const newExSet = new Set((exData || []).map(i => i.optionId));
+      setExcludeSet(newExSet);
+      // 오늘 스냅샷의 excludeSnapshot을 현재 제외 목록으로 동기화
+      if (cached && newExSet.size > 0) {
+        cached.excludeSnapshot = [...newExSet];
+        await dbStoreSet(`soldout_analysis_cached_${today}`, cached);
+      }
       setCachedResult(cached);
       if (cached) setLastUpdatedAt(cached.updatedAt);
-      setTracker(trk || {});
-      setExcludeSet(new Set((exData || []).map(i => i.optionId)));
       setLoading(false);
     })();
   }, []);
@@ -297,7 +321,7 @@ export default function SoldOutAnalysis() {
     return { total: analysisData.length, soldout, risk, inOrder, rate };
   }, [analysisData, cachedResult, excludeSet, viewingDate]);
 
-  // 화면 표시용 제외 셋 (오늘=실시간, 과거=스냅샷)
+  // 화면 표시용 제외 셋 (오늘=실시간, 과거=해당 날짜 스냅샷 그대로)
   const displayExcludeSet = useMemo(() => {
     return viewingDate === todayStr() ? excludeSet : new Set(cachedResult?.excludeSnapshot || []);
   }, [viewingDate, excludeSet, cachedResult]);

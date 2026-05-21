@@ -24,7 +24,7 @@ const navItems = [
   ]},
   { id: 'soldout-analysis', label: '품절 분석', icon: 'soldoutAnalysis', children: [
     { label: '(NEW)품절 현황', path: '/soldout-analysis' },
-    { label: '(NEW)품절기록', path: '/soldout-analysis/history' },
+    { label: '데이터 기록', path: '/soldout-analysis/history' },
     { label: '(NEW)제외품목관리', path: '/soldout-analysis/exclude' },
     { label: '(NEW)월 품절률', path: '/soldout-analysis/rate' },
     { label: '데이터 업로드', path: '/soldout-analysis/upload' },
@@ -68,7 +68,7 @@ const pageTitles = {
   '/issue': '특별관리',
   '/issue/improvement': '상품개선',
   '/soldout-analysis': '(NEW)품절 현황',
-  '/soldout-analysis/history': '(NEW)품절기록',
+  '/soldout-analysis/history': '데이터 기록',
   '/soldout-analysis/exclude': '(NEW)제외품목관리',
   '/soldout-analysis/rate': '(NEW)월 품절률',
   '/soldout-analysis/upload': '데이터 업로드',
