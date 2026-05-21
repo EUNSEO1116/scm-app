@@ -81,7 +81,17 @@ export default function SoldOutAnalysisHistory() {
   }, [data, search, sortKey, sortDir, statusFilter]);
 
   const totalCount = filteredItems.length;
-  const totalNetProfit = useMemo(() => filteredItems.reduce((s, it) => s + (it.netProfit || 0), 0), [filteredItems]);
+  const totalNetProfit = useMemo(() => {
+    if (!data?.items) return 0;
+    let items = data.items.filter(it => !(it.productName || '').includes('바디스윗'));
+    if (statusFilter === '신규') items = items.filter(it => (it.status || '').includes('신규'));
+    else if (statusFilter === '효자') items = items.filter(it => it.status === '효자');
+    if (search.trim()) {
+      const q = search.trim().toLowerCase();
+      items = items.filter(it => it.productName?.toLowerCase().includes(q) || it.optionName?.toLowerCase().includes(q) || it.optionId?.toLowerCase().includes(q) || it.barcode?.toLowerCase().includes(q));
+    }
+    return items.reduce((s, it) => s + (it.netProfit || 0), 0);
+  }, [data, statusFilter, search]);
 
   // 달력
   const calYear = calendarDate.getFullYear(), calMonth = calendarDate.getMonth();

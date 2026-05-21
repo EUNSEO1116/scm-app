@@ -394,20 +394,17 @@ export default function Home() {
         const availableCount = totalCount - longTermCount;
         const availableCost = totalCost - longTermCost;
 
-        // 품절률: localStorage soldout_rate_snapshots에서 이번 달 평균
+        // 품절률: soldout_analysis_rate_snapshots에서 이번 달 계산 (NEW 월 품절률과 동일)
         let soldoutRate = null;
         try {
-          const stored = await dbStoreGet('soldout_rate');
-          const snapshots = stored || JSON.parse(localStorage.getItem('soldout_rate_snapshots') || '{}');
+          const snapshots = await dbStoreGet('soldout_analysis_rate_snapshots') || {};
           const now = new Date();
-          const yearStr = String(now.getFullYear());
-          const monthStr = String(now.getMonth() + 1).padStart(2, '0');
-          const prefix = `${yearStr}-${monthStr}`;
-          let rateSum = 0, days = 0;
+          const prefix = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}`;
+          let totalSum = 0, soldoutSum = 0;
           for (const [date, snap] of Object.entries(snapshots)) {
-            if (date.startsWith(prefix)) { rateSum += snap.rate || 0; days++; }
+            if (date.startsWith(prefix)) { totalSum += snap.total || 0; soldoutSum += snap.soldout || 0; }
           }
-          if (days > 0) soldoutRate = Math.round(rateSum / days * 100) / 100;
+          if (totalSum > 0) soldoutRate = Math.round(soldoutSum / totalSum * 10000) / 100;
         } catch {}
 
         setDashboardData({ availableCount, availableCost, longTermCount, longTermCost, soldoutRate });
