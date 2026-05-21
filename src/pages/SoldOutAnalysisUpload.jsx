@@ -4,50 +4,53 @@ import { dbStoreSet, dbStoreGet } from '../utils/dbApi';
 
 const todayKey = () => new Date().toISOString().slice(0, 10).replace(/-/g, '');
 
-function dateToKey(d) {
-  return `${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}`;
+const SHEET_ID = '1NXhW_gG0b-gXuVqrhbY9ErWi8uO_7pXIy-NTo4FbE1I';
+const CSV_BARCODE = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent('쿠팡바코드')}`;
+
+function parseCsvRow(line) {
+  const result = []; let current = ''; let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (inQuotes) { if (ch === '"' && line[i+1] === '"') { current += '"'; i++; } else if (ch === '"') inQuotes = false; else current += ch; }
+    else { if (ch === '"') inQuotes = true; else if (ch === ',') { result.push(current); current = ''; } else current += ch; }
+  }
+  result.push(current); return result;
 }
 
 function keyToDisplay(k) {
   return `${k.slice(0,4)}-${k.slice(4,6)}-${k.slice(6,8)}`;
 }
 
-// 파일명에서 "N일전" 파싱 → 해당 날짜 키 반환, 없으면 오늘
-function parseDateFromFileName(fileName) {
-  const m = fileName.match(/(\d+)일전/);
-  if (m) {
-    const daysAgo = parseInt(m[1]);
-    const d = new Date();
-    d.setDate(d.getDate() - daysAgo);
-    return dateToKey(d);
-  }
-  return todayKey();
+// 'YYYY-MM-DD' → 'YYYYMMDD'
+function dateInputToKey(str) {
+  return str.replace(/-/g, '');
 }
 
-// 임시 기능 만료일 (2026-05-20까지만)
-const TEMP_FEATURE_DEADLINE = '20260520';
+// 'YYYYMMDD' → 'YYYY-MM-DD'
+function keyToDateInput(k) {
+  return `${k.slice(0,4)}-${k.slice(4,6)}-${k.slice(6,8)}`;
+}
 
 export default function SoldOutAnalysisUpload() {
   const [dragging, setDragging] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [toast, setToast] = useState(null);
   const [lastResult, setLastResult] = useState(null);
+  const [targetDate, setTargetDate] = useState(keyToDateInput(todayKey()));
   const fileRef = useRef(null);
-  const pastFileRef = useRef(null);
-  const [pastDaysAgo, setPastDaysAgo] = useState(1);
 
   const showToast = (type, title, message) => {
     setToast({ type, title, message });
     setTimeout(() => setToast(null), 4000);
   };
 
-  const parseExcel = async (file, overrideDate) => {
+  const parseExcel = async (file) => {
     setUploading(true);
     try {
-      const targetDate = overrideDate || todayKey();
-      const existing = await dbStoreGet(`soldout_analysis_${targetDate}`);
+      const dateKey = dateInputToKey(targetDate);
+      const existing = await dbStoreGet(`soldout_analysis_${dateKey}`);
       if (existing) {
-        const ok = window.confirm(`${keyToDisplay(targetDate)} 데이터가 이미 있습니다. 덮어쓰시겠습니까?`);
+        const ok = window.confirm(`${keyToDisplay(dateKey)} 데이터가 이미 있습니다. 덮어쓰시겠습니까?`);
         if (!ok) { setUploading(false); return; }
       }
 
@@ -63,25 +66,46 @@ export default function SoldOutAnalysisUpload() {
         optionName: header.indexOf('옵션명'),
         coupangStock: header.indexOf('쿠팡재고'),
         salesQty: header.indexOf('판매수량'),
+        revenue: header.indexOf('매출'),
+        netProfit: header.indexOf('순이익금'),
       };
 
-      const missing = Object.entries(colIdx).filter(([, v]) => v === -1);
+      const missing = Object.entries(colIdx).filter(([k, v]) => v === -1 && k !== 'revenue' && k !== 'netProfit');
       if (missing.length > 0) {
         showToast('error', '업로드 실패', `필수 컬럼을 찾을 수 없습니다: ${missing.map(([k]) => k).join(', ')}`);
         setUploading(false);
         return;
       }
 
+      // 스프레드시트에서 상태 매칭 (스냅샷)
+      let bcMap = {};
+      try {
+        const bcRes = await fetch(CSV_BARCODE);
+        const bcCsv = await bcRes.text();
+        const bcLines = bcCsv.split('\n').filter(l => l.trim());
+        for (let i = 1; i < bcLines.length; i++) {
+          const c = parseCsvRow(bcLines[i]);
+          const oid = (c[1]||'').trim();
+          if (oid) bcMap[oid] = { status: (c[9]||'').trim(), barcode: (c[5]||'').trim() };
+        }
+      } catch (e) { console.warn('바코드 시트 로드 실패, 상태 없이 저장합니다', e); }
+
       const items = [];
       for (let i = 2; i < rows.length; i++) {
         const r = rows[i];
         if (!r || !r[colIdx.optionId]) continue;
+        const oid = String(r[colIdx.optionId] || '');
+        const bc = bcMap[oid];
         items.push({
-          optionId: String(r[colIdx.optionId] || ''),
+          optionId: oid,
           productName: String(r[colIdx.productName] || ''),
           optionName: String(r[colIdx.optionName] || ''),
           coupangStock: Number(r[colIdx.coupangStock]) || 0,
           salesQty: Number(r[colIdx.salesQty]) || 0,
+          revenue: colIdx.revenue >= 0 ? Number(r[colIdx.revenue]) || 0 : 0,
+          netProfit: colIdx.netProfit >= 0 ? Number(r[colIdx.netProfit]) || 0 : 0,
+          status: bc?.status || '',
+          barcode: bc?.barcode || '',
         });
       }
 
@@ -92,12 +116,12 @@ export default function SoldOutAnalysisUpload() {
       }
 
       const targetD = new Date(
-        parseInt(targetDate.slice(0,4)),
-        parseInt(targetDate.slice(4,6)) - 1,
-        parseInt(targetDate.slice(6,8))
+        parseInt(dateKey.slice(0,4)),
+        parseInt(dateKey.slice(4,6)) - 1,
+        parseInt(dateKey.slice(6,8))
       );
 
-      const ok = await dbStoreSet(`soldout_analysis_${targetDate}`, {
+      const ok = await dbStoreSet(`soldout_analysis_${dateKey}`, {
         uploadedAt: targetD.toISOString(),
         fileName: file.name,
         count: items.length,
@@ -105,8 +129,8 @@ export default function SoldOutAnalysisUpload() {
       });
 
       if (ok) {
-        const isToday = targetDate === todayKey();
-        const label = isToday ? '오늘' : keyToDisplay(targetDate);
+        const isToday = dateKey === todayKey();
+        const label = isToday ? '오늘' : keyToDisplay(dateKey);
         setLastResult({ date: label, count: items.length });
         showToast('success', '업로드 완료', `${label} - ${items.length.toLocaleString()}개 품목 저장`);
       } else {
@@ -119,13 +143,13 @@ export default function SoldOutAnalysisUpload() {
     setUploading(false);
   };
 
-  const handleFile = (file, overrideDate) => {
+  const handleFile = (file) => {
     if (!file) return;
     if (!file.name.match(/\.xlsx?$/i)) {
       showToast('error', '파일 오류', '.xlsx 파일만 업로드 가능합니다.');
       return;
     }
-    parseExcel(file, overrideDate);
+    parseExcel(file);
   };
 
   const handleDrop = (e) => {
@@ -134,7 +158,7 @@ export default function SoldOutAnalysisUpload() {
     handleFile(e.dataTransfer.files[0]);
   };
 
-  const showTempFeature = todayKey() <= TEMP_FEATURE_DEADLINE;
+  const isToday = targetDate === keyToDateInput(todayKey());
 
   return (
     <div style={{ maxWidth: 640, margin: '0 auto' }}>
@@ -170,12 +194,32 @@ export default function SoldOutAnalysisUpload() {
         </div>
       )}
 
-      {/* 업로드 영역 */}
       <div className="card" style={{ padding: 32 }}>
         <h3 style={{ fontSize: 18, fontWeight: 700, marginBottom: 8 }}>매출 데이터 업로드</h3>
         <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 24 }}>
-          빅셀 로켓그로스 매출분석 엑셀 파일을 업로드하세요. 하루 1회 업로드하면 자동으로 날짜별 기록됩니다.
+          빅셀 로켓그로스 매출분석 엑셀 파일을 업로드하세요. 날짜를 선택하면 해당 날짜 데이터로 저장됩니다.
         </p>
+
+        {/* 날짜 선택 */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20 }}>
+          <label style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>업로드 날짜</label>
+          <input
+            type="date"
+            value={targetDate}
+            max={keyToDateInput(todayKey())}
+            onChange={e => setTargetDate(e.target.value)}
+            style={{
+              padding: '8px 12px', borderRadius: 8,
+              border: '1px solid var(--border)', fontSize: 14, fontWeight: 600,
+              color: isToday ? 'var(--text)' : '#1a73e8',
+            }}
+          />
+          {!isToday && (
+            <span style={{ fontSize: 13, color: '#1a73e8', fontWeight: 600 }}>
+              ← {keyToDisplay(dateInputToKey(targetDate))} 데이터로 저장됩니다
+            </span>
+          )}
+        </div>
 
         <div
           onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
@@ -232,45 +276,6 @@ export default function SoldOutAnalysisUpload() {
           </div>
         )}
       </div>
-
-      {/* 임시: 과거 날짜 업로드 (2026-05-20까지만) */}
-      {showTempFeature && (
-        <div className="card" style={{ padding: 20, marginTop: 20 }}>
-          <h3 style={{ fontSize: 15, fontWeight: 700, marginBottom: 8, color: '#e65100' }}>과거 데이터 업로드 (임시)</h3>
-          <p style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 12 }}>
-            날짜를 선택하고 해당 날짜의 엑셀을 업로드하세요. 7일전~1일전까지 순서대로 올려주세요.
-          </p>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-            <select
-              value={pastDaysAgo}
-              onChange={e => setPastDaysAgo(Number(e.target.value))}
-              style={{ padding: '8px 12px', borderRadius: 8, border: '1px solid var(--border)', fontSize: 13, fontWeight: 600 }}
-            >
-              {[7,6,5,4,3,2,1].map(n => {
-                const d = new Date(); d.setDate(d.getDate() - n);
-                return <option key={n} value={n}>{n}일전 ({keyToDisplay(dateToKey(d))})</option>;
-              })}
-            </select>
-            <input
-              ref={pastFileRef}
-              type="file"
-              accept=".xlsx,.xls"
-              style={{ display: 'none' }}
-              onChange={(e) => {
-                const d = new Date(); d.setDate(d.getDate() - pastDaysAgo);
-                handleFile(e.target.files[0], dateToKey(d));
-                e.target.value = '';
-              }}
-            />
-            <button
-              onClick={() => pastFileRef.current?.click()}
-              disabled={uploading}
-              className="btn btn-primary btn-sm"
-              style={{ padding: '8px 16px' }}
-            >{uploading ? '업로드 중...' : '파일 선택 & 업로드'}</button>
-          </div>
-        </div>
-      )}
 
       <style>{`
         @keyframes slideIn {
