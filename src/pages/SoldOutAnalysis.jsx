@@ -83,6 +83,7 @@ export default function SoldOutAnalysis() {
   const [batchReason, setBatchReason] = useState('');
   const [showBatchInput, setShowBatchInput] = useState(false);
   const [editingReason, setEditingReason] = useState(null); // 개별 사유 편집 중인 optionId
+  const [stockCorrections, setStockCorrections] = useState({}); // { optionId: true } 재고 수정 영구 저장
 
   const showToast = (type, title, msg) => { setToast({ type, title, message: msg }); setTimeout(() => setToast(null), 3500); };
 
@@ -117,6 +118,31 @@ export default function SoldOutAnalysis() {
       }
     }
     showToast('success', '제외 완료', `${r.productName} - ${r.optionName} 품절률에서 제외`);
+  };
+
+  // 재고 수정: 엑셀 품절이지만 실제 재고 있는 항목 영구 수정
+  const correctStock = async (r) => {
+    const updated = { ...stockCorrections, [r.optionId]: { productName: r.productName, optionName: r.optionName, calcStock: r.calcStock, correctedAt: new Date().toISOString() } };
+    setStockCorrections(updated);
+    await dbStoreSet('soldout_stock_corrections', updated);
+    // 캐시에서 해당 항목 제거 + 품절률 재계산
+    if (cachedResult) {
+      const newItems = cachedResult.items.filter(i => i.optionId !== r.optionId);
+      const valid = (cachedResult.validItems || []).map(v => v.optionId === r.optionId ? { ...v, coupangStock: 1 } : v);
+      const isToday = viewingDate === todayStr();
+      const exSource = isToday ? excludeSet : new Set(cachedResult?.excludeSnapshot || []);
+      const rTotal = valid.filter(it => !exSource.has(it.optionId)).length;
+      const rSold = valid.filter(it => !exSource.has(it.optionId) && it.coupangStock === 0).length;
+      const rate = rTotal > 0 ? Math.round(rSold / rTotal * 10000) / 100 : 0;
+      const newCached = { ...cachedResult, items: newItems, validItems: valid, rate, correctionsSnapshot: updated };
+      setCachedResult(newCached);
+      await dbStoreSet(`soldout_analysis_cached_${viewingDate}`, newCached);
+      // 품절률 스냅샷도 갱신
+      if (isToday) {
+        try { const ex = await dbStoreGet('soldout_analysis_rate_snapshots') || {}; ex[viewingDate] = { date: viewingDate, total: rTotal, soldout: rSold, rate }; await dbStoreSet('soldout_analysis_rate_snapshots', ex); } catch {}
+      }
+    }
+    showToast('success', '재고 수정', `${r.productName} - ${r.optionName} 재고 정정 완료 (재고계산기: ${r.calcStock}개)`);
   };
 
   const toggleSelect = (optionId) => {
@@ -163,12 +189,14 @@ export default function SoldOutAnalysis() {
     (async () => {
       setLoading(true);
       const today = todayStr();
-      const [cached, trk, exData] = await Promise.all([
+      const [cached, trk, exData, corrections] = await Promise.all([
         dbStoreGet(`soldout_analysis_cached_${today}`),
         dbStoreGet(SOLDOUT_TRACKER_KEY),
         dbStoreGet('soldout_analysis_exclude'),
+        dbStoreGet('soldout_stock_corrections'),
       ]);
       setTracker(trk || {});
+      setStockCorrections(corrections || {});
       const newExSet = new Set((exData || []).map(i => i.optionId));
       setExcludeSet(newExSet);
       // 오늘 스냅샷의 excludeSnapshot을 현재 제외 목록으로 동기화
@@ -211,7 +239,7 @@ export default function SoldOutAnalysis() {
 
       // 재고계산기
       const calcTsv = await calcRes.text(); const cLines = calcTsv.split('\n').filter(l => l.trim()); const cMap = {};
-      for (let i = 1; i < cLines.length; i++) { const c = cLines[i].split('\t'); const oid = (c[1]||'').trim(); if (oid) cMap[oid] = { barcode: (c[2]||'').trim(), incoming: safeNum(c[7]), ipgo: safeNum(c[8]), bhStock: safeNum(c[9]), totalStock: safeNum(c[14]) }; }
+      for (let i = 1; i < cLines.length; i++) { const c = cLines[i].split('\t'); const oid = (c[1]||'').trim(); if (oid) cMap[oid] = { barcode: (c[2]||'').trim(), calcStock: safeNum(c[6]), incoming: safeNum(c[7]), ipgo: safeNum(c[8]), bhStock: safeNum(c[9]), totalStock: safeNum(c[14]) }; }
 
       // 발주장부
       const orderCsv = await orderRes.text();
@@ -242,6 +270,10 @@ export default function SoldOutAnalysis() {
       }
       await dbStoreSet('soldout_analysis_stock_tracker', stockTracker);
 
+      // 재고 수정 목록 로드
+      const corrections = await dbStoreGet('soldout_stock_corrections') || {};
+      setStockCorrections(corrections);
+
       // 분석: 전체 유효상품 카운트(품절률용) + 품절/위기 목록 생성
       const exSet = new Set((exData || []).map(i => i.optionId));
       const results = [], soldoutIds = [];
@@ -256,19 +288,26 @@ export default function SoldOutAnalysis() {
           const entry = stockTracker[item.optionId];
           if (!entry || !entry.records.some(r => r.stock > 0)) continue;
         }
-        // 유효 상품 (품절률 분모)
-        validItems.push({ optionId: item.optionId, coupangStock: item.coupangStock });
+        // 재고 수정된 항목은 품절이 아닌 것으로 처리
+        const isCorrected = !!corrections[item.optionId];
+        // 유효 상품 (품절률 분모) — 수정된 항목은 coupangStock을 실제 재고로 간주
+        validItems.push({ optionId: item.optionId, coupangStock: isCorrected ? 1 : item.coupangStock });
+
+        // 수정된 항목은 품절/품절위기 판정 스킵
+        if (isCorrected) continue;
 
         const calc = cMap[item.optionId], barcode = bc.barcode || calc.barcode || '';
         const cs = item.coupangStock, inc = calc.incoming||0, ipgo = calc.ipgo||0;
         const bh = calc.bhStock||0, tot = calc.totalStock||0, a3 = avgMap[item.optionId]||0;
+        const calcStock = calc.calcStock || 0; // 재고계산기 G열 쿠팡재고
         const wk = a3 > 0 ? (cs + inc) / (a3 * 7) : 0;
         let rl = null, rr = '', fa = '';
         if (cs === 0) { rl = '품절'; soldoutIds.push(item.optionId); if (inc > 0 || ipgo > 0) { const t = new Date(); t.setDate(t.getDate()+1); fa = `${t.getMonth()+1}/${t.getDate()}`; rr = `입고예정 ${inc+ipgo}개`; } else rr = bh > 0 ? 'BH재고 있음' : '재고 없음'; }
         else if (inc > 0 || ipgo > 0) continue;
         else if (a3 > 0) { const dl = cs / a3; if (wk > 0 && wk < 1) { rl = '품절위기'; rr = `예상 ${fmtDec(wk)}주`; } else if (dl < CRISIS_DAYS_THRESHOLD) { rl = '품절위기'; rr = `${fmtDec(dl)}일분`; } }
         if (!rl) continue;
-        results.push({ optionId: item.optionId, barcode, productName: item.productName || bc.productName, optionName: item.optionName || bc.optionName, status: bc.status, coupangStock: cs, incoming: inc, ipgo, bhStock: bh, totalStock: tot, avg3d: a3, weeksStockIncoming: wk, salesQty: item.salesQty, riskLevel: rl, riskReason: rr, orderStatus: oSkus.get(barcode)||null, arrivalEst: fa || (oArr.get(barcode)||'') });
+        const mismatch = cs === 0 && calcStock > 0; // 엑셀=0 vs 재고계산기>0 불일치
+        results.push({ optionId: item.optionId, barcode, productName: item.productName || bc.productName, optionName: item.optionName || bc.optionName, status: bc.status, coupangStock: cs, calcStock, incoming: inc, ipgo, bhStock: bh, totalStock: tot, avg3d: a3, weeksStockIncoming: wk, salesQty: item.salesQty, riskLevel: rl, riskReason: rr, orderStatus: oSkus.get(barcode)||null, arrivalEst: fa || (oArr.get(barcode)||''), mismatch });
       }
       results.sort((a, b) => { if (a.riskLevel !== b.riskLevel) return a.riskLevel === '품절' ? -1 : 1; return b.avg3d - a.avg3d; });
 
@@ -285,7 +324,7 @@ export default function SoldOutAnalysis() {
       try { const ex = await dbStoreGet('soldout_analysis_rate_snapshots') || {}; ex[today] = { date: today, total: rTotal, soldout: rSold, rate }; await dbStoreSet('soldout_analysis_rate_snapshots', ex); } catch {}
 
       // 캐시 저장 (validItems + 제외 스냅샷 포함)
-      const cached = { items: results, updatedAt: new Date().toISOString(), rate, trackerSnapshot: trk, validItems, excludeSnapshot: [...exSet] };
+      const cached = { items: results, updatedAt: new Date().toISOString(), rate, trackerSnapshot: trk, validItems, excludeSnapshot: [...exSet], correctionsSnapshot: corrections };
       await dbStoreSet(`soldout_analysis_cached_${today}`, cached);
       setCachedResult(cached); setLastUpdatedAt(cached.updatedAt); setExcludeSet(exSet);
       showToast('success', '업데이트 완료', `${results.length}개 품절/위기 품목 갱신`);
@@ -319,7 +358,7 @@ export default function SoldOutAnalysis() {
     const rateSoldout = valid.filter(it => !exSource.has(it.optionId) && it.coupangStock === 0).length;
     const rate = rateTotal > 0 ? Math.round(rateSoldout / rateTotal * 10000) / 100 : 0;
     return { total: analysisData.length, soldout, risk, inOrder, rate };
-  }, [analysisData, cachedResult, excludeSet, viewingDate]);
+  }, [analysisData, cachedResult, excludeSet, viewingDate, stockCorrections]);
 
   // 화면 표시용 제외 셋 (오늘=실시간, 과거=해당 날짜 스냅샷 그대로)
   const displayExcludeSet = useMemo(() => {
@@ -475,7 +514,12 @@ export default function SoldOutAnalysis() {
                     <td style={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis' }} title={r.productName}>{r.productName}</td>
                     <td>{r.optionName}</td>
                     <td className="center" style={{ fontSize: 11, color: r.arrivalEst ? '#1a73e8' : '#ccc', fontWeight: r.arrivalEst ? 600 : 400 }}>{r.arrivalEst || '-'}</td>
-                    <td className="num" style={{ color: r.coupangStock === 0 ? '#c5221f' : '', fontWeight: r.coupangStock === 0 ? 700 : 400 }}>{fmt(r.coupangStock)}</td>
+                    <td className="num" style={{ color: r.coupangStock === 0 ? '#c5221f' : '', fontWeight: r.coupangStock === 0 ? 700 : 400 }}>
+                      {fmt(r.coupangStock)}
+                      {r.mismatch && (
+                        <button onClick={() => correctStock(r)} title={`재고계산기: ${r.calcStock}개 — 클릭하여 재고 정정`} style={{ marginLeft: 4, padding: '1px 6px', borderRadius: 4, border: '1px solid #1a73e8', background: '#e8f0fe', color: '#1a73e8', fontSize: 10, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}>수정 ({r.calcStock})</button>
+                      )}
+                    </td>
                     <td className="num">{r.bhStock > 0 ? <span style={{ color: '#2e7d32' }}>{fmt(r.bhStock)}</span> : '-'}</td>
                     <td className="num" style={{ fontWeight: 600 }}>{fmt(r.totalStock)}</td>
                     <td className="num">{r.avg3d > 0 ? fmtDec(r.avg3d) : '-'}</td>
