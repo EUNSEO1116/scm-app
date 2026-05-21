@@ -81,6 +81,7 @@ export default function SoldOutAnalysisHistory() {
   }, [data, search, sortKey, sortDir, statusFilter]);
 
   const totalCount = filteredItems.length;
+  const totalNetProfit = useMemo(() => filteredItems.reduce((s, it) => s + (it.netProfit || 0), 0), [filteredItems]);
 
   // 달력
   const calYear = calendarDate.getFullYear(), calMonth = calendarDate.getMonth();
@@ -125,6 +126,9 @@ export default function SoldOutAnalysisHistory() {
               {['전체', '신규', '효자'].map(s => (
                 <button key={s} onClick={() => setStatusFilter(s)} className={`filter-btn${statusFilter === s ? ' active' : ''}`} style={{ fontSize: 12, padding: '2px 10px' }}>{s}</button>
               ))}
+              <span style={{ fontSize: 12, fontWeight: 700, padding: '3px 10px', borderRadius: 6, background: totalNetProfit >= 0 ? '#e8f0fe' : '#fce8e6', color: totalNetProfit >= 0 ? '#1a73e8' : '#c5221f' }}>
+                순이익 합계 {fmt(totalNetProfit)}원
+              </span>
             </>}
             <div style={{ flex: 1 }} />
             <input
