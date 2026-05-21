@@ -9,7 +9,7 @@ const TSV_DATA = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?form
 const CSV_ORDER = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent('발주장부')}`;
 
 // 제외 상태 키워드
-const EXCLUDE_KEYWORDS = ['최종마감', '품질확인서', '마감대상'];
+const EXCLUDE_KEYWORDS = ['최종마감', '품질확인서', '마감대상', '덤핑'];
 
 // 품절위기: 재고 / 3일평균판매 < 3일치 (3일 안에 소진 예상)
 const CRISIS_DAYS_THRESHOLD = 3;

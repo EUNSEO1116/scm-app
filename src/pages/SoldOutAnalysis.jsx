@@ -8,7 +8,7 @@ const CSV_ORDER = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tq
 
 const STORE_KEY_PREFIX = 'soldout_analysis_';
 const SOLDOUT_TRACKER_KEY = 'soldout_analysis_tracker';
-const EXCLUDE_KEYWORDS = ['최종마감', '품질확인서', '마감대상'];
+const EXCLUDE_KEYWORDS = ['최종마감', '품질확인서', '마감대상', '덤핑'];
 const CRISIS_DAYS_THRESHOLD = 3;
 const WING_ON_STATUSES = ['CN 창고도착', '부분출고 대기', '출고 완료', '출고 대기', '출고완료'];
 
