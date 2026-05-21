@@ -13,8 +13,35 @@ export default function SoldOutAnalysisRate() {
 
   useEffect(() => {
     (async () => {
-      const data = await dbStoreGet('soldout_analysis_rate_snapshots') || {};
-      setSnapshots(data);
+      const [rateData, exData] = await Promise.all([
+        dbStoreGet('soldout_analysis_rate_snapshots'),
+        dbStoreGet('soldout_analysis_exclude'),
+      ]);
+      const snapData = rateData || {};
+      const exSet = new Set((exData || []).map(i => i.optionId));
+
+      // 각 날짜별 캐시 데이터 로드 → 현재 제외 목록으로 재계산
+      const dates = Object.keys(snapData);
+      const cachedResults = await Promise.all(
+        dates.map(d => dbStoreGet(`soldout_analysis_cached_${d}`).catch(() => null))
+      );
+
+      const recalculated = {};
+      for (let i = 0; i < dates.length; i++) {
+        const date = dates[i];
+        const cached = cachedResults[i];
+        if (cached?.validItems) {
+          const validFiltered = cached.validItems.filter(it => !exSet.has(it.optionId));
+          const total = validFiltered.length;
+          const soldout = validFiltered.filter(it => it.coupangStock === 0).length;
+          const rate = total > 0 ? Math.round(soldout / total * 10000) / 100 : 0;
+          recalculated[date] = { date, total, soldout, rate };
+        } else {
+          recalculated[date] = snapData[date];
+        }
+      }
+
+      setSnapshots(recalculated);
       setLoading(false);
     })();
   }, []);
