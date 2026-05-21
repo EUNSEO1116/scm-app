@@ -66,6 +66,15 @@ function savePendingAlerts(list) {
   dbStoreSet('pending_sync_alerts', list).catch(() => {});
 }
 
+const DISMISSED_SYNC_KEY = 'dismissed_sync_barcodes';
+function loadDismissedBarcodes() {
+  try { return JSON.parse(localStorage.getItem(DISMISSED_SYNC_KEY) || '[]'); } catch { return []; }
+}
+function saveDismissedBarcodes(list) {
+  localStorage.setItem(DISMISSED_SYNC_KEY, JSON.stringify(list));
+  dbStoreSet('dismissed_sync_barcodes', list).catch(() => {});
+}
+
 function resizeImage(file, maxDim = 800) {
   return new Promise((resolve) => {
     const reader = new FileReader();
@@ -273,8 +282,9 @@ export default function IssueManagement() {
 
       // 동기화 알림: localStorage에 있는데 스프레드시트에도 바코드가 존재하면 알림 등록
       const sheetBarcodes = new Set(results.map(r => r.barcode));
+      const dismissed = new Set(loadDismissedBarcodes());
       const local = loadLocalSpecial();
-      const newAlerts = local.filter(item => sheetBarcodes.has(item.barcode));
+      const newAlerts = local.filter(item => sheetBarcodes.has(item.barcode) && !dismissed.has(item.barcode));
 
       // 새로 감지된 항목을 영구 알림 목록에 추가 (적용완료 누를 때까지 유지)
       const saved = await loadPendingAlertsFromDB();
@@ -340,9 +350,15 @@ export default function IssueManagement() {
 
   const addLocalItem = () => {
     if (!newItem.barcode.trim()) return;
-    const updated = [...localItems, { ...newItem, barcode: newItem.barcode.trim(), addedDate: new Date().toISOString().slice(0, 10) }];
+    const bc = newItem.barcode.trim();
+    const updated = [...localItems, { ...newItem, barcode: bc, addedDate: new Date().toISOString().slice(0, 10) }];
     setLocalItems(updated);
     saveLocalSpecial(updated);
+    // 재등록 시 dismissed 목록에서 제거 → 동기화 알림 다시 동작
+    const dismissed = loadDismissedBarcodes();
+    if (dismissed.includes(bc)) {
+      saveDismissedBarcodes(dismissed.filter(b => b !== bc));
+    }
     setNewItem({ barcode: '', oneTime: '', orderUnit: '', sewing: '', fbcItem: '', priceNote: '', memo: '' });
     setShowAddForm(false);
   };
@@ -359,6 +375,11 @@ export default function IssueManagement() {
     const updatedAlerts = syncAlerts.filter(a => a.barcode !== barcode);
     savePendingAlerts(updatedAlerts);
     setSyncAlerts(updatedAlerts);
+    // 적용완료 barcode 기록 → stale DB 데이터로 알림 부활 방지
+    const dismissed = loadDismissedBarcodes();
+    if (!dismissed.includes(barcode)) {
+      saveDismissedBarcodes([...dismissed, barcode]);
+    }
     deleteLocalItem(barcode);
   };
 
