@@ -84,6 +84,8 @@ export default function SoldOutAnalysis() {
   const [showBatchInput, setShowBatchInput] = useState(false);
   const [editingReason, setEditingReason] = useState(null); // 개별 사유 편집 중인 optionId
   const [stockCorrections, setStockCorrections] = useState({}); // { optionId: true } 재고 수정 영구 저장
+  const [sortKey, setSortKey] = useState('productName');
+  const [sortDir, setSortDir] = useState('asc');
 
   const showToast = (type, title, msg) => { setToast({ type, title, message: msg }); setTimeout(() => setToast(null), 3500); };
 
@@ -367,14 +369,37 @@ export default function SoldOutAnalysis() {
 
   const statusOptions = useMemo(() => { const s = new Set(analysisData.map(i => i.status).filter(Boolean)); return ['전체', ...Array.from(s).sort()]; }, [analysisData]);
 
+  const toggleSort = (key) => {
+    if (sortKey === key) { setSortDir(d => d === 'asc' ? 'desc' : 'asc'); }
+    else { setSortKey(key); setSortDir('asc'); }
+  };
+
+  const sortRows = (rows, key, dir) => {
+    const d = dir === 'asc' ? 1 : -1;
+    return [...rows].sort((a, b) => {
+      let va = a[key], vb = b[key];
+      if (key === 'orderStatus') { const ord = { wing_on: 0, check: 1 }; va = ord[va] ?? 2; vb = ord[vb] ?? 2; }
+      if (va == null && vb == null) return 0;
+      if ((va == null || va === '' || va === '-') && (vb == null || vb === '' || vb === '-')) return 0;
+      if (va == null || va === '' || va === '-') return 1;
+      if (vb == null || vb === '' || vb === '-') return -1;
+      if (typeof va === 'number' && typeof vb === 'number') return (va - vb) * d;
+      return String(va).localeCompare(String(vb), 'ko') * d;
+    });
+  };
+
   const filtered = useMemo(() => {
     let rows = analysisData;
     if (riskFilter === '품절') rows = rows.filter(r => r.riskLevel === '품절');
     else if (riskFilter === '품절위기') rows = rows.filter(r => r.riskLevel === '품절위기');
     else if (riskFilter === 'inOrder') rows = rows.filter(r => r.orderStatus === 'wing_on' || r.orderStatus === 'check');
     if (statusFilter !== '전체') rows = rows.filter(r => r.status === statusFilter);
-    return rows;
-  }, [analysisData, riskFilter, statusFilter]);
+    // 품절만 정렬, 품절위기는 하단 고정
+    const soldout = rows.filter(r => r.riskLevel === '품절');
+    const crisis = rows.filter(r => r.riskLevel === '품절위기');
+    const sortedSoldout = sortKey ? sortRows(soldout, sortKey, sortDir) : soldout;
+    return [...sortedSoldout, ...crisis];
+  }, [analysisData, riskFilter, statusFilter, sortKey, sortDir]);
 
   // 달력
   const calYear = calendarDate.getFullYear(), calMonth = calendarDate.getMonth();
@@ -498,7 +523,30 @@ export default function SoldOutAnalysis() {
           <table className="data-table">
             <thead><tr>
               <th style={{ width: 32 }}><input type="checkbox" checked={filtered.filter(r => r.riskLevel === '품절').length > 0 && filtered.filter(r => r.riskLevel === '품절').every(r => selected.has(r.optionId))} onChange={() => { const ids = filtered.filter(r => r.riskLevel === '품절').map(r => r.optionId); const allSel = ids.every(id => selected.has(id)); setSelected(allSel ? new Set() : new Set(ids)); }} style={{ cursor: 'pointer' }} /></th>
-              <th style={{ width: 56 }}>상태</th><th style={{ width: 44 }}>등급</th><th>옵션ID</th><th style={{ maxWidth: 200 }}>상품명</th><th>옵션명</th><th>입고예상</th><th>쿠팡재고</th><th>박스히어로</th><th>총재고</th><th>3일평균</th><th>예상주</th><th style={{ width: 80 }}>발주현황</th><th>품절일</th><th>사유</th><th style={{ width: 44 }}>제외</th>
+              {[
+                { key: 'riskLevel', label: '상태', style: { width: 56 } },
+                { key: 'status', label: '등급', style: { width: 44 } },
+                { key: 'optionId', label: '옵션ID' },
+                { key: 'productName', label: '상품명', style: { maxWidth: 200 } },
+                { key: 'optionName', label: '옵션명' },
+                { key: 'arrivalEst', label: '입고예상' },
+                { key: 'coupangStock', label: '쿠팡재고' },
+                { key: 'bhStock', label: '박스히어로' },
+                { key: 'totalStock', label: '총재고' },
+                { key: 'avg3d', label: '3일평균' },
+                { key: 'weeksStockIncoming', label: '예상주' },
+                { key: 'orderStatus', label: '발주현황', style: { width: 80 } },
+                { key: 'days', label: '품절일' },
+                { key: 'reason', label: '사유' },
+              ].map(col => (
+                <th key={col.key} style={{ ...col.style, cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }} onClick={() => toggleSort(col.key)}>
+                  {col.label}
+                  <span style={{ marginLeft: 3, fontSize: 10, color: sortKey === col.key ? 'var(--primary)' : '#ccc' }}>
+                    {sortKey === col.key ? (sortDir === 'asc' ? '▲' : '▼') : '⇅'}
+                  </span>
+                </th>
+              ))}
+              <th style={{ width: 44 }}>제외</th>
             </tr></thead>
             <tbody>
               {filtered.length === 0 ? (
