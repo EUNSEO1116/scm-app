@@ -351,17 +351,32 @@ export default function Home() {
 
   useEffect(() => { fetchEvents(); fetchAlerts(); }, [fetchEvents, fetchAlerts]);
 
-  // 총재고원가 대시보드 데이터 로드
+  // 총재고원가 대시보드 데이터 로드 (하루 1회, 12시 이후 갱신)
   useEffect(() => {
     (async () => {
       try {
-        // 재고계산기 시트에서 총재고 합계
+        // 오늘 12시 기준 타임스탬프
+        const now = new Date();
+        const todayNoon = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 12, 0, 0).getTime();
+
+        // DB 캐시 확인
+        const cached = await dbStoreGet('dashboard_cache').catch(() => null);
+        if (cached && cached.calculatedAt >= todayNoon) {
+          setDashboardData(cached.data);
+          return;
+        }
+        // 12시 이전이면 어제 캐시라도 먼저 표시
+        if (cached && cached.data) setDashboardData(cached.data);
+
+        // 12시 이전이면 새로 계산하지 않음
+        if (now.getTime() < todayNoon) return;
+
+        // 새로 계산
         const calcRes = await fetch(TSV_CALC);
         if (!calcRes.ok) return;
         const tsvText = await calcRes.text();
         const tsvLines = tsvText.split('\n').filter(l => l.trim());
 
-        // 쿠팡바코드 시트에서 원가 매핑 (TSV로 가져와서 쉼표 파싱 문제 방지)
         const barcodeRes = await fetch(TSV_BARCODE);
         const barcodeTsv = barcodeRes.ok ? await barcodeRes.text() : '';
         const barcodeLines = barcodeTsv.split('\n').filter(l => l.trim());
@@ -373,7 +388,6 @@ export default function Home() {
           if (bc) costMap[bc] = cost;
         }
 
-        // 마감 상품 키워드 로드 (장기재고 판정용)
         let closedKeywords = [];
         try {
           const kwData = await dbStoreGet('closed_products');
@@ -394,7 +408,6 @@ export default function Home() {
         const availableCount = totalCount - longTermCount;
         const availableCost = totalCost - longTermCost;
 
-        // 품절률: 캐시 데이터 + 현재 제외 목록으로 실시간 재계산
         let soldoutRate = null;
         try {
           const [snapshots, exData] = await Promise.all([
@@ -403,7 +416,6 @@ export default function Home() {
           ]);
           const snapData = snapshots || {};
           const exSet = new Set((exData || []).map(i => i.optionId));
-          const now = new Date();
           const prefix = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}`;
           const monthDates = Object.keys(snapData).filter(d => d.startsWith(prefix));
           const cachedResults = await Promise.all(
@@ -411,10 +423,10 @@ export default function Home() {
           );
           let totalSum = 0, soldoutSum = 0;
           for (let i = 0; i < monthDates.length; i++) {
-            const cached = cachedResults[i];
-            if (cached?.validItems) {
-              totalSum += cached.validItems.length;
-              soldoutSum += cached.validItems.filter(it => !exSet.has(it.optionId) && it.coupangStock === 0).length;
+            const cr = cachedResults[i];
+            if (cr?.validItems) {
+              totalSum += cr.validItems.length;
+              soldoutSum += cr.validItems.filter(it => !exSet.has(it.optionId) && it.coupangStock === 0).length;
             } else {
               const snap = snapData[monthDates[i]];
               totalSum += snap.total || 0;
@@ -424,7 +436,9 @@ export default function Home() {
           if (totalSum > 0) soldoutRate = Math.round(soldoutSum / totalSum * 10000) / 100;
         } catch {}
 
-        setDashboardData({ availableCount, availableCost, longTermCount, longTermCost, soldoutRate });
+        const newData = { availableCount, availableCost, longTermCount, longTermCost, soldoutRate };
+        setDashboardData(newData);
+        await dbStoreSet('dashboard_cache', { data: newData, calculatedAt: Date.now() }).catch(() => {});
       } catch (e) { console.error('Dashboard data load error:', e); }
     })();
   }, []);
@@ -686,7 +700,10 @@ export default function Home() {
         {/* 총재고원가 대시보드 */}
         <div style={{ flex: 1 }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-            <div style={{ fontSize: 14, fontWeight: 600, color: '#333' }}>총재고원가 대시보드</div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ fontSize: 14, fontWeight: 600, color: '#333' }}>총재고원가 대시보드</span>
+              <span style={{ fontSize: 11, color: '#bbb' }}>매일 12시 업데이트</span>
+            </div>
             <button
               onClick={downloadDashboardExcel}
               style={{
