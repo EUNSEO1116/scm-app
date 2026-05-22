@@ -388,22 +388,27 @@ export default function Home() {
           if (bc) costMap[bc] = cost;
         }
 
-        let closedKeywords = [];
+        let closedProducts = [];
         try {
           const kwData = await dbStoreGet('closed_products');
-          if (Array.isArray(kwData)) closedKeywords = kwData.map(k => k.keyword);
+          if (Array.isArray(kwData)) closedProducts = kwData;
         } catch {}
 
-        let totalCount = 0, totalCost = 0, longTermCount = 0, longTermCost = 0;
+        let totalCount = 0, totalCost = 0;
         for (let i = 1; i < tsvLines.length; i++) {
           const cols = tsvLines[i].split('\t');
-          const barcode = (cols[2] || '').trim();
-          const productName = (cols[3] || '').trim();
           const totalStock = Number(cols[14]) || 0;
+          const barcode = (cols[2] || '').trim();
           const unitCost = costMap[barcode] || 0;
-          const isLongTerm = closedKeywords.length > 0 && closedKeywords.some(kw => productName.includes(kw));
-          if (isLongTerm) { longTermCount += totalStock; longTermCost += totalStock * unitCost; }
           totalCount += totalStock; totalCost += totalStock * unitCost;
+        }
+
+        let longTermCount = 0, longTermCost = 0;
+        for (const item of closedProducts) {
+          for (const p of item.products) {
+            longTermCount += p.stock;
+            longTermCost += p.stock * (costMap[p.barcode] || 0);
+          }
         }
         const availableCount = totalCount - longTermCount;
         const availableCost = totalCost - longTermCost;
