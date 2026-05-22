@@ -133,7 +133,7 @@ export default function SoldOutAnalysis() {
       const valid = (cachedResult.validItems || []).map(v => v.optionId === r.optionId ? { ...v, coupangStock: 1 } : v);
       const isToday = viewingDate === todayStr();
       const exSource = isToday ? excludeSet : new Set(cachedResult?.excludeSnapshot || []);
-      const rTotal = valid.filter(it => !exSource.has(it.optionId)).length;
+      const rTotal = valid.length;
       const rSold = valid.filter(it => !exSource.has(it.optionId) && it.coupangStock === 0).length;
       const rate = rTotal > 0 ? Math.round(rSold / rTotal * 10000) / 100 : 0;
       const newCached = { ...cachedResult, items: newItems, validItems: valid, rate, correctionsSnapshot: updated };
@@ -320,7 +320,7 @@ export default function SoldOutAnalysis() {
       await dbStoreSet(SOLDOUT_TRACKER_KEY, trk); setTracker(trk);
 
       // 품절률 스냅샷 (전체 유효 상품 기준, 제외 품목 빼고)
-      const rTotal = validItems.filter(it => !exSet.has(it.optionId)).length;
+      const rTotal = validItems.length;
       const rSold = validItems.filter(it => !exSet.has(it.optionId) && it.coupangStock === 0).length;
       const rate = rTotal > 0 ? Math.round(rSold / rTotal * 10000) / 100 : 0;
       try { const ex = await dbStoreGet('soldout_analysis_rate_snapshots') || {}; ex[today] = { date: today, total: rTotal, soldout: rSold, rate }; await dbStoreSet('soldout_analysis_rate_snapshots', ex); } catch {}
@@ -356,7 +356,7 @@ export default function SoldOutAnalysis() {
     const valid = cachedResult?.validItems || [];
     const isToday = viewingDate === todayStr();
     const exSource = isToday ? excludeSet : new Set(cachedResult?.excludeSnapshot || []);
-    const rateTotal = valid.filter(it => !exSource.has(it.optionId)).length;
+    const rateTotal = valid.length;
     const rateSoldout = valid.filter(it => !exSource.has(it.optionId) && it.coupangStock === 0).length;
     const rate = rateTotal > 0 ? Math.round(rateSoldout / rateTotal * 10000) / 100 : 0;
     return { total: analysisData.length, soldout, risk, inOrder, rate };

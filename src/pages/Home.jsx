@@ -413,9 +413,8 @@ export default function Home() {
           for (let i = 0; i < monthDates.length; i++) {
             const cached = cachedResults[i];
             if (cached?.validItems) {
-              const filtered = cached.validItems.filter(it => !exSet.has(it.optionId));
-              totalSum += filtered.length;
-              soldoutSum += filtered.filter(it => it.coupangStock === 0).length;
+              totalSum += cached.validItems.length;
+              soldoutSum += cached.validItems.filter(it => !exSet.has(it.optionId) && it.coupangStock === 0).length;
             } else {
               const snap = snapData[monthDates[i]];
               totalSum += snap.total || 0;

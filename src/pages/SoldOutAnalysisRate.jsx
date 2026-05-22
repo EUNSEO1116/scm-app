@@ -31,9 +31,8 @@ export default function SoldOutAnalysisRate() {
         const date = dates[i];
         const cached = cachedResults[i];
         if (cached?.validItems) {
-          const validFiltered = cached.validItems.filter(it => !exSet.has(it.optionId));
-          const total = validFiltered.length;
-          const soldout = validFiltered.filter(it => it.coupangStock === 0).length;
+          const total = cached.validItems.length;
+          const soldout = cached.validItems.filter(it => !exSet.has(it.optionId) && it.coupangStock === 0).length;
           const rate = total > 0 ? Math.round(soldout / total * 10000) / 100 : 0;
           recalculated[date] = { date, total, soldout, rate };
         } else {
