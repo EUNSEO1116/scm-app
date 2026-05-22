@@ -67,8 +67,9 @@ export default function IncheonIncoming() {
         dbStoreGet('improvement_items').catch(() => null)
       ]);
 
-      // 쿠팡바코드 시트: barcode(col5) → center(col11)
+      // 쿠팡바코드 시트: barcode(col5) → center(col11), status(col9)
       const centerMap = {};
+      const dumpingSet = new Set(); // 덤핑 상태 바코드
       if (barcodeRes.ok) {
         const csv = await barcodeRes.text();
         const rows = parseCSV(csv);
@@ -76,7 +77,10 @@ export default function IncheonIncoming() {
           const cols = rows[i];
           const barcode = (cols[5] || '').trim();
           const center = (cols[11] || '').trim();
-          if (barcode) centerMap[barcode] = center;
+          const status = (cols[9] || '').trim();
+          if (!barcode) continue;
+          if (status === '덤핑') { dumpingSet.add(barcode); continue; }
+          centerMap[barcode] = center;
         }
       }
 
@@ -120,6 +124,7 @@ export default function IncheonIncoming() {
           const incomingQty = safeNum(cols[15]); // P열 = (1) 재고 입고
 
           if (!barcode || incomingQty <= 0) continue;
+          if (dumpingSet.has(barcode)) continue; // 덤핑 상태 제외
 
           items.push({
             barcode,
