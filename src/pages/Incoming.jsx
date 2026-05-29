@@ -83,8 +83,9 @@ export default function Incoming() {
         dbStoreGet('improvement_items').catch(() => null)
       ]);
 
-      // 쿠팡바코드: barcode(col6) → center(col12)
+      // 쿠팡바코드: barcode(col6) → center(col12), status(col9)
       const centerMap = {};
+      const excludeSet = new Set(); // 덤핑·품질확인서 상태 바코드
       if (barcodeRes.ok) {
         const csv = await barcodeRes.text();
         const lines = csv.split('\n').filter(l => l.trim());
@@ -92,6 +93,11 @@ export default function Incoming() {
           const cols = parseCsvRow(lines[i]);
           const barcode = (cols[5] || '').trim();
           const center = (cols[11] || '').trim();
+          const status = (cols[9] || '').trim();
+          if (!barcode) continue;
+          const rowText = cols.join(' ');
+          if (rowText.includes('덤핑')) { excludeSet.add(barcode); continue; }
+          if (rowText.includes('품질확인서')) { excludeSet.add(barcode); continue; }
           if (barcode) centerMap[barcode] = center;
         }
       }
@@ -187,8 +193,8 @@ export default function Incoming() {
           const stock = stockMap[sku] || { coupangStock: 0, incoming: 0, ipgo: 0, stockAll: 0, weeksCI: 0, weeklySales: 0 };
           const weeklySales = stock.weeklySales;
 
-          if (weeklySales <= 0) {
-            // 판매량 없으면 무조건 박스히어로
+          if (excludeSet.has(sku) || weeklySales <= 0) {
+            // 덤핑·품질확인서 상태 또는 판매량 없으면 무조건 박스히어로
             skuDecisionMap[sku] = { center, qty: totalQty, coupangQty: 0, boxheroQty: totalQty };
             continue;
           }

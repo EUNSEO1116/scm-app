@@ -49,6 +49,7 @@ export default function IncheonIncoming() {
   const [status, setStatus] = useState('');
   const [data, setData] = useState(null); // { items: [{barcode, productName, optionName, incomingQty, center}] }
   const [oneTimeMap, setOneTimeMap] = useState({}); // barcode → 기타(1회성) 존재 여부
+  const [qualityCertMap, setQualityCertMap] = useState({}); // barcode → 품질확인서 존재 여부
   const [vocNames, setVocNames] = useState([]); // VOC 상품명 키워드 목록
   const [orderFile, setOrderFile] = useState(null); // 주문목록 파일명
   const [orderMap, setOrderMap] = useState({}); // key: "상품명||옵션명" → 합산 주문수량
@@ -70,6 +71,7 @@ export default function IncheonIncoming() {
       // 쿠팡바코드 시트: barcode(col5) → center(col11), status(col9)
       const centerMap = {};
       const dumpingSet = new Set(); // 덤핑 상태 바코드
+      const newQualityCertMap = {}; // 품질확인서 상태 바코드
       if (barcodeRes.ok) {
         const csv = await barcodeRes.text();
         const rows = parseCSV(csv);
@@ -77,12 +79,15 @@ export default function IncheonIncoming() {
           const cols = rows[i];
           const barcode = (cols[5] || '').trim();
           const center = (cols[11] || '').trim();
-          const status = (cols[9] || '').trim();
           if (!barcode) continue;
-          if (status === '덤핑') { dumpingSet.add(barcode); continue; }
+          // 전체 컬럼에서 키워드 검색 (상태값에 쉼표가 포함될 수 있으므로)
+          const rowText = cols.join(' ');
+          if (rowText.includes('덤핑')) { dumpingSet.add(barcode); continue; }
+          if (rowText.includes('품질확인서')) newQualityCertMap[barcode] = true;
           centerMap[barcode] = center;
         }
       }
+      setQualityCertMap(newQualityCertMap);
 
       // 특별 관리 상품 시트: barcode(col0) → 기타(1회성)(col8)
       // 헤더 셀에 줄바꿈이 포함되어 parseCSV가 여러 행으로 분리하므로,
@@ -212,6 +217,10 @@ export default function IncheonIncoming() {
     // 대기필요 체크
     if (waitBarcodes.has(item.barcode)) {
       remarks.push('대기필요');
+    }
+    // 품질확인서 체크
+    if (qualityCertMap[item.barcode]) {
+      remarks.push('품질확인서');
     }
     return remarks.join(', ');
   };
@@ -461,6 +470,7 @@ export default function IncheonIncoming() {
                       const hasVoc = isVoc(item.productName);
                       const hasOneTime = oneTimeMap[item.barcode];
                       const hasWait = waitBarcodes.has(item.barcode);
+                      const hasQuality = qualityCertMap[item.barcode];
                       return (
                         <tr key={i}>
                           <td style={{ color: '#999', fontSize: 11 }}>{i + 1}</td>
@@ -498,9 +508,17 @@ export default function IncheonIncoming() {
                             {hasWait && (
                               <span style={{
                                 background: '#fff3e0', color: '#e65100', padding: '2px 6px',
-                                borderRadius: 4, fontSize: 11, fontWeight: 600,
+                                borderRadius: 4, fontSize: 11, fontWeight: 600, marginRight: 4,
                               }}>
                                 대기필요
+                              </span>
+                            )}
+                            {hasQuality && (
+                              <span style={{
+                                background: '#e0f2f1', color: '#00695c', padding: '2px 6px',
+                                borderRadius: 4, fontSize: 11, fontWeight: 600,
+                              }}>
+                                품질확인서
                               </span>
                             )}
                             {!remark && '-'}
