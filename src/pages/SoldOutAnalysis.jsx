@@ -604,6 +604,7 @@ export default function SoldOutAnalysis() {
           </span>
           {viewingDate !== todayStr() && <button onClick={goToToday} style={{ padding: '5px 12px', borderRadius: 6, border: '1px solid var(--primary)', background: '#fff', color: 'var(--primary)', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>오늘로 돌아가기</button>}
         </div>
+        <div style={{ fontSize: 11, color: '#999', marginBottom: 4 }}>* 입고예상은 예상일일 뿐이오니, 정확한 입고 예정일은 SCM팀에 문의 바랍니다.</div>
         <div className="table-wrapper" style={{ maxHeight: 'calc(100vh - 340px)', overflowY: 'auto' }}>
           <table className="data-table">
             <thead><tr>
