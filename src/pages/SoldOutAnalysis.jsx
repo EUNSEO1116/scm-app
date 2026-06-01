@@ -89,60 +89,94 @@ export default function SoldOutAnalysis() {
 
   const showToast = (type, title, msg) => { setToast({ type, title, message: msg }); setTimeout(() => setToast(null), 3500); };
 
-  const calcDays = (startDate) => {
-    if (!startDate) return 1;
-    const s = `${startDate.slice(0,4)}-${startDate.slice(4,6)}-${startDate.slice(6,8)}`;
-    return Math.max(1, Math.floor((new Date() - new Date(s)) / 86400000) + 1);
+  // 특정 날짜 기준 연속품절일수를 일별 DB 데이터로 재계산 + 오염된 rate 복원
+  const recalcConsecDaysForDate = async (dt, cached) => {
+    if (!cached?.trackerSnapshot || Object.keys(cached.trackerSnapshot).length === 0) return cached;
+    const dayKeys = [];
+    for (let i = 0; i < 14; i++) {
+      const d = new Date(+dt.slice(0,4), +dt.slice(4,6)-1, +dt.slice(6,8)-i);
+      dayKeys.push(dateToKey(d));
+    }
+    const datasets = await Promise.all(dayKeys.map(k => dbStoreGet(`${STORE_KEY_PREFIX}${k}`).catch(() => null)));
+    const dailyMaps = datasets.map(ds => {
+      const m = new Map();
+      if (ds?.items) for (const it of ds.items) m.set(it.optionId, it.coupangStock);
+      return m;
+    });
+    let changed = false;
+    for (const [oid, entry] of Object.entries(cached.trackerSnapshot)) {
+      let days = 0;
+      for (let di = 0; di < dailyMaps.length; di++) {
+        const stock = dailyMaps[di].get(oid);
+        if (stock === undefined || stock > 0) break;
+        days++;
+      }
+      const newDays = Math.max(1, days);
+      if (entry.days !== newDays) { entry.days = newDays; changed = true; }
+    }
+    // 과거 날짜: rate_snapshots와 캐시 rate 동기화
+    const isToday = dt === todayStr();
+    if (!isToday) {
+      const snapshots = await dbStoreGet('soldout_analysis_rate_snapshots') || {};
+      if (snapshots[dt]) {
+        // rate_snapshots가 정확한 소스이므로 캐시에 반영
+        if (cached.rate !== snapshots[dt].rate) {
+          cached.rate = snapshots[dt].rate;
+          changed = true;
+        }
+      }
+    }
+    if (changed) await dbStoreSet(`soldout_analysis_cached_${dt}`, cached);
+    return cached;
   };
 
+  // 품절현황에서 제외 → 해당 날짜 rate_snapshots 즉시 재계산
   const addExclude = async (r) => {
-    if (viewingDate === todayStr() && excludeSet.has(r.optionId)) return;
+    if (excludeSet.has(r.optionId)) return;
     const data = await dbStoreGet('soldout_analysis_exclude') || [];
     data.push({ optionId: r.optionId, productName: r.productName, optionName: r.optionName, status: r.status, barcode: r.barcode, excludedAt: new Date().toISOString() });
     await dbStoreSet('soldout_analysis_exclude', data);
     const newExSet = new Set(data.map(i => i.optionId));
     setExcludeSet(newExSet);
-    // 오늘 캐시 스냅샷의 excludeSnapshot도 갱신
-    const today = todayStr();
-    const cached = await dbStoreGet(`soldout_analysis_cached_${today}`);
+    // 보고 있는 날짜의 캐시 + rate_snapshots 재계산
+    const targetDate = viewingDate;
+    const cached = await dbStoreGet(`soldout_analysis_cached_${targetDate}`);
     if (cached) {
       cached.excludeSnapshot = [...newExSet];
-      await dbStoreSet(`soldout_analysis_cached_${today}`, cached);
-      if (viewingDate === today) setCachedResult(cached);
-    }
-    // 과거 날짜를 보고 있으면 해당 스냅샷에도 반영
-    if (viewingDate !== today) {
-      const pastCached = await dbStoreGet(`soldout_analysis_cached_${viewingDate}`);
-      if (pastCached) {
-        pastCached.excludeSnapshot = [...newExSet];
-        await dbStoreSet(`soldout_analysis_cached_${viewingDate}`, pastCached);
-        setCachedResult(pastCached);
-      }
+      const valid = cached.validItems || [];
+      const rTotal = valid.length;
+      const rSold = valid.filter(it => !newExSet.has(it.optionId) && it.coupangStock === 0).length;
+      const rate = rTotal > 0 ? Math.round(rSold / rTotal * 10000) / 100 : 0;
+      cached.rate = rate;
+      await dbStoreSet(`soldout_analysis_cached_${targetDate}`, cached);
+      setCachedResult(cached);
+      // rate_snapshots도 갱신
+      try {
+        const snaps = await dbStoreGet('soldout_analysis_rate_snapshots') || {};
+        snaps[targetDate] = { date: targetDate, total: rTotal, soldout: rSold, rate };
+        await dbStoreSet('soldout_analysis_rate_snapshots', snaps);
+      } catch {}
     }
     showToast('success', '제외 완료', `${r.productName} - ${r.optionName} 품절률에서 제외`);
   };
 
-  // 재고 수정: 엑셀 품절이지만 실제 재고 있는 항목 영구 수정
+  // 재고 수정: 엑셀 품절이지만 실제 재고 있는 항목 — 오늘만 반영
   const correctStock = async (r) => {
     const updated = { ...stockCorrections, [r.optionId]: { productName: r.productName, optionName: r.optionName, calcStock: r.calcStock, correctedAt: new Date().toISOString() } };
     setStockCorrections(updated);
     await dbStoreSet('soldout_stock_corrections', updated);
-    // 캐시에서 해당 항목 제거 + 품절률 재계산
-    if (cachedResult) {
+    // 오늘 캐시에서 해당 항목 제거 + 품절률 재계산 (과거 캐시는 건드리지 않음)
+    const isToday = viewingDate === todayStr();
+    if (cachedResult && isToday) {
       const newItems = cachedResult.items.filter(i => i.optionId !== r.optionId);
       const valid = (cachedResult.validItems || []).map(v => v.optionId === r.optionId ? { ...v, coupangStock: 1 } : v);
-      const isToday = viewingDate === todayStr();
-      const exSource = isToday ? excludeSet : new Set(cachedResult?.excludeSnapshot || []);
       const rTotal = valid.length;
-      const rSold = valid.filter(it => !exSource.has(it.optionId) && it.coupangStock === 0).length;
+      const rSold = valid.filter(it => !excludeSet.has(it.optionId) && it.coupangStock === 0).length;
       const rate = rTotal > 0 ? Math.round(rSold / rTotal * 10000) / 100 : 0;
       const newCached = { ...cachedResult, items: newItems, validItems: valid, rate, correctionsSnapshot: updated };
       setCachedResult(newCached);
       await dbStoreSet(`soldout_analysis_cached_${viewingDate}`, newCached);
-      // 품절률 스냅샷도 갱신
-      if (isToday) {
-        try { const ex = await dbStoreGet('soldout_analysis_rate_snapshots') || {}; ex[viewingDate] = { date: viewingDate, total: rTotal, soldout: rSold, rate }; await dbStoreSet('soldout_analysis_rate_snapshots', ex); } catch {}
-      }
+      try { const ex = await dbStoreGet('soldout_analysis_rate_snapshots') || {}; ex[viewingDate] = { date: viewingDate, total: rTotal, soldout: rSold, rate }; await dbStoreSet('soldout_analysis_rate_snapshots', ex); } catch {}
     }
     showToast('success', '재고 수정', `${r.productName} - ${r.optionName} 재고 정정 완료 (재고계산기: ${r.calcStock}개)`);
   };
@@ -186,7 +220,7 @@ export default function SoldOutAnalysis() {
     }
   };
 
-  // === 초기 로드: DB 캐시만 (빠름) ===
+  // === 초기 로드: DB 캐시 + 연속품절일수 재계산 ===
   useEffect(() => {
     (async () => {
       setLoading(true);
@@ -197,17 +231,22 @@ export default function SoldOutAnalysis() {
         dbStoreGet('soldout_analysis_exclude'),
         dbStoreGet('soldout_stock_corrections'),
       ]);
-      setTracker(trk || {});
       setStockCorrections(corrections || {});
       const newExSet = new Set((exData || []).map(i => i.optionId));
       setExcludeSet(newExSet);
-      // 오늘 스냅샷의 excludeSnapshot을 현재 제외 목록으로 동기화
-      if (cached && newExSet.size > 0) {
-        cached.excludeSnapshot = [...newExSet];
-        await dbStoreSet(`soldout_analysis_cached_${today}`, cached);
+      // 오늘 캐시의 연속품절일수도 일별 DB 기준으로 재계산
+      const fixedCached = cached ? await recalcConsecDaysForDate(today, cached) : null;
+      // tracker state에도 재계산된 days 반영
+      const updatedTrk = { ...(trk || {}) };
+      if (fixedCached?.trackerSnapshot) {
+        for (const [oid, entry] of Object.entries(fixedCached.trackerSnapshot)) {
+          if (updatedTrk[oid]) updatedTrk[oid].days = entry.days;
+        }
+        await dbStoreSet(SOLDOUT_TRACKER_KEY, updatedTrk);
       }
-      setCachedResult(cached);
-      if (cached) setLastUpdatedAt(cached.updatedAt);
+      setTracker(updatedTrk);
+      setCachedResult(fixedCached);
+      if (fixedCached) setLastUpdatedAt(fixedCached.updatedAt);
       setLoading(false);
     })();
   }, []);
@@ -324,9 +363,29 @@ export default function SoldOutAnalysis() {
       }
       results.sort((a, b) => { if (a.riskLevel !== b.riskLevel) return a.riskLevel === '품절' ? -1 : 1; return b.avg3d - a.avg3d; });
 
+      // 연속 품절 일수: 일별 업로드 데이터를 오늘부터 역순 스캔하여 재고 0 연속일 계산
+      const dailyMaps = stDatasets.map(ds => {
+        const m = new Map();
+        if (ds?.items) for (const it of ds.items) m.set(it.optionId, it.coupangStock);
+        return m;
+      });
+      const consecDays = {};
+      for (const id of soldoutIds) {
+        let days = 0;
+        for (let di = 0; di < dailyMaps.length; di++) {
+          const stock = dailyMaps[di].get(id);
+          if (stock === undefined || stock > 0) break;
+          days++;
+        }
+        consecDays[id] = Math.max(1, days);
+      }
+
       // 추적기
       const trk = await dbStoreGet(SOLDOUT_TRACKER_KEY) || {};
-      for (const id of soldoutIds) { if (!trk[id]) trk[id] = { startDate: today, reason: '' }; }
+      for (const id of soldoutIds) {
+        if (!trk[id]) trk[id] = { startDate: today, reason: '' };
+        trk[id].days = consecDays[id] || 1;
+      }
       for (const id of Object.keys(trk)) { if (!soldoutIds.includes(id)) delete trk[id]; }
       await dbStoreSet(SOLDOUT_TRACKER_KEY, trk); setTracker(trk);
 
@@ -353,25 +412,30 @@ export default function SoldOutAnalysis() {
     const trkSource = isToday ? tracker : (cachedResult.trackerSnapshot || {});
     return cachedResult.items.map(r => ({
       ...r,
-      days: trkSource[r.optionId] ? calcDays(trkSource[r.optionId].startDate) : 1,
+      days: trkSource[r.optionId]?.days || 1,
       reason: trkSource[r.optionId]?.reason || '',
     }));
   }, [cachedResult, tracker, viewingDate]);
 
   // 통계 (품절률 = 전체 유효상품 중 재고0 비율)
-  // 오늘 → 현재 excludeSet 실시간 반영 / 과거 → 캐시의 excludeSnapshot 사용
+  // 오늘 → 현재 excludeSet 실시간 계산 / 과거 → rate_snapshots에 저장된 품절률 그대로 사용
   const stats = useMemo(() => {
     const soldout = analysisData.filter(r => r.riskLevel === '품절').length;
     const risk = analysisData.filter(r => r.riskLevel === '품절위기').length;
     const inOrder = analysisData.filter(r => r.orderStatus === 'wing_on' || r.orderStatus === 'check').length;
-    const valid = cachedResult?.validItems || [];
     const isToday = viewingDate === todayStr();
-    const exSource = isToday ? excludeSet : new Set(cachedResult?.excludeSnapshot || []);
-    const rateTotal = valid.length;
-    const rateSoldout = valid.filter(it => !exSource.has(it.optionId) && it.coupangStock === 0).length;
-    const rate = rateTotal > 0 ? Math.round(rateSoldout / rateTotal * 10000) / 100 : 0;
+    let rate;
+    if (isToday) {
+      const valid = cachedResult?.validItems || [];
+      const rateTotal = valid.length;
+      const rateSoldout = valid.filter(it => !excludeSet.has(it.optionId) && it.coupangStock === 0).length;
+      rate = rateTotal > 0 ? Math.round(rateSoldout / rateTotal * 10000) / 100 : 0;
+    } else {
+      // 과거: 당시 저장된 품절률 스냅샷 그대로 사용
+      rate = cachedResult?.rate ?? 0;
+    }
     return { total: analysisData.length, soldout, risk, inOrder, rate };
-  }, [analysisData, cachedResult, excludeSet, viewingDate, stockCorrections]);
+  }, [analysisData, cachedResult, excludeSet, viewingDate]);
 
   // 화면 표시용 제외 셋 (오늘=실시간, 과거=해당 날짜 스냅샷 그대로)
   const displayExcludeSet = useMemo(() => {
@@ -423,14 +487,24 @@ export default function SoldOutAnalysis() {
     const key = dateToKey(new Date(calYear, calMonth, day));
     setViewingDate(key); setShowCalendar(false);
     const cached = await dbStoreGet(`soldout_analysis_cached_${key}`);
-    setCachedResult(cached || null);
-    if (cached) setLastUpdatedAt(cached.updatedAt);
-    else setLastUpdatedAt(null);
+    if (cached) {
+      const fixed = await recalcConsecDaysForDate(key, cached);
+      setCachedResult(fixed);
+      setLastUpdatedAt(fixed.updatedAt);
+    } else {
+      setCachedResult(null); setLastUpdatedAt(null);
+    }
   };
   const goToToday = async () => {
     const t = todayStr(); setViewingDate(t);
     const cached = await dbStoreGet(`soldout_analysis_cached_${t}`);
-    setCachedResult(cached || null); if (cached) setLastUpdatedAt(cached.updatedAt);
+    if (cached) {
+      const fixed = await recalcConsecDaysForDate(t, cached);
+      setCachedResult(fixed);
+      setLastUpdatedAt(fixed.updatedAt);
+    } else {
+      setCachedResult(null); setLastUpdatedAt(null);
+    }
   };
   const prevMonth = () => setCalendarDate(new Date(calYear, calMonth - 1, 1));
   const nextMonth = () => setCalendarDate(new Date(calYear, calMonth + 1, 1));

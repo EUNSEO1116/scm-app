@@ -165,16 +165,20 @@ export default function SoldOutRate() {
   const [hoveredBar, setHoveredBar] = useState(null);
   const [dbLoaded, setDbLoaded] = useState(false);
 
-  // 1단계: DB에서 초기 데이터 로드 → 로컬과 병합
+  // DB에서 (NEW)품절현황 품절률 스냅샷 로드 (soldout_analysis_rate_snapshots)
   useEffect(() => {
-    dbStoreGet('soldout_rate').then(data => {
+    dbStoreGet('soldout_analysis_rate_snapshots').then(data => {
       if (data && typeof data === 'object' && Object.keys(data).length > 0) {
-        // DB 데이터와 로컬 데이터 병합 (DB 우선)
+        // YYYYMMDD → YYYY-MM-DD 변환 후 병합
+        const converted = {};
+        for (const [k, v] of Object.entries(data)) {
+          const dateKey = k.length === 8 ? `${k.slice(0,4)}-${k.slice(4,6)}-${k.slice(6,8)}` : k;
+          converted[dateKey] = { ...v, date: dateKey };
+        }
         const local = loadSnapshots();
-        const merged = { ...local, ...data };
+        const merged = { ...local, ...converted };
         localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
         setSnapshots(merged);
-        // 오늘 데이터가 DB에 이미 있으면 todayData로 표시
         const today = todayKey();
         if (merged[today]) {
           setTodayData(merged[today]);
