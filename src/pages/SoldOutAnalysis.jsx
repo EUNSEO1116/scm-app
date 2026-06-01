@@ -247,10 +247,10 @@ export default function SoldOutAnalysis() {
       const orderCsv = await orderRes.text();
       const { skuMap: oSkus, skuArrival: oArr } = parseOrderBook(orderCsv);
 
-      // 신규 상품 재고 추적 (최근 7일 업로드 데이터 전체 스캔)
+      // 신규 상품 재고 추적 (최근 14일 업로드 데이터 전체 스캔)
       const stockTracker = {};
       const stKeys = [];
-      for (let i = 0; i < 7; i++) {
+      for (let i = 0; i < 14; i++) {
         const d = new Date(+today.slice(0,4), +today.slice(4,6)-1, +today.slice(6,8)-i);
         stKeys.push(dateToKey(d));
       }
@@ -272,8 +272,19 @@ export default function SoldOutAnalysis() {
       }
       await dbStoreSet('soldout_analysis_stock_tracker', stockTracker);
 
-      // 재고 수정 목록 로드
-      const corrections = await dbStoreGet('soldout_stock_corrections') || {};
+      // 재고 수정 목록 로드 — 오늘 날짜가 아닌 과거 수정 기록은 자동 삭제
+      const rawCorrections = await dbStoreGet('soldout_stock_corrections') || {};
+      const corrections = {};
+      let correctionsCleaned = false;
+      for (const [oid, val] of Object.entries(rawCorrections)) {
+        const corrDate = val.correctedAt ? val.correctedAt.slice(0, 10).replace(/-/g, '') : '';
+        if (corrDate === today) {
+          corrections[oid] = val;
+        } else {
+          correctionsCleaned = true;
+        }
+      }
+      if (correctionsCleaned) await dbStoreSet('soldout_stock_corrections', corrections);
       setStockCorrections(corrections);
 
       // 분석: 전체 유효상품 카운트(품절률용) + 품절/위기 목록 생성
