@@ -25,6 +25,7 @@ import SoldOutAnalysisHistory from './pages/SoldOutAnalysisHistory';
 import SoldOutAnalysisExclude from './pages/SoldOutAnalysisExclude';
 import SoldOutAnalysisRate from './pages/SoldOutAnalysisRate';
 import SoldOutAnalysisUpload from './pages/SoldOutAnalysisUpload';
+import ActivityLog from './pages/ActivityLog';
 
 function App() {
   return (
@@ -55,6 +56,7 @@ function App() {
           <Route path="/issue/improvement" element={<ProductImprovement />} />
           <Route path="/supplies" element={<SuppliesList />} />
           <Route path="/supplies/order" element={<SuppliesOrder />} />
+          <Route path="/activity-log" element={<ActivityLog />} />
         </Routes>
       </Layout>
     </BrowserRouter>

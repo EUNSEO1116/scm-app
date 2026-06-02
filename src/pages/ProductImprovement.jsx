@@ -188,7 +188,7 @@ export default function ProductImprovement() {
       if (Array.isArray(dbItems) && Array.isArray(localItems)) {
         if (localItems.length > dbItems.length) {
           setItems(localItems);
-          dbStoreSet('improvement_items', localItems);
+          dbStoreSet('improvement_items', localItems, { skipLog: true });
         } else {
           setItems(dbItems);
           localStorage.setItem('improvement_items', JSON.stringify(dbItems));
@@ -197,7 +197,7 @@ export default function ProductImprovement() {
         setItems(dbItems);
         localStorage.setItem('improvement_items', JSON.stringify(dbItems));
       } else if (Array.isArray(localItems) && localItems.length > 0) {
-        dbStoreSet('improvement_items', localItems);
+        dbStoreSet('improvement_items', localItems, { skipLog: true });
       }
       // images: 로컬이 더 많으면 로컬 유지 + DB에 동기화
       if (dbImgs && typeof dbImgs === 'object') {
@@ -205,13 +205,13 @@ export default function ProductImprovement() {
         const localKeys = localImgs ? Object.keys(localImgs).length : 0;
         if (localKeys > dbKeys) {
           setImpImages(localImgs);
-          dbStoreSet('improvement_images', localImgs);
+          dbStoreSet('improvement_images', localImgs, { skipLog: true });
         } else {
           setImpImages(dbImgs);
           localStorage.setItem('improvement_images', JSON.stringify(dbImgs));
         }
       } else if (localImgs && Object.keys(localImgs).length > 0) {
-        dbStoreSet('improvement_images', localImgs);
+        dbStoreSet('improvement_images', localImgs, { skipLog: true });
       }
       setLoaded(true);
     }).catch(() => setLoaded(true));
@@ -247,9 +247,9 @@ export default function ProductImprovement() {
     saveWatch(loadWatch().filter(w => w.barcode !== barcode));
   };
 
-  const dbSaveWithRetry = useCallback(async (key, data) => {
+  const dbSaveWithRetry = useCallback(async (key, data, opts) => {
     for (let i = 0; i < 3; i++) {
-      const ok = await dbStoreSet(key, data);
+      const ok = await dbStoreSet(key, data, opts);
       if (ok) { setDbSyncFailed(false); return true; }
       await new Promise(r => setTimeout(r, 1000));
     }
@@ -257,16 +257,16 @@ export default function ProductImprovement() {
     return false;
   }, []);
 
-  const saveItems = useCallback((updated) => {
+  const saveItems = useCallback((updated, logDesc) => {
     setItems(updated);
     localStorage.setItem('improvement_items', JSON.stringify(updated));
-    dbSaveWithRetry('improvement_items', updated);
+    dbSaveWithRetry('improvement_items', updated, { logDesc: logDesc || '상품개선 항목 수정' });
   }, [dbSaveWithRetry]);
 
-  const saveImagesDb = useCallback((updated) => {
+  const saveImagesDb = useCallback((updated, logDesc) => {
     setImpImages(updated);
     localStorage.setItem('improvement_images', JSON.stringify(updated));
-    dbSaveWithRetry('improvement_images', updated);
+    dbSaveWithRetry('improvement_images', updated, { logDesc: logDesc || '상품개선 이미지 수정' });
   }, [dbSaveWithRetry]);
 
   const suggestions = useMemo(() => {

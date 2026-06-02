@@ -112,9 +112,9 @@ async function loadRemoteEvents() {
   } catch { return null; }
 }
 
-function saveEvents(events) {
+function saveEvents(events, { skipLog } = {}) {
   localStorage.setItem(STORAGE_KEY_FBC, JSON.stringify(events));
-  dbSaveCalendar(events).catch(() => {});
+  dbSaveCalendar(events, { skipLog }).catch(() => {});
 }
 
 export default function Home() {
@@ -344,7 +344,7 @@ export default function Home() {
       if (merged[key].length === 0) delete merged[key];
     }
 
-    saveEvents(merged);
+    saveEvents(merged, { skipLog: true });
     setFbcEvents(merged);
     setLoading(false);
   }, []);
@@ -576,6 +576,23 @@ export default function Home() {
 
   return (
     <div>
+      {/* 활동 로그 버튼 */}
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8 }}>
+        <button
+          onClick={() => navigate('/activity-log')}
+          style={{
+            background: '#fff', border: '1px solid #ddd', borderRadius: 8,
+            padding: '6px 14px', fontSize: 12, color: '#555', cursor: 'pointer',
+            display: 'flex', alignItems: 'center', gap: 6,
+            boxShadow: '0 1px 4px rgba(0,0,0,0.06)',
+          }}
+          onMouseEnter={e => { e.currentTarget.style.background = '#f5f5f5'; }}
+          onMouseLeave={e => { e.currentTarget.style.background = '#fff'; }}
+        >
+          <span style={{ fontSize: 14 }}>&#128221;</span>
+          활동 로그
+        </button>
+      </div>
       {/* 오늘의 알림 */}
       <div style={{
         display: 'flex', gap: 10, marginBottom: 20, flexWrap: 'wrap',

@@ -219,7 +219,7 @@ export default function Sales() {
       const next = { ...prev };
       if (trimmed) next[barcode] = trimmed;
       else delete next[barcode];
-      dbStoreSet('sales_memos', next);
+      dbStoreSet('sales_memos', next, { logDesc: '매출 메모 수정' });
       return next;
     });
   }, []);

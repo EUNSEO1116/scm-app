@@ -78,10 +78,85 @@ db.exec(`
     data TEXT NOT NULL,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
+  CREATE TABLE IF NOT EXISTS activity_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    action_type TEXT NOT NULL,
+    description TEXT NOT NULL,
+    target TEXT,
+    before_data TEXT,
+    after_data TEXT,
+    reverted INTEGER DEFAULT 0,
+    group_id TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
 `);
+
+// group_id 컬럼 없으면 추가 (기존 DB 호환)
+try { db.exec('ALTER TABLE activity_log ADD COLUMN group_id TEXT'); } catch {}
+// 기존 쓸모없는 로그 정리
+try { db.exec("DELETE FROM activity_log WHERE description LIKE '%tracker%' OR description LIKE '%cached%' OR description LIKE '%sync%' OR description LIKE '%dashboard_cache%' OR description LIKE '%dismissed%' OR description LIKE '%캘린더 이벤트 저장%'"); } catch {}
 
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
+
+// 활동 로그 — 자동 저장은 완전 제외
+const SKIP_LOG_STORES = new Set([
+  'dashboard_cache',
+  'soldout_analysis_tracker',
+  'soldout_analysis_rate_snapshots',
+  'pending_sync_alerts',
+  'imp_pending_sync_alerts',
+  'dismissed_sync_barcodes',
+]);
+const SKIP_LOG_PREFIXES = ['dashboard_history_', 'soldout_analysis_cached_'];
+
+function shouldSkipLog(storeName) {
+  if (SKIP_LOG_STORES.has(storeName)) return true;
+  return SKIP_LOG_PREFIXES.some(p => storeName.startsWith(p));
+}
+
+const STORE_NAMES_KR = {
+  soldout_analysis_exclude: '(NEW)품절 제외 항목',
+  soldout_exclude: '품절 제외 항목',
+  soldout_stock_corrections: '품절 재고 수정',
+  soldout_reasons_obj: '품절 사유',
+  soldout_history: '품절 기록',
+  soldout_rate: '품절률 스냅샷',
+  new_product_stock: '신규 상품 재고',
+  issue_special_items: '특별 관리 품목',
+  issue_img_data: '이슈 이미지',
+  issue_img_counts: '이미지 개수',
+  imp_watch_barcodes: '상품개선 감시 목록',
+  improvement_items: '상품개선 항목',
+  improvement_images: '상품개선 이미지',
+  orderbook_notes: '발주장부 메모',
+  closed_products: '마감 상품',
+  supplies_orders: '자재 주문',
+  fbc_savings: 'FBC 절감',
+  sales_memos: '매출 메모',
+};
+
+// 5초 내 연속 저장은 같은 그룹으로 묶기
+let lastGroupId = null;
+let lastLogTime = 0;
+const GROUP_WINDOW_MS = 5000;
+
+function logActivity(actionType, description, target, beforeData, afterData) {
+  try {
+    const now = Date.now();
+    if (now - lastLogTime > GROUP_WINDOW_MS || !lastGroupId) {
+      lastGroupId = String(now);
+    }
+    lastLogTime = now;
+    db.prepare('INSERT INTO activity_log (action_type, description, target, before_data, after_data, group_id) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(actionType, description, target,
+        beforeData != null ? JSON.stringify(beforeData) : null,
+        afterData != null ? JSON.stringify(afterData) : null,
+        lastGroupId);
+  } catch (e) {
+    console.error('Activity log error:', e);
+  }
+}
 
 // 품절 사유
 app.post('/api/soldout/reasons', (req, res) => {
@@ -93,6 +168,12 @@ app.post('/api/soldout/reasons', (req, res) => {
     }
   });
   insertMany(items || []);
+  if (items && items.length > 0) {
+    const desc = items.length === 1
+      ? `품절 사유 추가: ${items[0].productName || items[0].barcode}`
+      : `품절 사유 ${items.length}건 추가`;
+    logActivity('soldout_add', desc, 'soldout_reasons', null, items);
+  }
   res.json({ ok: true, added: (items || []).length });
 });
 
@@ -110,8 +191,12 @@ app.get('/api/soldout/reasons', (req, res) => {
 
 app.delete('/api/soldout/reasons/:barcode', (req, res) => {
   const { barcode } = req.params;
-  const row = db.prepare('SELECT id FROM soldout_reasons WHERE barcode = ? ORDER BY id DESC LIMIT 1').get(barcode);
-  if (row) db.prepare('DELETE FROM soldout_reasons WHERE id = ?').run(row.id);
+  const row = db.prepare('SELECT barcode, product_name, option_name, date, reason FROM soldout_reasons WHERE barcode = ? ORDER BY id DESC LIMIT 1').get(barcode);
+  if (row) {
+    db.prepare('DELETE FROM soldout_reasons WHERE barcode = ? AND date = ? AND reason = ?').run(row.barcode, row.date, row.reason);
+    logActivity('soldout_delete', `품절 사유 삭제: ${row.product_name || barcode}`, 'soldout_reasons',
+      { barcode: row.barcode, productName: row.product_name, optionName: row.option_name, date: row.date, reason: row.reason }, null);
+  }
   res.json({ ok: true });
 });
 
@@ -119,7 +204,11 @@ app.delete('/api/soldout/reasons/:barcode', (req, res) => {
 app.post('/api/caution', (req, res) => {
   const { barcode, productName, optionName } = req.body;
   try {
-    db.prepare('INSERT OR IGNORE INTO caution_items (barcode, product_name, option_name) VALUES (?, ?, ?)').run(barcode, productName, optionName);
+    const result = db.prepare('INSERT OR IGNORE INTO caution_items (barcode, product_name, option_name) VALUES (?, ?, ?)').run(barcode, productName, optionName);
+    if (result.changes > 0) {
+      logActivity('caution_add', `주의 품목 추가: ${productName || barcode}`, 'caution_items',
+        null, { barcode, productName, optionName });
+    }
     res.json({ ok: true });
   } catch (e) {
     res.json({ ok: true, msg: 'already exists' });
@@ -132,15 +221,26 @@ app.get('/api/caution', (req, res) => {
 });
 
 app.delete('/api/caution/:barcode', (req, res) => {
+  const row = db.prepare('SELECT barcode, product_name, option_name FROM caution_items WHERE barcode = ?').get(req.params.barcode);
   db.prepare('DELETE FROM caution_items WHERE barcode = ?').run(req.params.barcode);
+  if (row) {
+    logActivity('caution_delete', `주의 품목 제거: ${row.product_name || req.params.barcode}`, 'caution_items',
+      { barcode: row.barcode, productName: row.product_name, optionName: row.option_name }, null);
+  }
   res.json({ ok: true });
 });
 
 // 캘린더 이벤트
 app.post('/api/calendar', (req, res) => {
   const { events } = req.body;
+  const skipLog = req.query.skipLog === '1';
+  const currentRow = db.prepare('SELECT event_data FROM calendar_events ORDER BY id DESC LIMIT 1').get();
+  const beforeEvents = currentRow ? JSON.parse(currentRow.event_data) : [];
   db.prepare('DELETE FROM calendar_events').run();
   db.prepare('INSERT INTO calendar_events (event_data) VALUES (?)').run(JSON.stringify(events));
+  if (!skipLog) {
+    logActivity('calendar_save', '캘린더 이벤트 저장', 'calendar', beforeEvents, events);
+  }
   res.json({ ok: true });
 });
 
@@ -156,6 +256,12 @@ app.post('/api/store/:name', (req, res) => {
   const { name } = req.params;
   if (!isValidStore(name)) return res.status(400).json({ error: 'invalid store name' });
   const { data } = req.body;
+  // 변경 전 데이터 읽기 (로그용)
+  let beforeData = null;
+  try {
+    const currentRow = db.prepare(`SELECT data FROM ${name} ORDER BY id DESC LIMIT 1`).get();
+    beforeData = currentRow ? JSON.parse(currentRow.data) : null;
+  } catch { /* 테이블 미존재 */ }
   try {
     db.prepare(`DELETE FROM ${name}`).run();
   } catch {
@@ -163,6 +269,12 @@ app.post('/api/store/:name', (req, res) => {
     db.prepare(`DELETE FROM ${name}`).run();
   }
   db.prepare(`INSERT INTO ${name} (data) VALUES (?)`).run(JSON.stringify(data));
+  const skipLog = req.query.skipLog === '1';
+  if (!skipLog && !shouldSkipLog(name)) {
+    const krName = STORE_NAMES_KR[name] || name;
+    const desc = req.query.logDesc || `${krName} 저장`;
+    logActivity('store_set', desc, name, beforeData, data);
+  }
   res.json({ ok: true });
 });
 
@@ -175,6 +287,117 @@ app.get('/api/store/:name', (req, res) => {
   } catch {
     db.exec(`CREATE TABLE IF NOT EXISTS ${name} (id INTEGER PRIMARY KEY AUTOINCREMENT, data TEXT NOT NULL, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)`);
     res.json({ data: null });
+  }
+});
+
+// ===== 활동 로그 (그룹 기반) =====
+app.get('/api/activity-log', (req, res) => {
+  const limit = parseInt(req.query.limit) || 100;
+  const offset = parseInt(req.query.offset) || 0;
+  // group_id가 없는 레거시 로그는 각각 자기 id를 group_id로 사용
+  const rows = db.prepare(`
+    SELECT COALESCE(group_id, CAST(id AS TEXT)) as gid,
+           GROUP_CONCAT(id) as ids,
+           GROUP_CONCAT(description, '||') as descriptions,
+           MIN(created_at) as created_at,
+           MAX(reverted) as reverted,
+           COUNT(*) as count
+    FROM activity_log
+    GROUP BY gid
+    ORDER BY MAX(id) DESC
+    LIMIT ? OFFSET ?
+  `).all(limit, offset);
+  const total = db.prepare('SELECT COUNT(DISTINCT COALESCE(group_id, CAST(id AS TEXT))) as count FROM activity_log').get().count;
+  res.json({ logs: rows, total });
+});
+
+// 단일 로그 되돌리기 (내부 함수)
+function revertSingleLog(log) {
+  const beforeData = log.before_data ? JSON.parse(log.before_data) : null;
+  const afterData = log.after_data ? JSON.parse(log.after_data) : null;
+  switch (log.action_type) {
+    case 'store_set': {
+      if (!isValidStore(log.target)) throw new Error('invalid store');
+      try { db.prepare(`DELETE FROM ${log.target}`).run(); } catch {
+        db.exec(`CREATE TABLE IF NOT EXISTS ${log.target} (id INTEGER PRIMARY KEY AUTOINCREMENT, data TEXT NOT NULL, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)`);
+      }
+      if (beforeData !== null) {
+        db.prepare(`INSERT INTO ${log.target} (data) VALUES (?)`).run(JSON.stringify(beforeData));
+      }
+      break;
+    }
+    case 'calendar_save': {
+      db.prepare('DELETE FROM calendar_events').run();
+      if (beforeData) {
+        db.prepare('INSERT INTO calendar_events (event_data) VALUES (?)').run(JSON.stringify(beforeData));
+      }
+      break;
+    }
+    case 'soldout_add': {
+      if (afterData && Array.isArray(afterData)) {
+        const del = db.prepare('DELETE FROM soldout_reasons WHERE barcode = ? AND date = ? AND reason = ?');
+        for (const item of afterData) del.run(item.barcode, item.date, item.reason);
+      }
+      break;
+    }
+    case 'soldout_delete': {
+      if (beforeData) {
+        db.prepare('INSERT INTO soldout_reasons (barcode, product_name, option_name, date, reason) VALUES (?, ?, ?, ?, ?)')
+          .run(beforeData.barcode, beforeData.productName, beforeData.optionName, beforeData.date, beforeData.reason);
+      }
+      break;
+    }
+    case 'caution_add': {
+      if (afterData) db.prepare('DELETE FROM caution_items WHERE barcode = ?').run(afterData.barcode);
+      break;
+    }
+    case 'caution_delete': {
+      if (beforeData) {
+        db.prepare('INSERT OR IGNORE INTO caution_items (barcode, product_name, option_name) VALUES (?, ?, ?)')
+          .run(beforeData.barcode, beforeData.productName, beforeData.optionName);
+      }
+      break;
+    }
+  }
+}
+
+// 그룹 단위 되돌리기
+app.post('/api/activity-log/revert-group/:groupId', (req, res) => {
+  const { groupId } = req.params;
+  const logs = db.prepare('SELECT * FROM activity_log WHERE (group_id = ? OR CAST(id AS TEXT) = ?) AND reverted = 0 ORDER BY id DESC').all(groupId, groupId);
+  if (logs.length === 0) return res.status(404).json({ error: 'not found or already reverted' });
+
+  try {
+    const revertTx = db.transaction(() => {
+      for (const log of logs) {
+        revertSingleLog(log);
+        db.prepare('UPDATE activity_log SET reverted = 1 WHERE id = ?').run(log.id);
+      }
+    });
+    revertTx();
+    // 되돌리기 로그 기록
+    const descs = logs.map(l => l.description).join(', ');
+    logActivity('revert', `[되돌리기] ${descs}`, null, null, null);
+    res.json({ ok: true, reverted: logs.length });
+  } catch (e) {
+    console.error('Revert group error:', e);
+    res.status(500).json({ error: 'revert failed', message: e.message });
+  }
+});
+
+// 기존 단일 되돌리기 (호환용)
+app.post('/api/activity-log/revert/:id', (req, res) => {
+  const log = db.prepare('SELECT * FROM activity_log WHERE id = ?').get(req.params.id);
+  if (!log) return res.status(404).json({ error: 'not found' });
+  if (log.reverted) return res.status(400).json({ error: 'already reverted' });
+  try {
+    revertSingleLog(log);
+    db.prepare('UPDATE activity_log SET reverted = 1 WHERE id = ?').run(log.id);
+    logActivity('revert', `[되돌리기] ${log.description}`, log.target, null, null);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('Revert error:', e);
+    res.status(500).json({ error: 'revert failed', message: e.message });
   }
 });
 

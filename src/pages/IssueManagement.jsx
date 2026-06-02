@@ -41,9 +41,9 @@ const LOCAL_SPECIAL_KEY = 'local_special_items';
 function loadLocalSpecial() {
   try { return JSON.parse(localStorage.getItem(LOCAL_SPECIAL_KEY) || '[]'); } catch { return []; }
 }
-function saveLocalSpecial(list) {
+function saveLocalSpecial(list, { logDesc } = {}) {
   localStorage.setItem(LOCAL_SPECIAL_KEY, JSON.stringify(list));
-  dbStoreSet('issue_special_items', list).catch(() => {});
+  dbStoreSet('issue_special_items', list, { logDesc }).catch(() => {});
 }
 
 const PENDING_ALERTS_KEY = 'pending_sync_alerts';
@@ -152,11 +152,11 @@ export default function IssueManagement() {
     let allData = {};
     try { const d = await dbStoreGet('issue_img_data'); if (d && typeof d === 'object') allData = d; } catch {}
     if (images.length > 0) { allData[barcode] = images; } else { delete allData[barcode]; }
-    await dbStoreSet('issue_img_data', allData);
+    await dbStoreSet('issue_img_data', allData, { logDesc: `이슈 이미지 ${images.length > 0 ? '저장' : '삭제'}: ${barcode}` });
     const newCounts = { ...imgCounts, [barcode]: images.length };
     if (images.length === 0) delete newCounts[barcode];
     setImgCounts(newCounts);
-    await dbStoreSet('issue_img_counts', newCounts);
+    await dbStoreSet('issue_img_counts', newCounts, { skipLog: true });
   };
 
   const handleImgAdd = async (e) => {
@@ -353,7 +353,7 @@ export default function IssueManagement() {
     const bc = newItem.barcode.trim();
     const updated = [...localItems, { ...newItem, barcode: bc, addedDate: new Date().toISOString().slice(0, 10) }];
     setLocalItems(updated);
-    saveLocalSpecial(updated);
+    saveLocalSpecial(updated, { logDesc: `특별 관리 품목 추가: ${bc}` });
     // 재등록 시 dismissed 목록에서 제거 → 동기화 알림 다시 동작
     const dismissed = loadDismissedBarcodes();
     if (dismissed.includes(bc)) {
@@ -366,7 +366,7 @@ export default function IssueManagement() {
   const deleteLocalItem = (barcode) => {
     const updated = localItems.filter(i => i.barcode !== barcode);
     setLocalItems(updated);
-    saveLocalSpecial(updated);
+    saveLocalSpecial(updated, { logDesc: `특별 관리 품목 삭제: ${barcode}` });
     setSyncAlerts(prev => prev.filter(a => a.barcode !== barcode));
   };
 

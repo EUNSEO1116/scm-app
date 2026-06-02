@@ -121,12 +121,14 @@ export default function SoldOutAnalysisUpload() {
         parseInt(dateKey.slice(6,8))
       );
 
+      const isToday = dateKey === todayKey();
+      const dateLabel = isToday ? '오늘' : keyToDisplay(dateKey);
       const ok = await dbStoreSet(`soldout_analysis_${dateKey}`, {
         uploadedAt: targetD.toISOString(),
         fileName: file.name,
         count: items.length,
         items,
-      });
+      }, { logDesc: `품절 데이터 업로드: ${dateLabel} (${file.name}, ${items.length}개 품목)` });
 
       if (ok) {
         const isToday = dateKey === todayKey();

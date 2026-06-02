@@ -91,9 +91,9 @@ export async function dbRemoveCaution(barcode) {
 }
 
 // ===== 캘린더 이벤트 =====
-export async function dbSaveCalendar(events) {
+export async function dbSaveCalendar(events, { skipLog } = {}) {
   try {
-    const res = await fetch(`${API_BASE}/calendar`, {
+    const res = await fetch(`${API_BASE}/calendar${skipLog ? '?skipLog=1' : ''}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ events }),
@@ -117,9 +117,13 @@ export async function dbGetCalendar() {
 }
 
 // ===== 범용 저장소 (localStorage 대체) =====
-export async function dbStoreSet(name, data) {
+export async function dbStoreSet(name, data, { skipLog, logDesc } = {}) {
   try {
-    const res = await fetch(`${API_BASE}/store/${name}`, {
+    const params = new URLSearchParams();
+    if (skipLog) params.set('skipLog', '1');
+    if (logDesc) params.set('logDesc', logDesc);
+    const qs = params.toString();
+    const res = await fetch(`${API_BASE}/store/${name}${qs ? '?' + qs : ''}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ data }),
@@ -128,6 +132,43 @@ export async function dbStoreSet(name, data) {
   } catch (e) {
     console.error(`DB store set(${name}) error:`, e);
     return false;
+  }
+}
+
+// ===== 활동 로그 =====
+export async function dbGetActivityLog(limit = 100, offset = 0) {
+  try {
+    const res = await fetch(`${API_BASE}/activity-log?limit=${limit}&offset=${offset}`);
+    return await res.json(); // { logs, total }
+  } catch (e) {
+    console.error('DB getActivityLog error:', e);
+    return { logs: [], total: 0 };
+  }
+}
+
+export async function dbRevertActivity(id) {
+  try {
+    const res = await fetch(`${API_BASE}/activity-log/revert/${id}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    return await res.json();
+  } catch (e) {
+    console.error('DB revertActivity error:', e);
+    return { error: e.message };
+  }
+}
+
+export async function dbRevertActivityGroup(groupId) {
+  try {
+    const res = await fetch(`${API_BASE}/activity-log/revert-group/${encodeURIComponent(groupId)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    return await res.json();
+  } catch (e) {
+    console.error('DB revertActivityGroup error:', e);
+    return { error: e.message };
   }
 }
 

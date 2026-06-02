@@ -127,7 +127,7 @@ async function loadStockTracker() {
 }
 function saveStockTracker(data) {
   localStorage.setItem(NEW_PRODUCT_STOCK_KEY, JSON.stringify(data));
-  dbStoreSet('new_product_stock', data).catch(() => {});
+  dbStoreSet('new_product_stock', data, { skipLog: true }).catch(() => {});
 }
 // tracker: { [barcode]: { records: [{date, stock}], firstSeen: 'YYYY-MM-DD' } }
 async function updateStockTracker(newProducts, preloadedTracker) {
@@ -483,8 +483,8 @@ export default function SoldOut() {
             if (dedicated?.reasons && Object.keys(dedicated.reasons).length > 0) {
               localStorage.setItem(SOLDOUT_REASONS_KEY, JSON.stringify(dedicated.reasons));
               if (dedicated.history) localStorage.setItem(SOLDOUT_HISTORY_KEY, JSON.stringify(dedicated.history));
-              dbStoreSet('soldout_reasons_obj', dedicated.reasons).catch(() => {});
-              if (dedicated.history) dbStoreSet('soldout_history', dedicated.history).catch(() => {});
+              dbStoreSet('soldout_reasons_obj', dedicated.reasons, { skipLog: true }).catch(() => {});
+              if (dedicated.history) dbStoreSet('soldout_history', dedicated.history, { skipLog: true }).catch(() => {});
             }
           } catch {}
         }
@@ -546,7 +546,7 @@ export default function SoldOut() {
           } catch { existing = JSON.parse(localStorage.getItem(rateKey) || '{}'); }
           existing[today] = snapshot;
           localStorage.setItem(rateKey, JSON.stringify(existing));
-          dbStoreSet('soldout_rate', existing).catch(() => {});
+          dbStoreSet('soldout_rate', existing, { skipLog: true }).catch(() => {});
         } catch {}
       }
     } catch (err) {

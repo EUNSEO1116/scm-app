@@ -23,9 +23,9 @@ function loadExcludes() {
   catch { return []; }
 }
 
-function saveExcludes(list) {
+function saveExcludes(list, { logDesc } = {}) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(list));
-  dbStoreSet('soldout_exclude', list).catch(() => {});
+  dbStoreSet('soldout_exclude', list, { logDesc }).catch(() => {});
 }
 
 function shouldExclude(status) {
@@ -167,7 +167,9 @@ export default function SoldOutExclude() {
       ...excludes.filter(e => !existingBarcodes.has(e.barcode)),
       ...newItems,
     ];
-    saveExcludes(updated);
+    const names = newItems.map(i => i.productName).slice(0, 3).join(', ');
+    const suffix = newItems.length > 3 ? ` 외 ${newItems.length - 3}건` : '';
+    saveExcludes(updated, { logDesc: `품절 제외 추가: ${names}${suffix}` });
     setExcludes(updated);
     setSelected(new Set());
     setShowModal(false);
@@ -176,14 +178,16 @@ export default function SoldOutExclude() {
   };
 
   const handleRemove = (barcode) => {
+    const removed = excludes.find(e => e.barcode === barcode);
     const updated = excludes.filter(e => e.barcode !== barcode);
-    saveExcludes(updated);
+    saveExcludes(updated, { logDesc: `품절 제외 해제: ${removed?.productName || barcode}` });
     setExcludes(updated);
   };
 
   const handleClearExpired = () => {
+    const expired = excludes.filter(e => e.endDate && e.endDate < today);
     const updated = excludes.filter(e => !e.endDate || e.endDate >= today);
-    saveExcludes(updated);
+    saveExcludes(updated, { logDesc: `만료된 제외 ${expired.length}건 정리` });
     setExcludes(updated);
   };
 

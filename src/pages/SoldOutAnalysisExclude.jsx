@@ -20,9 +20,11 @@ export default function SoldOutAnalysisExclude() {
   }, []);
 
   const removeExclude = async (optionId) => {
+    const removed = items.find(i => i.optionId === optionId);
     const updated = items.filter(i => i.optionId !== optionId);
     setItems(updated);
-    await dbStoreSet('soldout_analysis_exclude', updated);
+    const desc = removed ? `(NEW)품절 제외 해제: ${removed.productName} - ${removed.optionName}` : '(NEW)품절 제외 해제';
+    await dbStoreSet('soldout_analysis_exclude', updated, { logDesc: desc });
     showToast('success', '해제 완료', '품절률 제외가 해제되었습니다.');
   };
 

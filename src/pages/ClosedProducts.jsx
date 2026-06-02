@@ -77,7 +77,8 @@ export default function ClosedProducts() {
 
     const newList = [...closedList, ...additions];
     setClosedList(newList);
-    await dbStoreSet(DB_KEY, newList);
+    const addedNames = additions.map(a => a.keyword).join(', ');
+    await dbStoreSet(DB_KEY, newList, { logDesc: `마감 상품 추가: ${addedNames}` });
     setKeyword('');
     setLoading(false);
   };
@@ -86,7 +87,7 @@ export default function ClosedProducts() {
   const handleDelete = async (kw) => {
     const newList = closedList.filter(item => item.keyword !== kw);
     setClosedList(newList);
-    await dbStoreSet(DB_KEY, newList);
+    await dbStoreSet(DB_KEY, newList, { logDesc: `마감 상품 삭제: ${kw}` });
   };
 
   // 키워드 데이터 새로고침 (시트 재조회)
@@ -101,7 +102,7 @@ export default function ClosedProducts() {
       return { ...item, products: matched };
     });
     setClosedList(updated);
-    await dbStoreSet(DB_KEY, updated);
+    await dbStoreSet(DB_KEY, updated, { skipLog: true });
     setLoading(false);
   };
 

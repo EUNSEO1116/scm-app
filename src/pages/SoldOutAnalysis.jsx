@@ -135,7 +135,7 @@ export default function SoldOutAnalysis() {
     if (excludeSet.has(r.optionId)) return;
     const data = await dbStoreGet('soldout_analysis_exclude') || [];
     data.push({ optionId: r.optionId, productName: r.productName, optionName: r.optionName, status: r.status, barcode: r.barcode, excludedAt: new Date().toISOString() });
-    await dbStoreSet('soldout_analysis_exclude', data);
+    await dbStoreSet('soldout_analysis_exclude', data, { logDesc: `(NEW)품절 제외 추가: ${r.productName} - ${r.optionName}` });
     const newExSet = new Set(data.map(i => i.optionId));
     setExcludeSet(newExSet);
     // 보고 있는 날짜의 캐시 + rate_snapshots 재계산
@@ -164,7 +164,7 @@ export default function SoldOutAnalysis() {
   const correctStock = async (r) => {
     const updated = { ...stockCorrections, [r.optionId]: { productName: r.productName, optionName: r.optionName, calcStock: r.calcStock, correctedAt: new Date().toISOString() } };
     setStockCorrections(updated);
-    await dbStoreSet('soldout_stock_corrections', updated);
+    await dbStoreSet('soldout_stock_corrections', updated, { logDesc: `재고 수정: ${r.productName} - ${r.optionName}` });
     // 오늘 캐시에서 해당 항목 제거 + 품절률 재계산 (과거 캐시는 건드리지 않음)
     const isToday = viewingDate === todayStr();
     if (cachedResult && isToday) {
@@ -323,7 +323,7 @@ export default function SoldOutAnalysis() {
           correctionsCleaned = true;
         }
       }
-      if (correctionsCleaned) await dbStoreSet('soldout_stock_corrections', corrections);
+      if (correctionsCleaned) await dbStoreSet('soldout_stock_corrections', corrections, { skipLog: true });
       setStockCorrections(corrections);
 
       // 분석: 전체 유효상품 카운트(품절률용) + 품절/위기 목록 생성

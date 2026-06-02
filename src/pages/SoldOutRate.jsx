@@ -32,9 +32,9 @@ function loadSnapshots() {
   catch { return {}; }
 }
 
-function saveSnapshots(data) {
+function saveSnapshots(data, { skipLog } = {}) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-  dbStoreSet('soldout_rate', data).catch(() => {});
+  dbStoreSet('soldout_rate', data, { skipLog }).catch(() => {});
 }
 
 function shouldExclude(status) {
@@ -213,7 +213,7 @@ export default function SoldOutRate() {
       setTodayData(snapshot);
 
       const updated = { ...existing, [snapshot.date]: snapshot };
-      saveSnapshots(updated);
+      saveSnapshots(updated, { skipLog: true });
       setSnapshots(updated);
     } catch (err) {
       console.error('Snapshot fetch error:', err);
@@ -226,7 +226,7 @@ export default function SoldOutRate() {
     const snaps = loadSnapshots();
     if (snaps['2026-03-31'] && snaps['2026-03-31'].rate !== 0.88) {
       snaps['2026-03-31'] = { ...snaps['2026-03-31'], rate: 0.88, soldout: Math.round(snaps['2026-03-31'].total * 0.0088) };
-      saveSnapshots(snaps);
+      saveSnapshots(snaps, { skipLog: true });
       setSnapshots(snaps);
     }
   }, []);

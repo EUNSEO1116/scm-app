@@ -101,10 +101,10 @@ export default function SoldOutHistory() {
         if (data?.history) {
           localStorage.setItem(SOLDOUT_HISTORY_KEY, JSON.stringify(data.history));
           setHistory(data.history);
-          dbStoreSet('soldout_history', data.history).catch(() => {});
+          dbStoreSet('soldout_history', data.history, { skipLog: true }).catch(() => {});
           if (data.reasons) {
             localStorage.setItem(SOLDOUT_REASONS_KEY, JSON.stringify(data.reasons));
-            dbStoreSet('soldout_reasons_obj', data.reasons).catch(() => {});
+            dbStoreSet('soldout_reasons_obj', data.reasons, { skipLog: true }).catch(() => {});
           }
         }
       } catch {}
