@@ -2,6 +2,7 @@ import { useState, useCallback, useRef } from 'react';
 import * as XLSX from 'xlsx';
 import XLSX_STYLE from 'xlsx-js-style';
 import { dbStoreGet } from '../utils/dbApi';
+import { findBestMatch, buildCandidates } from '../utils/fuzzyMatch';
 
 const SHEET_ID = '1NXhW_gG0b-gXuVqrhbY9ErWi8uO_7pXIy-NTo4FbE1I';
 const CSV_BARCODE = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent('쿠팡바코드')}`;
@@ -309,13 +310,14 @@ export default function Incoming() {
     setLoading(false);
   }, []);
 
-  // 주문목록 엑셀 업로드 → SKU별 주문수량 매핑
+  // 주문목록 엑셀 업로드 → SKU별 주문수량 매핑 (유사도 매칭)
   const processOrderFile = useCallback(async (file) => {
     if (!file) return;
     try {
       const buffer = await file.arrayBuffer();
       const wb = XLSX.read(buffer, { type: 'array' });
       const skuQtyMap = {};
+      const candidates = buildCandidates(nameToSkuMap);
 
       for (const sheetName of wb.SheetNames) {
         const ws = wb.Sheets[sheetName];
@@ -326,8 +328,17 @@ export default function Incoming() {
           const name = String(row[4] || '').trim();        // E열 상품명
           const option = String(row[5] || '').trim();      // F열 옵션명
           if (!name || qty <= 0) continue;
-          const key = `${name}||${option}`;
-          const sku = nameToSkuMap[key];
+
+          // 완전일치 먼저 시도
+          const exactKey = `${name}||${option}`;
+          let sku = nameToSkuMap[exactKey];
+
+          // 완전일치 실패 시 유사도 매칭
+          if (!sku) {
+            const match = findBestMatch(name, option, candidates);
+            if (match) sku = nameToSkuMap[match.key];
+          }
+
           if (sku) {
             skuQtyMap[sku] = (skuQtyMap[sku] || 0) + qty;
           }

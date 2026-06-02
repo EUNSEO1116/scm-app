@@ -1,7 +1,8 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useMemo } from 'react';
 import * as XLSX from 'xlsx';
 import XLSX_STYLE from 'xlsx-js-style';
 import { dbStoreGet } from '../utils/dbApi';
+import { findBestMatch, buildCandidates } from '../utils/fuzzyMatch';
 
 const SHEET_ID = '1NXhW_gG0b-gXuVqrhbY9ErWi8uO_7pXIy-NTo4FbE1I';
 const TSV_CALC = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=tsv&gid=1349677364`;
@@ -192,6 +193,29 @@ export default function IncheonIncoming() {
     setShowWaitInput(false);
   }, [waitInput]);
 
+  // orderMap 유사도 매칭 캐시: item의 "상품명||옵션명" → 주문수량
+  const orderCandidates = useMemo(() => buildCandidates(orderMap), [orderMap]);
+  const orderMatchCache = useRef({});
+  // orderMap 변경 시 캐시 초기화
+  const prevOrderMapRef = useRef(orderMap);
+  if (prevOrderMapRef.current !== orderMap) {
+    orderMatchCache.current = {};
+    prevOrderMapRef.current = orderMap;
+  }
+
+  const getOrderQty = useCallback((productName, optionName) => {
+    const exactKey = `${productName}||${optionName}`;
+    // 완전일치
+    if (orderMap[exactKey] !== undefined) return orderMap[exactKey];
+    // 캐시 확인
+    if (exactKey in orderMatchCache.current) return orderMatchCache.current[exactKey];
+    // 유사도 매칭
+    const match = findBestMatch(productName, optionName, orderCandidates);
+    const qty = match ? orderMap[match.key] : 0;
+    orderMatchCache.current[exactKey] = qty;
+    return qty;
+  }, [orderMap, orderCandidates]);
+
   // VOC 체크 (상품명 키워드 매칭)
   const isVoc = (productName) => {
     if (!productName || vocNames.length === 0) return false;
@@ -201,10 +225,10 @@ export default function IncheonIncoming() {
   // 비고 생성
   const getRemark = (item) => {
     const remarks = [];
-    // 윙 발송 체크
-    const key = `${item.productName}||${item.optionName}`;
-    if (orderMap[key]) {
-      remarks.push(`${orderMap[key]}개 윙 발송`);
+    // 윙 발송 체크 (유사도 매칭)
+    const wingQty = getOrderQty(item.productName, item.optionName);
+    if (wingQty) {
+      remarks.push(`${wingQty}개 윙 발송`);
     }
     // VOC 체크
     if (isVoc(item.productName)) {
@@ -341,7 +365,7 @@ export default function IncheonIncoming() {
             <div className="stat-card" style={{ padding: 20 }}>
               <div className="label">윙 발송 매칭</div>
               <div className="value" style={{ fontSize: 32, color: Object.keys(orderMap).length > 0 ? '#1a73e8' : '#999' }}>
-                {orderFile ? data.items.filter(item => orderMap[`${item.productName}||${item.optionName}`]).length : '-'}
+                {orderFile ? data.items.filter(item => getOrderQty(item.productName, item.optionName) > 0).length : '-'}
                 {orderFile && <span style={{ fontSize: 14, fontWeight: 400, marginLeft: 4 }}>건</span>}
               </div>
               <div className="sub" style={{ fontSize: 11, color: '#999' }}>{orderFile || '주문목록 미업로드'}</div>
@@ -466,7 +490,7 @@ export default function IncheonIncoming() {
                   <tbody>
                     {data.items.map((item, i) => {
                       const remark = getRemark(item);
-                      const hasWing = orderMap[`${item.productName}||${item.optionName}`];
+                      const hasWing = getOrderQty(item.productName, item.optionName);
                       const hasVoc = isVoc(item.productName);
                       const hasOneTime = oneTimeMap[item.barcode];
                       const hasWait = waitBarcodes.has(item.barcode);
@@ -486,7 +510,7 @@ export default function IncheonIncoming() {
                                 background: '#e8f0fe', color: '#1a73e8', padding: '2px 6px',
                                 borderRadius: 4, fontSize: 11, fontWeight: 600, marginRight: 4,
                               }}>
-                                {orderMap[`${item.productName}||${item.optionName}`]}개 윙 발송
+                                {getOrderQty(item.productName, item.optionName)}개 윙 발송
                               </span>
                             )}
                             {hasVoc && (
