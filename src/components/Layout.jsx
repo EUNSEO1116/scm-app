@@ -34,6 +34,11 @@ const navItems = [
 ];
 
 const bottomNavItems = [
+  { id: 'cn-settlement', label: 'CN 결산', icon: 'cnSettlement', children: [
+    { label: '거래 데이터 업로드', path: '/cn-settlement/upload' },
+    { label: '결산 대시보드', path: '/cn-settlement/dashboard' },
+    { label: '결산 기록', path: '/cn-settlement/history' },
+  ]},
   { id: 'soldout', label: '품절관리', icon: 'soldout', children: [
     { label: '품절 현황', path: '/soldout' },
     { label: '월별 품절률', path: '/soldout/rate' },
@@ -50,6 +55,7 @@ const icons = {
   issue: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>,
   soldoutAnalysis: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 21H3V3"/><path d="M21 7l-5 5-4-4-3 3"/><circle cx="21" cy="7" r="1.5"/><circle cx="16" cy="12" r="1.5"/><circle cx="12" cy="8" r="1.5"/><circle cx="9" cy="11" r="1.5"/></svg>,
   supplies: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/></svg>,
+  cnSettlement: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 7h6m-6 4h6m-4 4h4M5 3h14a2 2 0 012 2v14a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2z"/></svg>,
 };
 
 const pageTitles = {
@@ -77,6 +83,9 @@ const pageTitles = {
   '/soldout-analysis/upload': '데이터 업로드',
   '/supplies': '부자재 목록',
   '/supplies/order': '부자재 발주',
+  '/cn-settlement/upload': '거래 데이터 업로드',
+  '/cn-settlement/dashboard': '결산 대시보드',
+  '/cn-settlement/history': '결산 기록',
 };
 
 export default function Layout({ children }) {

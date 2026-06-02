@@ -26,6 +26,9 @@ import SoldOutAnalysisExclude from './pages/SoldOutAnalysisExclude';
 import SoldOutAnalysisRate from './pages/SoldOutAnalysisRate';
 import SoldOutAnalysisUpload from './pages/SoldOutAnalysisUpload';
 import ActivityLog from './pages/ActivityLog';
+import CnSettlementUpload from './pages/CnSettlementUpload';
+import CnSettlementDashboard from './pages/CnSettlementDashboard';
+import CnSettlementHistory from './pages/CnSettlementHistory';
 
 function App() {
   return (
@@ -57,6 +60,9 @@ function App() {
           <Route path="/supplies" element={<SuppliesList />} />
           <Route path="/supplies/order" element={<SuppliesOrder />} />
           <Route path="/activity-log" element={<ActivityLog />} />
+          <Route path="/cn-settlement/upload" element={<CnSettlementUpload />} />
+          <Route path="/cn-settlement/dashboard" element={<CnSettlementDashboard />} />
+          <Route path="/cn-settlement/history" element={<CnSettlementHistory />} />
         </Routes>
       </Layout>
     </BrowserRouter>
