@@ -90,9 +90,9 @@ const S = {
     width: '100%', borderCollapse: 'collapse', fontSize: 13, tableLayout: 'fixed',
   },
   th: {
-    padding: '10px 6px', textAlign: 'center', fontWeight: 500, fontSize: 11,
+    padding: '10px 4px', textAlign: 'center', fontWeight: 500, fontSize: 11,
     color: '#666', borderBottom: '1px solid #eee', whiteSpace: 'nowrap',
-    background: '#fafbfc', overflow: 'hidden', textOverflow: 'ellipsis',
+    background: '#fafbfc',
   },
   thSub: {
     padding: '4px 6px', textAlign: 'right', fontSize: 10, fontWeight: 500,
@@ -100,8 +100,8 @@ const S = {
     whiteSpace: 'nowrap',
   },
   td: {
-    padding: '11px 6px', textAlign: 'right', borderBottom: '1px solid #f2f2f2',
-    whiteSpace: 'nowrap', fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis',
+    padding: '11px 4px', textAlign: 'right', borderBottom: '1px solid #f2f2f2',
+    whiteSpace: 'nowrap', fontSize: 12,
   },
   weekTd: {
     padding: '11px 6px', textAlign: 'center', borderBottom: '1px solid #f2f2f2',
@@ -352,10 +352,10 @@ export default function CnSettlementDashboard() {
                   </td>
                 </React.Fragment>
               ))}
-              <td style={{ ...S.td, background: '#fafbfc', borderLeft: '2px solid #e0e0e0', fontSize: 14 }}>
+              <td style={{ ...S.td, background: '#fafbfc', borderLeft: '2px solid #e0e0e0' }}>
                 <span style={grandExisting < 0 ? S.red : S.green}>{fmtKrw(grandExisting)}</span>
               </td>
-              <td style={{ ...S.td, background: '#fafbfc', fontSize: 14 }}>
+              <td style={{ ...S.td, background: '#fafbfc' }}>
                 <span style={grandNew < 0 ? S.red : S.blue}>{fmtKrw(grandNew)}</span>
               </td>
             </tr>
