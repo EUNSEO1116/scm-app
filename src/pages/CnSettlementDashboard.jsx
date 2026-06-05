@@ -25,7 +25,7 @@ function extractBrandCode(orderNo) {
   if (!orderNo) return null;
   const parts = orderNo.split('-');
   if (parts.length < 2 || parts[0] !== 'AE') return null;
-  return parts[1];
+  return parts[1].toUpperCase();
 }
 
 function isNewProduct(orderNo) {
@@ -87,29 +87,29 @@ function fmtKrw(val) {
 
 const S = {
   table: {
-    width: '100%', borderCollapse: 'collapse', fontSize: 13,
+    width: '100%', borderCollapse: 'collapse', fontSize: 13, tableLayout: 'fixed',
   },
   th: {
-    padding: '10px 12px', textAlign: 'center', fontWeight: 500, fontSize: 12,
+    padding: '10px 6px', textAlign: 'center', fontWeight: 500, fontSize: 11,
     color: '#666', borderBottom: '1px solid #eee', whiteSpace: 'nowrap',
-    background: '#fafbfc',
+    background: '#fafbfc', overflow: 'hidden', textOverflow: 'ellipsis',
   },
   thSub: {
-    padding: '4px 10px', textAlign: 'right', fontSize: 10, fontWeight: 500,
+    padding: '4px 6px', textAlign: 'right', fontSize: 10, fontWeight: 500,
     color: '#999', borderBottom: '2px solid #eee', background: '#fafbfc',
     whiteSpace: 'nowrap',
   },
   td: {
-    padding: '11px 12px', textAlign: 'right', borderBottom: '1px solid #f2f2f2',
-    whiteSpace: 'nowrap', fontSize: 13,
+    padding: '11px 6px', textAlign: 'right', borderBottom: '1px solid #f2f2f2',
+    whiteSpace: 'nowrap', fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis',
   },
   weekTd: {
-    padding: '11px 12px', textAlign: 'left', borderBottom: '1px solid #f2f2f2',
-    fontWeight: 600, fontSize: 13, color: '#333', whiteSpace: 'nowrap',
+    padding: '11px 6px', textAlign: 'center', borderBottom: '1px solid #f2f2f2',
+    fontWeight: 600, fontSize: 12, color: '#333', whiteSpace: 'nowrap',
   },
   dateTd: {
-    padding: '11px 12px', textAlign: 'center', borderBottom: '1px solid #f2f2f2',
-    fontSize: 13, color: '#555', whiteSpace: 'nowrap',
+    padding: '11px 6px', textAlign: 'center', borderBottom: '1px solid #f2f2f2',
+    fontSize: 12, color: '#555', whiteSpace: 'nowrap',
   },
   totalRow: {
     background: '#fafbfc', fontWeight: 700, borderTop: '2px solid #ddd',
@@ -136,9 +136,9 @@ export default function CnSettlementDashboard() {
   }, []);
 
   const brandMap = {};
-  for (const b of brandMappings) brandMap[b.code] = b.name;
+  for (const b of brandMappings) brandMap[b.code.toUpperCase()] = b.name;
 
-  const { monthGroups, allBrands, currentMonthKey } = useMemo(() => {
+  const { monthGroups, allBrands, currentMonthKey, lastSummary } = useMemo(() => {
     const carryOver = {};
     const processed = uploads.map(record => {
       const agg = aggregateByBrand(record, brandMap);
@@ -188,7 +188,31 @@ export default function CnSettlementDashboard() {
     Object.values(groups).forEach(g => g.rows.sort((a, b) => b.endDate - a.endDate));
 
     const now = new Date();
-    return { monthGroups: groups, allBrands, currentMonthKey: getMonthKey(now) };
+    // 마지막 업로드 기록 요약
+    const lastItem = processed.length > 0 ? processed[processed.length - 1] : null;
+    let lastSummary = null;
+    if (lastItem) {
+      const { record, agg } = lastItem;
+      let totalExisting = 0, totalNew = 0, totalExtra = 0, brandCount = 0;
+      for (const b of Object.keys(agg)) {
+        totalExisting += agg[b].existing;
+        totalNew += agg[b].new;
+        totalExtra += agg[b].extraCost;
+        brandCount++;
+      }
+      lastSummary = {
+        dateRange: getDateRange(record),
+        exchangeRate: record.exchangeRate,
+        txCount: record.transactions.length,
+        totalExisting,
+        totalNew,
+        totalExtra,
+        totalOrder: totalExisting + totalNew,
+        brandCount,
+      };
+    }
+
+    return { monthGroups: groups, allBrands, currentMonthKey: getMonthKey(now), lastSummary };
   }, [uploads, brandMappings]);
 
   const sortedMonthKeys = Object.keys(monthGroups).sort((a, b) => b.localeCompare(a));
@@ -241,12 +265,12 @@ export default function CnSettlementDashboard() {
     });
 
     return (
-      <div style={{ overflowX: 'auto' }}>
+      <div>
         <table style={S.table}>
           <thead>
             <tr>
-              <th style={{ ...S.th, textAlign: 'left', minWidth: 90 }}>주차</th>
-              <th style={{ ...S.th, minWidth: 90 }}>기간</th>
+              <th style={{ ...S.th, width: 80 }}>주차</th>
+              <th style={{ ...S.th, width: 75 }}>기간</th>
               {allBrands.map(b => (
                 <th key={b} colSpan={2} style={{ ...S.th, borderLeft: '1px solid #eee' }}>{b}</th>
               ))}
@@ -312,8 +336,8 @@ export default function CnSettlementDashboard() {
             })}
             {/* 합계 행 */}
             <tr style={S.totalRow}>
-              <td style={{ ...S.weekTd, background: '#fafbfc' }}>합계</td>
-              <td style={{ ...S.dateTd, background: '#fafbfc' }}></td>
+              <td style={{ ...S.weekTd, background: '#fafbfc', textAlign: 'center' }}>합계</td>
+              <td style={{ ...S.dateTd, background: '#fafbfc', textAlign: 'center' }}></td>
               {allBrands.map(b => (
                 <React.Fragment key={b}>
                   <td style={{ ...S.td, background: '#fafbfc', borderLeft: '1px solid #f2f2f2' }}>
@@ -343,6 +367,43 @@ export default function CnSettlementDashboard() {
 
   return (
     <div>
+      {/* 최신 업로드 요약 */}
+      {lastSummary && (
+        <div style={{
+          background: '#fff', borderRadius: 10, border: '1px solid #eee',
+          boxShadow: '0 1px 4px rgba(0,0,0,0.04)', marginBottom: 20, overflow: 'hidden',
+        }}>
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 8,
+            padding: '12px 20px', borderBottom: '1px solid #f0f0f0',
+          }}>
+            <span style={{ display: 'inline-block', width: 4, height: 16, borderRadius: 2, background: 'var(--primary)' }}></span>
+            <span style={{ fontSize: 14, fontWeight: 700, color: '#222' }}>최근 발주 요약</span>
+            <span style={{ fontSize: 12, color: '#999', marginLeft: 4 }}>{lastSummary.dateRange}</span>
+          </div>
+          <div style={{ display: 'flex', borderTop: '1px solid #f5f5f5' }}>
+            {[
+              { label: '총 발주금액', value: fmtKrw(lastSummary.totalOrder), sub: '기존 + 신규', bg: '#fff' },
+              { label: '기존 발주', value: fmtKrw(lastSummary.totalExisting), sub: '기존 상품 발주 합계', color: '#0a8a4a', bg: '#fff' },
+              { label: '신규 발주', value: fmtKrw(lastSummary.totalNew), sub: '신규 상품 발주 합계', color: '#1565c0', bg: '#fff' },
+              { label: '적용 환율', value: `${lastSummary.exchangeRate}`, sub: 'CNY → KRW', bg: '#f5f8ff' },
+            ].map((item, i) => (
+              <div key={i} style={{
+                flex: 1, padding: '20px 16px', textAlign: 'center',
+                borderLeft: i > 0 ? '1px solid #f0f0f0' : 'none',
+                background: item.bg,
+              }}>
+                <div style={{ fontSize: 11, fontWeight: 500, color: '#888', marginBottom: 10 }}>{item.label}</div>
+                <div style={{ fontSize: 18, fontWeight: 700, color: item.color || '#222', letterSpacing: '-0.5px' }}>
+                  {item.value}
+                </div>
+                <div style={{ fontSize: 10, color: '#aaa', marginTop: 8 }}>{item.sub}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* 상단 바 */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
         <input

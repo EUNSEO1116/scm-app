@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { dbStoreGet, dbStoreSet } from '../utils/dbApi';
 
 const DB_KEY = 'cn_settlement_data';
@@ -26,7 +26,7 @@ function extractBrandCode(orderNo) {
   if (!orderNo) return null;
   const parts = orderNo.split('-');
   if (parts.length < 2 || parts[0] !== 'AE') return null;
-  return parts[1];
+  return parts[1].toUpperCase();
 }
 
 // 발주번호에서 신규/기존 판별: -NEW 포함 → 신규
@@ -88,10 +88,10 @@ export default function CnSettlementHistory() {
     });
   }, []);
 
-  // 브랜드 매핑을 { code: name } 형태로 변환
+  // 브랜드 매핑을 { CODE: name } 형태로 변환 (대문자 통일)
   const brandMap = {};
   for (const b of brandMappings) {
-    brandMap[b.code] = b.name;
+    brandMap[b.code.toUpperCase()] = b.name;
   }
 
   const saveBrandMappings = async (updated) => {
@@ -134,6 +134,45 @@ export default function CnSettlementHistory() {
       alert('삭제 실패. 다시 시도해 주세요.');
     }
   };
+
+  // 환불 이월 포함 브랜드별 집계 (brandMappings, uploads 변경 시 재계산)
+  const processedData = useMemo(() => {
+    const bm = {};
+    for (const b of brandMappings) bm[b.code.toUpperCase()] = b.name;
+
+    const carryOver = {};
+    return uploads.map(record => {
+      const agg = aggregateByBrand(record, bm);
+      const carried = {};
+
+      for (const brand of Object.keys(carryOver)) {
+        if (carryOver[brand].existing >= 0 && carryOver[brand].new >= 0) continue;
+        if (!agg[brand]) agg[brand] = { existing: 0, new: 0, extraCost: 0 };
+        if (carryOver[brand].existing < 0) {
+          carried[brand] = carried[brand] || { existing: 0, new: 0 };
+          carried[brand].existing = carryOver[brand].existing;
+          agg[brand].existing += carryOver[brand].existing;
+          carryOver[brand].existing = 0;
+        }
+        if (carryOver[brand].new < 0) {
+          carried[brand] = carried[brand] || { existing: 0, new: 0 };
+          carried[brand].new = carryOver[brand].new;
+          agg[brand].new += carryOver[brand].new;
+          carryOver[brand].new = 0;
+        }
+      }
+
+      for (const brand of Object.keys(agg)) {
+        if (agg[brand].existing < 0 || agg[brand].new < 0) {
+          if (!carryOver[brand]) carryOver[brand] = { existing: 0, new: 0 };
+          if (agg[brand].existing < 0) carryOver[brand].existing += agg[brand].existing;
+          if (agg[brand].new < 0) carryOver[brand].new += agg[brand].new;
+        }
+      }
+
+      return { record, agg, carried };
+    });
+  }, [uploads, brandMappings]);
 
   return (
     <div>
@@ -216,49 +255,7 @@ export default function CnSettlementHistory() {
           거래 데이터를 먼저 업로드해 주세요
         </div>
       ) : (
-        (() => {
-          // 시간순으로 환불 이월 계산
-          const carryOver = {}; // { brandName: { existing: amount, new: amount } }
-          const processed = uploads.map(record => {
-            const agg = aggregateByBrand(record, brandMap);
-            const carried = {}; // 이번 기록에 이월 적용된 내역
-
-            // 이전 서류에서 이월된 마이너스 적용
-            for (const brand of Object.keys(carryOver)) {
-              if (carryOver[brand].existing >= 0 && carryOver[brand].new >= 0) continue;
-              if (!agg[brand]) agg[brand] = { existing: 0, new: 0, extraCost: 0 };
-
-              if (carryOver[brand].existing < 0) {
-                carried[brand] = carried[brand] || { existing: 0, new: 0 };
-                carried[brand].existing = carryOver[brand].existing;
-                agg[brand].existing += carryOver[brand].existing;
-                carryOver[brand].existing = 0;
-              }
-              if (carryOver[brand].new < 0) {
-                carried[brand] = carried[brand] || { existing: 0, new: 0 };
-                carried[brand].new = carryOver[brand].new;
-                agg[brand].new += carryOver[brand].new;
-                carryOver[brand].new = 0;
-              }
-            }
-
-            // 이번 기록에서 마이너스 남은 건 다음으로 이월
-            for (const brand of Object.keys(agg)) {
-              if (agg[brand].existing < 0 || agg[brand].new < 0) {
-                if (!carryOver[brand]) carryOver[brand] = { existing: 0, new: 0 };
-                if (agg[brand].existing < 0) {
-                  carryOver[brand].existing += agg[brand].existing;
-                }
-                if (agg[brand].new < 0) {
-                  carryOver[brand].new += agg[brand].new;
-                }
-              }
-            }
-
-            return { record, agg, carried };
-          });
-
-          return [...processed].reverse().map(({ record, agg, carried }) => {
+        [...processedData].reverse().map(({ record, agg, carried }) => {
             const brands = Object.keys(agg).sort();
             const totals = { existing: 0, new: 0, extraCost: 0 };
             brands.forEach(b => {
@@ -443,8 +440,7 @@ export default function CnSettlementHistory() {
                 )}
               </div>
             );
-          });
-        })()
+          })
       )}
     </div>
   );
