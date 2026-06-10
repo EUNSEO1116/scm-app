@@ -248,6 +248,7 @@ export default function FbcCalculator() {
   const [selectedResult, setSelectedResult] = useState('');
   const [isDragOver, setIsDragOver] = useState(false);
   const fileRef = useRef(null);
+  const palletLoadedRef = useRef(false);
 
   // DB에서 기존 기록 로드 → localStorage 동기화 (덮어쓰기 방지)
   useEffect(() => {
@@ -256,7 +257,23 @@ export default function FbcCalculator() {
         localStorage.setItem('fbc_savings_history', JSON.stringify(data));
       }
     }).catch(() => {});
+
+    // DB에서 저장된 박스 크기 목록 로드
+    dbStoreGet('fbc_pallet_sizes').then(data => {
+      if (data && Array.isArray(data) && data.length > 0) {
+        setPalletSizes(data);
+      }
+      palletLoadedRef.current = true;
+    }).catch(() => {
+      palletLoadedRef.current = true;
+    });
   }, []);
+
+  // palletSizes 변경 시 DB에 저장
+  useEffect(() => {
+    if (!palletLoadedRef.current) return;
+    dbStoreSet('fbc_pallet_sizes', palletSizes).catch(() => {});
+  }, [palletSizes]);
 
   const processFile = useCallback(async (file) => {
     if (!file) return;
@@ -322,15 +339,61 @@ export default function FbcCalculator() {
     setResults(computed);
     const firstKey = keys[0] || '';
     setSelectedResult(firstKey);
+  };
 
-    // Save to localStorage
+  const updatePalletCount = (bundleKey, detailIdx, newPallets) => {
+    setResults(prev => {
+      const updated = { ...prev };
+      const entry = { ...updated[bundleKey] };
+      const fbc = { ...entry.fbc };
+      const palletDetails = fbc.palletDetails.map((d, i) =>
+        i === detailIdx ? { ...d, pallets: Number(newPallets) || 0 } : d
+      );
+      const totalPallets = palletDetails.reduce((s, d) => s + d.pallets, 0);
+      const milkrunCost = calcMilkrun(totalPallets);
+      const palletWorkCost = totalPallets * PALLET_WORK_COST;
+      fbc.palletDetails = palletDetails;
+      fbc.totalPallets = totalPallets;
+      fbc.milkrunCost = milkrunCost;
+      fbc.palletWorkCost = palletWorkCost;
+      fbc.total = milkrunCost + palletWorkCost;
+      entry.fbc = fbc;
+      entry.diff = entry.normal.total - fbc.total;
+      updated[bundleKey] = entry;
+
+      // 전체 합계 재계산
+      if (updated['__total__']) {
+        let tNormal = 0, tFbc = 0, tBoxes = 0, tCbm = 0;
+        for (const [k, v] of Object.entries(updated)) {
+          if (k === '__total__') continue;
+          tNormal += v.normal.total;
+          tFbc += v.fbc.total;
+          tBoxes += v.totalBoxes;
+          tCbm += v.totalCbm;
+        }
+        updated['__total__'] = {
+          ...updated['__total__'],
+          totalBoxes: tBoxes,
+          totalCbm: Math.round(tCbm * 1000) / 1000,
+          normal: { total: tNormal },
+          fbc: { total: tFbc },
+          diff: tNormal - tFbc,
+        };
+      }
+
+      return updated;
+    });
+  };
+
+  const handleSaveHistory = () => {
+    if (!results) return;
     const date = parseDateFromFilename(fileName);
     const dateStr = date
       ? date.toLocaleDateString('ko-KR')
       : new Date().toLocaleDateString('ko-KR');
 
     const history = JSON.parse(localStorage.getItem('fbc_savings_history') || '[]');
-    for (const [name, r] of Object.entries(computed)) {
+    for (const [name, r] of Object.entries(results)) {
       if (r.isTotal) continue;
       history.push({
         id: Date.now() + '_' + name,
@@ -347,6 +410,7 @@ export default function FbcCalculator() {
     }
     localStorage.setItem('fbc_savings_history', JSON.stringify(history));
     dbStoreSet('fbc_savings', history).catch(() => {});
+    alert('기록이 저장되었습니다.');
   };
 
   const updateTruckCost = (id, newCost) => {
@@ -738,7 +802,15 @@ export default function FbcCalculator() {
                             <tr key={i}>
                               <td>{d.key}</td>
                               <td className="num">{d.boxes}</td>
-                              <td className="num">{d.pallets}</td>
+                              <td className="num">
+                                <input
+                                  className="editable-input"
+                                  type="number"
+                                  value={d.pallets}
+                                  onChange={e => updatePalletCount(selectedResult, i, e.target.value)}
+                                  style={{ maxWidth: 60 }}
+                                />
+                              </td>
                             </tr>
                           ))}
                           <tr style={{ fontWeight: 700, borderTop: '2px solid #e0e0e0' }}>
@@ -775,6 +847,10 @@ export default function FbcCalculator() {
                 </div>
               </div>
             )}
+
+            <button className="calc-btn" style={{ marginTop: 16 }} onClick={handleSaveHistory}>
+              📋 기록 저장
+            </button>
           </div>
         </div>
       )}
