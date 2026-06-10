@@ -32,7 +32,6 @@ function saveHistory(history) {
 }
 
 const PALLET_WORK_COST = 35000;
-const DELIVERY_COST_PER_BOX = 5000;
 
 // ─── Detail Modal (비용 비교 결과 레이아웃) ──────────────────────────────────────
 function DetailModal({ record, onClose }) {
@@ -92,8 +91,14 @@ function DetailModal({ record, onClose }) {
                   )}
                   {normal.deliveryCost != null && (
                     <div className="cost-row">
-                      <span className="cost-label">배송비 ({(record.totalBoxes || 0)}박스 × {formatWon(DELIVERY_COST_PER_BOX)})</span>
+                      <span className="cost-label">배송비 ({(record.totalBoxes || 0)}박스 × {formatWon(normal.isParcel ? 18000 : 5000)})</span>
                       <span className="cost-value">{formatWon(normal.deliveryCost)}</span>
+                    </div>
+                  )}
+                  {normal.handlingCost > 0 && (
+                    <div className="cost-row">
+                      <span className="cost-label">핸들링비 ({(record.totalBoxes || 0)}박스 × {formatWon(3000)})</span>
+                      <span className="cost-value">{formatWon(normal.handlingCost)}</span>
                     </div>
                   )}
                   <div className="cost-row total-row">
