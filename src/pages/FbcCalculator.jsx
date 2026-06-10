@@ -4,9 +4,9 @@ import { dbStoreGet, dbStoreSet } from '../utils/dbApi';
 import './FbcCalculator.css';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
-const DELIVERY_COST_PER_BOX = 5000;
 const PALLET_WORK_COST = 35000;
-const MILKRUN_COSTS = { 1: 25800, 2: 51600, 3: 73530, 4: 91460 };
+const MILKRUN_COSTS = { 1: 28380, 2: 56760, 3: 80883, 4: 96492 };
+const MILKRUN_OVER_COSTS = { 1: 46090, 2: 92180, 3: 138270 };
 const TRUCKS = [
   { id: 'truck1t',  name: '1톤',      maxCbm: 6,  cost: 60000 },
   { id: 'truck14t', name: '1.4톤',    maxCbm: 7,  cost: 70000 },
@@ -45,7 +45,13 @@ function selectTruck(cbm, trucks) {
   return { truck: largest, count };
 }
 
-function calcMilkrun(pallets) {
+function calcMilkrun(pallets, milkrunType = 'normal') {
+  if (milkrunType === 'over') {
+    const maxOver = Math.max(...Object.keys(MILKRUN_OVER_COSTS).map(Number));
+    if (pallets <= maxOver) return MILKRUN_OVER_COSTS[pallets] || 0;
+    const rate = MILKRUN_OVER_COSTS[maxOver] / maxOver;
+    return Math.round(rate * pallets);
+  }
   if (pallets <= 4) return MILKRUN_COSTS[pallets] || 0;
   const rate = MILKRUN_COSTS[4] / 4;
   return Math.round(rate * pallets);
@@ -173,18 +179,22 @@ function parseWorkbook(buffer, existingPalletSizes) {
 }
 
 // ─── Cost calculation ─────────────────────────────────────────────────────────
-function calcCosts(bundle, palletSizes, trucks) {
+function calcCosts(bundle, palletSizes, trucks, deliveryCostPerBox = 5000, milkrunType = 'normal') {
   const { boxes, totalBoxes, totalCbm, colorGroups } = bundle;
 
   // Normal cost
   const { truck, count: truckCount } = selectTruck(totalCbm, trucks);
-  const truckCost = truck.cost * truckCount;
-  const deliveryCost = totalBoxes * DELIVERY_COST_PER_BOX;
-  const normalTotal = truckCost + deliveryCost;
+  const isParcel = deliveryCostPerBox === 18000;
+  const truckCost = isParcel ? 0 : truck.cost * truckCount;
+  const deliveryCost = totalBoxes * deliveryCostPerBox;
+  const handlingCost = isParcel ? totalBoxes * 3000 : 0;
+  const normalTotal = truckCost + deliveryCost + handlingCost;
   const normalDetail = {
     truckCost,
-    truckName: truckCount > 1 ? `${truck.name} x${truckCount}` : truck.name,
+    truckName: isParcel ? '없음' : (truckCount > 1 ? `${truck.name} x${truckCount}` : truck.name),
     deliveryCost,
+    handlingCost,
+    isParcel,
     total: normalTotal,
     cbm: totalCbm,
   };
@@ -219,7 +229,7 @@ function calcCosts(bundle, palletSizes, trucks) {
     }
   }
 
-  const milkrunCost = calcMilkrun(totalPallets);
+  const milkrunCost = calcMilkrun(totalPallets, milkrunType);
   const palletWorkCost = totalPallets * PALLET_WORK_COST;
   const fbcTotal = milkrunCost + palletWorkCost;
   const fbcDetail = {
@@ -247,6 +257,8 @@ export default function FbcCalculator() {
   const [results, setResults] = useState(null);
   const [selectedResult, setSelectedResult] = useState('');
   const [isDragOver, setIsDragOver] = useState(false);
+  const [milkrunType, setMilkrunType] = useState('normal');
+  const [deliveryCostPerBox, setDeliveryCostPerBox] = useState(5000);
   const fileRef = useRef(null);
   const palletLoadedRef = useRef(false);
 
@@ -310,7 +322,7 @@ export default function FbcCalculator() {
     let combinedBoxes = 0, combinedCbm = 0;
 
     for (const [name, bundle] of Object.entries(bundles)) {
-      const result = calcCosts(bundle, palletSizes, trucks);
+      const result = calcCosts(bundle, palletSizes, trucks, deliveryCostPerBox, milkrunType);
       computed[name] = {
         bundleName: name,
         totalBoxes: bundle.totalBoxes,
@@ -350,7 +362,7 @@ export default function FbcCalculator() {
         i === detailIdx ? { ...d, pallets: Number(newPallets) || 0 } : d
       );
       const totalPallets = palletDetails.reduce((s, d) => s + d.pallets, 0);
-      const milkrunCost = calcMilkrun(totalPallets);
+      const milkrunCost = calcMilkrun(totalPallets, milkrunType);
       const palletWorkCost = totalPallets * PALLET_WORK_COST;
       fbc.palletDetails = palletDetails;
       fbc.totalPallets = totalPallets;
@@ -605,35 +617,91 @@ export default function FbcCalculator() {
             <div className="fbc-divider" />
 
             <div className="cost-section">
-              <div className="cost-section-title">밀크런 기준 비용 (참고)</div>
-              <div className="table-wrapper">
-                <table className="pallet-table">
-                  <thead>
-                    <tr>
-                      <th>파레트 수</th>
-                      <th className="num">밀크런 비용</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {Object.entries(MILKRUN_COSTS).map(([pal, cost]) => (
-                      <tr key={pal}>
-                        <td>{pal}파레트</td>
-                        <td className="num">{formatWon(cost)}</td>
+              <div className="cost-section-title">밀크런 유형 선택</div>
+              <div className="bundle-tabs" style={{ marginBottom: 12 }}>
+                <button
+                  className={`bundle-tab${milkrunType === 'normal' ? ' active' : ''}`}
+                  onClick={() => setMilkrunType('normal')}
+                >
+                  기존 밀크런
+                </button>
+                <button
+                  className={`bundle-tab${milkrunType === 'over' ? ' active' : ''}`}
+                  onClick={() => setMilkrunType('over')}
+                >
+                  OVER 사이즈
+                </button>
+              </div>
+              <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+                <div className="table-wrapper" style={{ flex: 1, minWidth: 200 }}>
+                  <div className="cost-section-title" style={{ fontSize: 12, marginBottom: 4 }}>기존 밀크런 비용{milkrunType === 'normal' ? ' ✓' : ''}</div>
+                  <table className="pallet-table">
+                    <thead>
+                      <tr>
+                        <th>파레트 수</th>
+                        <th className="num">밀크런 비용</th>
                       </tr>
-                    ))}
-                    <tr>
-                      <td>5파레트 이상</td>
-                      <td className="num">{formatWon(MILKRUN_COSTS[4])} / 4 × 파레트 수</td>
-                    </tr>
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody>
+                      {Object.entries(MILKRUN_COSTS).map(([pal, cost]) => (
+                        <tr key={pal}>
+                          <td>{pal}파레트</td>
+                          <td className="num">{formatWon(cost)}</td>
+                        </tr>
+                      ))}
+                      <tr>
+                        <td>5파레트 이상</td>
+                        <td className="num">{formatWon(MILKRUN_COSTS[4])} / 4 × 파레트 수</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <div className="table-wrapper" style={{ flex: 1, minWidth: 200 }}>
+                  <div className="cost-section-title" style={{ fontSize: 12, marginBottom: 4 }}>OVER 사이즈 비용{milkrunType === 'over' ? ' ✓' : ''}</div>
+                  <table className="pallet-table">
+                    <thead>
+                      <tr>
+                        <th>파레트 수</th>
+                        <th className="num">밀크런 비용</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {Object.entries(MILKRUN_OVER_COSTS).map(([pal, cost]) => (
+                        <tr key={pal}>
+                          <td>{pal}파레트</td>
+                          <td className="num">{formatWon(cost)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+
+            <div className="fbc-divider" />
+
+            <div className="cost-section">
+              <div className="cost-section-title">택배비 선택</div>
+              <div className="bundle-tabs" style={{ marginBottom: 8 }}>
+                <button
+                  className={`bundle-tab${deliveryCostPerBox === 5000 ? ' active' : ''}`}
+                  onClick={() => setDeliveryCostPerBox(5000)}
+                >
+                  5,000원/박스
+                </button>
+                <button
+                  className={`bundle-tab${deliveryCostPerBox === 18000 ? ' active' : ''}`}
+                  onClick={() => setDeliveryCostPerBox(18000)}
+                >
+                  18,000원/박스
+                </button>
               </div>
             </div>
 
             <div className="fbc-divider" />
 
             <div className="section-note">
-              박스당 배송비: {formatWon(DELIVERY_COST_PER_BOX)} &nbsp;|&nbsp; 파레트 작업비: {formatWon(PALLET_WORK_COST)}/파레트
+              박스당 배송비: {formatWon(deliveryCostPerBox)} &nbsp;|&nbsp; 파레트 작업비: {formatWon(PALLET_WORK_COST)}/파레트
             </div>
           </div>
         </div>
@@ -747,14 +815,22 @@ export default function FbcCalculator() {
                       {currentResult.diff < 0 && <span className="winner-badge">✓ 절약</span>}
                     </div>
                     <div className="result-card-body">
+                      {!currentResult.normal.isParcel && (
+                        <div className="cost-row">
+                          <span className="cost-label">차량 ({currentResult.normal.truckName})</span>
+                          <span className="cost-value">{formatWon(currentResult.normal.truckCost)}</span>
+                        </div>
+                      )}
                       <div className="cost-row">
-                        <span className="cost-label">차량 ({currentResult.normal.truckName})</span>
-                        <span className="cost-value">{formatWon(currentResult.normal.truckCost)}</span>
-                      </div>
-                      <div className="cost-row">
-                        <span className="cost-label">배송비 ({currentResult.totalBoxes}박스 × {formatWon(DELIVERY_COST_PER_BOX)})</span>
+                        <span className="cost-label">택배비 ({currentResult.totalBoxes}박스 × {formatWon(currentResult.normal.isParcel ? 18000 : 5000)})</span>
                         <span className="cost-value">{formatWon(currentResult.normal.deliveryCost)}</span>
                       </div>
+                      {currentResult.normal.isParcel && (
+                        <div className="cost-row">
+                          <span className="cost-label">추가금 ({currentResult.totalBoxes}박스 × 3,000원)</span>
+                          <span className="cost-value">{formatWon(currentResult.normal.handlingCost)}</span>
+                        </div>
+                      )}
                       <div className="cost-row total-row">
                         <span className="cost-label">합계</span>
                         <span className="cost-value">{formatWon(currentResult.normal.total)}</span>
