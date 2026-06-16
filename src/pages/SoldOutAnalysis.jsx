@@ -622,6 +622,8 @@ export default function SoldOutAnalysis() {
           for (const d of availableDates) {
             if (d > endKey && !soldoutSet.has(d)) { releaseKey = d; break; }
           }
+          // 품절 시작일 당시 값 (시작일 캐시 없으면 관측된 최초일 기준)
+          const startRec = recs.find(r => r.dateKey === startDate) || recs[0];
           spells.push({
             key: `${opt.optionId}_${startDate}`,
             optionId: opt.optionId,
@@ -632,6 +634,8 @@ export default function SoldOutAnalysis() {
             endKey,
             releaseKey, // null이면 진행중
             days,
+            startStock: startRec.totalStock,
+            startAvg: startRec.avg3d,
             records: recs,
           });
         }
@@ -783,24 +787,6 @@ export default function SoldOutAnalysis() {
       {/* 필터 바 */}
       <div className="card" style={{ marginBottom: 16, position: 'relative', overflow: 'visible' }}>
         <div className="card-body">
-          {/* 품절 이력 검색 */}
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12 }}>
-            <input
-              type="text"
-              className="search-input"
-              placeholder="🔍 상품명·옵션명·옵션ID로 품절 이력 검색 (최근 3개월)"
-              value={searchTerm}
-              onChange={e => setSearchTerm(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter') runSearch(); }}
-              style={{ flex: 1, minWidth: 0, maxWidth: 420, padding: '7px 12px', borderRadius: 8, border: '1px solid var(--border)', fontSize: 13 }}
-            />
-            <button onClick={runSearch} disabled={searching} className="btn btn-primary btn-sm" style={{ whiteSpace: 'nowrap' }}>
-              {searching ? '검색 중...' : '검색'}
-            </button>
-            {searchResult && (
-              <button onClick={clearSearch} className="btn btn-outline btn-sm" style={{ whiteSpace: 'nowrap' }}>✕ 닫기</button>
-            )}
-          </div>
           <div className="filter-bar">
             {cachedResult && <>
               <button className={`filter-btn${riskFilter === 'all' ? ' active' : ''}`} onClick={() => setRiskFilter('all')}>전체 ({stats.total})</button>
@@ -809,7 +795,23 @@ export default function SoldOutAnalysis() {
               <button className={`filter-btn${riskFilter === 'inOrder' ? ' active' : ''}`} style={riskFilter === 'inOrder' ? { background: '#00897b', borderColor: '#00897b' } : {}} onClick={() => setRiskFilter(riskFilter === 'inOrder' ? 'all' : 'inOrder')}>✈️ 발주 ({stats.inOrder})</button>
               <span style={{ margin: '0 4px', color: 'var(--border)' }}>|</span>
               {statusOptions.map(s => <button key={s} onClick={() => setStatusFilter(s)} className={`filter-btn${statusFilter === s ? ' active' : ''}`}>{s}</button>)}
-              <div style={{ flex: 1 }} />
+              <div style={{ flex: 1, display: 'flex', gap: 6, alignItems: 'center', margin: '0 8px', minWidth: 180 }}>
+                <input
+                  type="text"
+                  className="search-input"
+                  placeholder="🔍 상품명·옵션명·옵션ID로 품절 이력 검색 (최근 3개월)"
+                  value={searchTerm}
+                  onChange={e => setSearchTerm(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') runSearch(); }}
+                  style={{ flex: 1, minWidth: 0, maxWidth: 360, padding: '6px 10px', borderRadius: 8, border: '1px solid var(--border)', fontSize: 12 }}
+                />
+                <button onClick={runSearch} disabled={searching} className="btn btn-primary btn-sm" style={{ whiteSpace: 'nowrap' }}>
+                  {searching ? '검색 중...' : '검색'}
+                </button>
+                {searchResult && (
+                  <button onClick={clearSearch} className="btn btn-outline btn-sm" style={{ whiteSpace: 'nowrap' }}>✕ 닫기</button>
+                )}
+              </div>
               {selected.size > 0 && (
                 <button className="btn btn-primary btn-sm" onClick={() => setShowBatchInput(true)}>
                   {selected.size}개 사유 입력
@@ -869,39 +871,43 @@ export default function SoldOutAnalysis() {
             </span>
             <button onClick={clearSearch} style={{ padding: '5px 12px', borderRadius: 6, border: '1px solid var(--primary)', background: '#fff', color: 'var(--primary)', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>✕ 검색 닫기</button>
           </div>
-          <div style={{ fontSize: 11, color: '#999', marginBottom: 4 }}>* 각 품절 건을 클릭하면 날짜별 재고·사유가 펼쳐집니다.</div>
+          <div style={{ fontSize: 11, color: '#999', marginBottom: 4 }}>* 각 품절 건을 클릭하면 날짜별 사유가 펼쳐집니다. 총재고·3일평균은 품절 시작일 당시 값입니다.</div>
           <div className="table-wrapper" style={{ maxHeight: 'calc(100vh - 340px)', overflowY: 'auto' }}>
             <table className="data-table">
               <thead><tr>
                 <th style={{ width: 32 }}></th>
-                <th style={{ width: 50 }}>옵션ID</th>
+                <th style={{ width: 30 }}>옵션ID</th>
                 <th style={{ width: 44 }}>등급</th>
                 <th style={{ width: 220 }}>상품명</th>
                 <th style={{ width: 110 }}>옵션명</th>
-                <th style={{ width: 110 }}>품절 시작일</th>
-                <th style={{ width: 110 }}>품절 해제일</th>
-                <th style={{ width: 90, textAlign: 'center' }}>누적 품절일</th>
+                <th style={{ width: 84 }}>품절 시작일</th>
+                <th style={{ width: 84 }}>품절 해제일</th>
+                <th style={{ width: 80, textAlign: 'center' }}>누적 품절일</th>
+                <th style={{ width: 70, textAlign: 'center' }}>품절 당시 총재고</th>
+                <th style={{ width: 70, textAlign: 'center' }}>품절 당시 3일평균</th>
               </tr></thead>
               <tbody>
                 {searchResult.spells.length === 0 ? (
-                  <tr><td colSpan={8} style={{ textAlign: 'center', padding: 40, color: 'var(--text-secondary)' }}>최근 3개월간 '{searchResult.term}' 품절 기록이 없습니다</td></tr>
+                  <tr><td colSpan={10} style={{ textAlign: 'center', padding: 40, color: 'var(--text-secondary)' }}>최근 3개월간 '{searchResult.term}' 품절 기록이 없습니다</td></tr>
                 ) : searchResult.spells.map(sp => {
                   const open = expandedSpell.has(sp.key);
                   return (
                     <Fragment key={sp.key}>
                       <tr onClick={() => toggleSpell(sp.key)} style={{ cursor: 'pointer', background: open ? '#e8f0fe' : '' }}>
                         <td className="center" style={{ color: '#1a73e8', fontWeight: 700 }}>{open ? '▼' : '▶'}</td>
-                        <td style={{ width: 50, fontSize: 11, color: '#888', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={sp.optionId}>{sp.optionId}</td>
+                        <td style={{ width: 30, fontSize: 11, color: '#888', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={sp.optionId}>{sp.optionId}</td>
                         <td><span className={`alert-badge ${sp.status === '효자' ? 'normal' : sp.status?.includes('신규') ? 'excess' : 'no-sales'}`} style={{ fontSize: 10, padding: '1px 6px' }}>{sp.status || '-'}</span></td>
                         <td style={{ width: 220, maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={sp.productName}>{sp.productName}</td>
                         <td style={{ width: 110, maxWidth: 110, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={sp.optionName}>{sp.optionName}</td>
-                        <td style={{ fontSize: 12, fontWeight: 600 }}>{keyToDisplay(sp.startDate)}</td>
-                        <td style={{ fontSize: 12, fontWeight: 600, color: sp.releaseKey ? '#2e7d32' : '#c5221f' }}>{sp.releaseKey ? keyToDisplay(sp.releaseKey) : '진행중'}</td>
+                        <td style={{ fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap' }}>{keyToDisplay(sp.startDate)}</td>
+                        <td style={{ fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap', color: sp.releaseKey ? '#2e7d32' : '#c5221f' }}>{sp.releaseKey ? keyToDisplay(sp.releaseKey) : '진행중'}</td>
                         <td className="center"><span style={{ fontWeight: 700, color: sp.days >= 7 ? '#d93025' : sp.days >= 3 ? '#e65100' : 'var(--text)' }}>{sp.days}일</span></td>
+                        <td className="center">{sp.startStock > 0 ? fmt(sp.startStock) : '-'}</td>
+                        <td className="center">{sp.startAvg > 0 ? fmtDec(sp.startAvg) : '-'}</td>
                       </tr>
                       {open && (
                         <tr>
-                          <td colSpan={8} style={{ padding: 0, background: '#fafbfc' }}>
+                          <td colSpan={10} style={{ padding: 0, background: '#fafbfc' }}>
                             <table className="data-table" style={{ margin: 0 }}>
                               <thead><tr>
                                 <th style={{ width: 140 }}>날짜</th>
