@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
+import * as XLSX from 'xlsx';
 import { dbStoreGet, dbStoreSet } from '../utils/dbApi';
 
 const SHEET_ID = '1NXhW_gG0b-gXuVqrhbY9ErWi8uO_7pXIy-NTo4FbE1I';
@@ -86,6 +87,7 @@ export default function SoldOutAnalysis() {
   const [stockCorrections, setStockCorrections] = useState({}); // { optionId: true } 재고 수정 영구 저장
   const [sortKey, setSortKey] = useState('productName');
   const [sortDir, setSortDir] = useState('asc');
+  const [exporting, setExporting] = useState(false);
 
   const showToast = (type, title, msg) => { setToast({ type, title, message: msg }); setTimeout(() => setToast(null), 3500); };
 
@@ -404,6 +406,87 @@ export default function SoldOutAnalysis() {
     setUpdating(false);
   };
 
+  // === 월 단위 엑셀 다운로드: 그 달을 주(월~일)별 시트로 분할, 품절(🔴)만 ===
+  const handleExportMonth = async () => {
+    setExporting(true);
+    try {
+      const pad2 = n => String(n).padStart(2, '0');
+      const year = calendarDate.getFullYear();
+      const month = calendarDate.getMonth(); // 0-indexed
+      const daysInMon = new Date(year, month + 1, 0).getDate();
+
+      // 그 달의 모든 날짜 캐시 병렬 로드
+      const dayList = [];
+      for (let d = 1; d <= daysInMon; d++) dayList.push(new Date(year, month, d));
+      const caches = await Promise.all(dayList.map(dt => dbStoreGet(`soldout_analysis_cached_${dateToKey(dt)}`).catch(() => null)));
+      const cacheByKey = {};
+      dayList.forEach((dt, i) => { cacheByKey[dateToKey(dt)] = caches[i]; });
+
+      // 월~일 주차로 그룹핑 (월요일 키 기준)
+      const weekMap = new Map();
+      for (const dt of dayList) {
+        const dow = dt.getDay(); // 0=일..6=토
+        const diffToMon = dow === 0 ? -6 : 1 - dow;
+        const monday = new Date(dt); monday.setDate(dt.getDate() + diffToMon);
+        const mk = dateToKey(monday);
+        if (!weekMap.has(mk)) weekMap.set(mk, { monday, days: [] });
+        weekMap.get(mk).days.push(dt);
+      }
+      const weeks = [...weekMap.values()].sort((a, b) => a.monday - b.monday);
+
+      const wb = XLSX.utils.book_new();
+      let totalRows = 0;
+      weeks.forEach((wk, idx) => {
+        // 같은 상품(optionId)은 1줄로 합치고, 그 주 가장 최근 날짜 값 사용
+        const itemMap = new Map();
+        for (const dt of wk.days) {
+          const dk = dateToKey(dt);
+          const cache = cacheByKey[dk];
+          if (!cache?.items) continue;
+          const trk = cache.trackerSnapshot || {};
+          const exSet = new Set(cache.excludeSnapshot || []);
+          for (const it of cache.items) {
+            if (it.riskLevel !== '품절') continue; // 품절위기 제외
+            const prev = itemMap.get(it.optionId);
+            if (!prev || dk > prev.dateKey) {
+              itemMap.set(it.optionId, {
+                dateKey: dk,
+                row: {
+                  '상품명': it.productName || '',
+                  '옵션명': it.optionName || '',
+                  '등급': it.status || '',
+                  '연속품절일': trk[it.optionId]?.days ?? 1,
+                  '사유': trk[it.optionId]?.reason ?? '',
+                  '품절율 제외여부': exSet.has(it.optionId) ? 'O' : 'X',
+                },
+              });
+            }
+          }
+        }
+        const rows = [...itemMap.values()].map(v => v.row).sort((a, b) => b['연속품절일'] - a['연속품절일']);
+        totalRows += rows.length;
+
+        const firstDay = wk.days[0], lastDay = wk.days[wk.days.length - 1];
+        const range = `${pad2(firstDay.getMonth()+1)}.${pad2(firstDay.getDate())}-${pad2(lastDay.getMonth()+1)}.${pad2(lastDay.getDate())}`;
+        const sheetName = `${month+1}월 ${idx+1}주차 (${range})`;
+        const ws = rows.length
+          ? XLSX.utils.json_to_sheet(rows)
+          : XLSX.utils.aoa_to_sheet([['상품명','옵션명','등급','연속품절일','사유','품절율 제외여부'], ['해당 주 품절 없음']]);
+        ws['!cols'] = [{ wch: 30 }, { wch: 20 }, { wch: 10 }, { wch: 12 }, { wch: 24 }, { wch: 14 }];
+        XLSX.utils.book_append_sheet(wb, ws, sheetName);
+      });
+
+      if (totalRows === 0) {
+        showToast('error', '데이터 없음', `${month+1}월 품절 기록이 없습니다.`);
+        setExporting(false);
+        return;
+      }
+      XLSX.writeFile(wb, `품절기록_${year}-${pad2(month+1)}.xlsx`);
+      showToast('success', '다운로드 완료', `${month+1}월 품절 기록 (총 ${totalRows}건)`);
+    } catch (e) { console.error(e); showToast('error', '실패', '엑셀 생성 오류'); }
+    setExporting(false);
+  };
+
   // === 분석 데이터: 캐시 + 사유 합침 ===
   const analysisData = useMemo(() => {
     if (!cachedResult?.items) return [];
@@ -562,6 +645,9 @@ export default function SoldOutAnalysis() {
                 {updating ? '갱신 중...' : '🔄 업데이트'}
               </button>
             )}
+            <button onClick={handleExportMonth} disabled={exporting} className="btn btn-outline btn-sm" style={{ whiteSpace: 'nowrap' }}>
+              {exporting ? '다운로드 중...' : `📥 ${calMonth + 1}월 엑셀`}
+            </button>
             <button onClick={() => setShowCalendar(!showCalendar)} style={{ width: 32, height: 32, borderRadius: 8, border: '1px solid var(--border)', background: showCalendar ? 'var(--primary)' : '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={showCalendar ? '#fff' : '#555'} strokeWidth="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
             </button>
