@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, Fragment } from 'react';
 import XLSX from 'xlsx-js-style';
 import { dbStoreGet, dbStoreSet } from '../utils/dbApi';
 
@@ -11,6 +11,7 @@ const STORE_KEY_PREFIX = 'soldout_analysis_';
 const SOLDOUT_TRACKER_KEY = 'soldout_analysis_tracker';
 const EXCLUDE_KEYWORDS = ['최종마감', '품질확인서', '마감대상', '덤핑'];
 const CRISIS_DAYS_THRESHOLD = 3;
+const HISTORY_SEARCH_DAYS = 92; // 품절 이력 검색 범위 (약 3개월)
 const WING_ON_STATUSES = ['CN 창고도착', '부분출고 대기', '출고 완료', '출고 대기', '출고완료'];
 
 function parseCsvRow(line) {
@@ -88,6 +89,10 @@ export default function SoldOutAnalysis() {
   const [sortKey, setSortKey] = useState('productName');
   const [sortDir, setSortDir] = useState('asc');
   const [exporting, setExporting] = useState(false);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [searching, setSearching] = useState(false);
+  const [searchResult, setSearchResult] = useState(null); // { term, spells } | null
+  const [expandedSpell, setExpandedSpell] = useState(new Set());
 
   const showToast = (type, title, msg) => { setToast({ type, title, message: msg }); setTimeout(() => setToast(null), 3500); };
 
@@ -544,6 +549,104 @@ export default function SoldOutAnalysis() {
     setExporting(false);
   };
 
+  // === 품절 이력 검색: 최근 3개월 일별 캐시 스캔 → 상품별 품절 건(연속 기간) 묶기 ===
+  const runSearch = async () => {
+    const term = searchTerm.trim();
+    if (!term) { setSearchResult(null); return; }
+    setSearching(true);
+    try {
+      // 최근 92일 키 생성 (오늘부터 역순)
+      const today = new Date();
+      const keys = [];
+      for (let i = 0; i < HISTORY_SEARCH_DAYS; i++) {
+        const d = new Date(today); d.setDate(today.getDate() - i);
+        keys.push(dateToKey(d));
+      }
+      // 30개씩 배치로 캐시 로드 (DB 과부하 방지)
+      const caches = [];
+      for (let i = 0; i < keys.length; i += 30) {
+        const batch = keys.slice(i, i + 30);
+        const r = await Promise.all(batch.map(k => dbStoreGet(`soldout_analysis_cached_${k}`).catch(() => null)));
+        caches.push(...r);
+      }
+      const lower = term.toLowerCase();
+      // 캐시가 존재하는 날짜(오름차순) — 품절해제일 판정용
+      const availableDates = [];
+      keys.forEach((k, idx) => { if (caches[idx]?.items) availableDates.push(k); });
+      availableDates.sort();
+      // optionId -> { 메타 + records[] }
+      const byOption = new Map();
+      keys.forEach((k, idx) => {
+        const cache = caches[idx];
+        if (!cache?.items) return;
+        const trk = cache.trackerSnapshot || {};
+        for (const it of cache.items) {
+          if (it.riskLevel !== '품절') continue;
+          const pn = (it.productName || '').toLowerCase();
+          const on = (it.optionName || '').toLowerCase();
+          const oid = String(it.optionId || '').toLowerCase();
+          if (!pn.includes(lower) && !on.includes(lower) && !oid.includes(lower)) continue;
+          if (!byOption.has(it.optionId)) {
+            byOption.set(it.optionId, { optionId: it.optionId, productName: it.productName, optionName: it.optionName, status: it.status, records: [] });
+          }
+          const t = trk[it.optionId] || {};
+          byOption.get(it.optionId).records.push({
+            dateKey: k,
+            coupangStock: it.coupangStock,
+            bhStock: it.bhStock,
+            totalStock: it.totalStock,
+            avg3d: it.avg3d,
+            arrivalEst: it.arrivalEst,
+            reason: t.reason || '',
+            startDate: t.startDate || k,
+            days: t.days || 1,
+          });
+        }
+      });
+      // 같은 startDate끼리 묶어 품절 건(spell) 생성
+      const spells = [];
+      for (const opt of byOption.values()) {
+        const soldoutSet = new Set(opt.records.map(r => r.dateKey)); // 이 옵션이 품절이던 날
+        const groups = new Map();
+        for (const rec of opt.records) {
+          const gk = rec.startDate;
+          if (!groups.has(gk)) groups.set(gk, []);
+          groups.get(gk).push(rec);
+        }
+        for (const [startDate, recs] of groups.entries()) {
+          recs.sort((a, b) => a.dateKey.localeCompare(b.dateKey)); // 오래된 날 → 최근 날
+          const endKey = recs[recs.length - 1].dateKey;
+          const days = Math.max(...recs.map(r => r.days));
+          // 품절해제일 = endKey 이후 캐시 존재 날짜 중 더 이상 품절이 아닌 첫 날
+          let releaseKey = null;
+          for (const d of availableDates) {
+            if (d > endKey && !soldoutSet.has(d)) { releaseKey = d; break; }
+          }
+          spells.push({
+            key: `${opt.optionId}_${startDate}`,
+            optionId: opt.optionId,
+            productName: opt.productName,
+            optionName: opt.optionName,
+            status: opt.status,
+            startDate,
+            endKey,
+            releaseKey, // null이면 진행중
+            days,
+            records: recs,
+          });
+        }
+      }
+      // 최근 품절 건 먼저
+      spells.sort((a, b) => b.endKey.localeCompare(a.endKey));
+      setSearchResult({ term, spells });
+      setExpandedSpell(new Set());
+    } catch (e) { console.error(e); showToast('error', '검색 실패', '품절 이력 조회 오류'); }
+    setSearching(false);
+  };
+
+  const clearSearch = () => { setSearchResult(null); setSearchTerm(''); setExpandedSpell(new Set()); };
+  const toggleSpell = (key) => setExpandedSpell(prev => { const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n; });
+
   // === 분석 데이터: 캐시 + 사유 합침 ===
   const analysisData = useMemo(() => {
     if (!cachedResult?.items) return [];
@@ -664,7 +767,7 @@ export default function SoldOutAnalysis() {
       )}
 
       {/* 데이터 없을 때 */}
-      {!cachedResult && (
+      {!searchResult && !cachedResult && (
         <div className="card" style={{ marginBottom: 20, padding: 24, textAlign: 'center', color: 'var(--text-secondary)' }}>
           <div style={{ fontSize: 24, marginBottom: 8 }}>📊</div>
           <div style={{ fontSize: 14, fontWeight: 600 }}>{keyToDisplay(viewingDate)} 분석 데이터가 없습니다</div>
@@ -680,6 +783,24 @@ export default function SoldOutAnalysis() {
       {/* 필터 바 */}
       <div className="card" style={{ marginBottom: 16, position: 'relative', overflow: 'visible' }}>
         <div className="card-body">
+          {/* 품절 이력 검색 */}
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12 }}>
+            <input
+              type="text"
+              className="search-input"
+              placeholder="🔍 상품명·옵션명·옵션ID로 품절 이력 검색 (최근 3개월)"
+              value={searchTerm}
+              onChange={e => setSearchTerm(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') runSearch(); }}
+              style={{ flex: 1, minWidth: 0, maxWidth: 420, padding: '7px 12px', borderRadius: 8, border: '1px solid var(--border)', fontSize: 13 }}
+            />
+            <button onClick={runSearch} disabled={searching} className="btn btn-primary btn-sm" style={{ whiteSpace: 'nowrap' }}>
+              {searching ? '검색 중...' : '검색'}
+            </button>
+            {searchResult && (
+              <button onClick={clearSearch} className="btn btn-outline btn-sm" style={{ whiteSpace: 'nowrap' }}>✕ 닫기</button>
+            )}
+          </div>
           <div className="filter-bar">
             {cachedResult && <>
               <button className={`filter-btn${riskFilter === 'all' ? ' active' : ''}`} onClick={() => setRiskFilter('all')}>전체 ({stats.total})</button>
@@ -738,8 +859,77 @@ export default function SoldOutAnalysis() {
         )}
       </div>
 
+      {/* 품절 이력 검색 결과 */}
+      {searchResult && (
+        <>
+          <div style={{ padding: '0 0 8px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <span style={{ fontSize: 14, fontWeight: 700 }}>
+              품절 이력 검색: "{searchResult.term}"
+              <span style={{ fontSize: 13, fontWeight: 400, color: 'var(--text-secondary)', marginLeft: 8 }}>{searchResult.spells.length}건 (최근 3개월)</span>
+            </span>
+            <button onClick={clearSearch} style={{ padding: '5px 12px', borderRadius: 6, border: '1px solid var(--primary)', background: '#fff', color: 'var(--primary)', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>✕ 검색 닫기</button>
+          </div>
+          <div style={{ fontSize: 11, color: '#999', marginBottom: 4 }}>* 각 품절 건을 클릭하면 날짜별 재고·사유가 펼쳐집니다.</div>
+          <div className="table-wrapper" style={{ maxHeight: 'calc(100vh - 340px)', overflowY: 'auto' }}>
+            <table className="data-table">
+              <thead><tr>
+                <th style={{ width: 32 }}></th>
+                <th style={{ width: 50 }}>옵션ID</th>
+                <th style={{ width: 44 }}>등급</th>
+                <th style={{ width: 220 }}>상품명</th>
+                <th style={{ width: 110 }}>옵션명</th>
+                <th style={{ width: 110 }}>품절 시작일</th>
+                <th style={{ width: 110 }}>품절 해제일</th>
+                <th style={{ width: 90, textAlign: 'center' }}>누적 품절일</th>
+              </tr></thead>
+              <tbody>
+                {searchResult.spells.length === 0 ? (
+                  <tr><td colSpan={8} style={{ textAlign: 'center', padding: 40, color: 'var(--text-secondary)' }}>최근 3개월간 '{searchResult.term}' 품절 기록이 없습니다</td></tr>
+                ) : searchResult.spells.map(sp => {
+                  const open = expandedSpell.has(sp.key);
+                  return (
+                    <Fragment key={sp.key}>
+                      <tr onClick={() => toggleSpell(sp.key)} style={{ cursor: 'pointer', background: open ? '#e8f0fe' : '' }}>
+                        <td className="center" style={{ color: '#1a73e8', fontWeight: 700 }}>{open ? '▼' : '▶'}</td>
+                        <td style={{ width: 50, fontSize: 11, color: '#888', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={sp.optionId}>{sp.optionId}</td>
+                        <td><span className={`alert-badge ${sp.status === '효자' ? 'normal' : sp.status?.includes('신규') ? 'excess' : 'no-sales'}`} style={{ fontSize: 10, padding: '1px 6px' }}>{sp.status || '-'}</span></td>
+                        <td style={{ width: 220, maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={sp.productName}>{sp.productName}</td>
+                        <td style={{ width: 110, maxWidth: 110, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={sp.optionName}>{sp.optionName}</td>
+                        <td style={{ fontSize: 12, fontWeight: 600 }}>{keyToDisplay(sp.startDate)}</td>
+                        <td style={{ fontSize: 12, fontWeight: 600, color: sp.releaseKey ? '#2e7d32' : '#c5221f' }}>{sp.releaseKey ? keyToDisplay(sp.releaseKey) : '진행중'}</td>
+                        <td className="center"><span style={{ fontWeight: 700, color: sp.days >= 7 ? '#d93025' : sp.days >= 3 ? '#e65100' : 'var(--text)' }}>{sp.days}일</span></td>
+                      </tr>
+                      {open && (
+                        <tr>
+                          <td colSpan={8} style={{ padding: 0, background: '#fafbfc' }}>
+                            <table className="data-table" style={{ margin: 0 }}>
+                              <thead><tr>
+                                <th style={{ width: 140 }}>날짜</th>
+                                <th>사유</th>
+                              </tr></thead>
+                              <tbody>
+                                {sp.records.map(rec => (
+                                  <tr key={rec.dateKey}>
+                                    <td style={{ fontWeight: 600 }}>{keyToDisplay(rec.dateKey)}</td>
+                                    <td style={{ fontSize: 11 }}>{rec.reason ? <span style={{ display: 'inline-block', padding: '2px 8px', borderRadius: 6, background: '#f3eef8', color: '#7c4dbd', fontWeight: 600 }}>{rec.reason}</span> : <span style={{ color: '#ccc' }}>사유 없음</span>}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+
       {/* 테이블 */}
-      {cachedResult && <>
+      {!searchResult && cachedResult && <>
         <div style={{ padding: '0 0 8px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <span style={{ fontSize: 14, fontWeight: 700 }}>
             품절 현황 ({filtered.length}개)
@@ -839,7 +1029,7 @@ export default function SoldOutAnalysis() {
         </div>
       </>}
 
-      {cachedResult && <div style={{ fontSize: 11, color: 'var(--text-secondary)', padding: '8px 4px 0' }}>최종마감·품질확인서·마감대상 제외 | 쿠팡재고=업로드 엑셀 | 그 외=스프레드시트 | 품절위기=1주 미만 또는 3일내 소진</div>}
+      {!searchResult && cachedResult && <div style={{ fontSize: 11, color: 'var(--text-secondary)', padding: '8px 4px 0' }}>최종마감·품질확인서·마감대상 제외 | 쿠팡재고=업로드 엑셀 | 그 외=스프레드시트 | 품절위기=1주 미만 또는 3일내 소진</div>}
 
       {/* 일괄 사유 입력 모달 */}
       {showBatchInput && (
