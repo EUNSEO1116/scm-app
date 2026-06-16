@@ -471,19 +471,38 @@ export default function SoldOutAnalysis() {
         });
         totalRows += rows.length;
 
+        // 주간 품절률 = 그 주 실제 업데이트된 날들의 일별 품절률 평균
+        let rateSum = 0, rateDays = 0;
+        for (const dt of wk.days) {
+          const c = cacheByKey[dateToKey(dt)];
+          if (c && typeof c.rate === 'number') { rateSum += c.rate; rateDays++; }
+        }
+        const weeklyRate = rateDays > 0 ? Math.round(rateSum / rateDays * 100) / 100 : null;
+        const titleText = weeklyRate != null
+          ? `주간 품절률 ${weeklyRate}%  (업데이트 ${rateDays}일 평균)`
+          : '주간 품절률 -  (업데이트 없음)';
+
         const firstDay = wk.days[0], lastDay = wk.days[wk.days.length - 1];
         const range = `${pad2(firstDay.getMonth()+1)}.${pad2(firstDay.getDate())}-${pad2(lastDay.getMonth()+1)}.${pad2(lastDay.getDate())}`;
         const sheetName = `${month+1}월 ${idx+1}주차 (${range})`;
 
         const header = ['상품명', '옵션명', '등급', '연속품절일', '사유', '품절율 제외여부'];
-        const aoa = rows.length
-          ? [header, ...rows.map(r => [r['상품명'], r['옵션명'], r['등급'], r['연속품절일'], r['사유'], r['품절율 제외여부']])]
-          : [header, ['해당 주 품절 없음', '', '', '', '', '']];
+        const dataRows = rows.length
+          ? rows.map(r => [r['상품명'], r['옵션명'], r['등급'], r['연속품절일'], r['사유'], r['품절율 제외여부']])
+          : [['해당 주 품절 없음', '', '', '', '', '']];
+        const aoa = [[titleText, '', '', '', '', ''], header, ...dataRows];
         const ws = XLSX.utils.aoa_to_sheet(aoa);
+        ws['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 5 } }];
 
         // === 스타일링 (가독성) ===
         const thin = { style: 'thin', color: { rgb: 'D9D9D9' } };
         const border = { top: thin, bottom: thin, left: thin, right: thin };
+        const titleStyle = {
+          font: { name: '맑은 고딕', sz: 12, bold: true, color: { rgb: '1F2937' } },
+          fill: { patternType: 'solid', fgColor: { rgb: 'DBEAFE' } },
+          alignment: { horizontal: 'left', vertical: 'center' },
+          border,
+        };
         const headerStyle = {
           font: { name: '맑은 고딕', sz: 10, bold: true, color: { rgb: 'FFFFFF' } },
           fill: { patternType: 'solid', fgColor: { rgb: '374151' } },
@@ -494,12 +513,13 @@ export default function SoldOutAnalysis() {
         const leftCols = new Set([0, 1, 4]); // 상품명, 옵션명, 사유는 좌측정렬
         const cellRange = XLSX.utils.decode_range(ws['!ref']);
         for (let ri = cellRange.s.r; ri <= cellRange.e.r; ri++) {
-          const isData = ri > 0 && rows.length > 0;
-          const isActive = isData && rows[ri - 1]['품절율 제외여부'] === 'X'; // 제외 아님
+          const isData = ri >= 2 && rows.length > 0;
+          const isActive = isData && rows[ri - 2]['품절율 제외여부'] === 'X'; // 제외 아님
           for (let ci = cellRange.s.c; ci <= cellRange.e.c; ci++) {
             const ref = XLSX.utils.encode_cell({ r: ri, c: ci });
             if (!ws[ref]) ws[ref] = { v: '', t: 's' };
-            if (ri === 0) { ws[ref].s = headerStyle; continue; }
+            if (ri === 0) { ws[ref].s = titleStyle; continue; }
+            if (ri === 1) { ws[ref].s = headerStyle; continue; }
             ws[ref].s = {
               font: { name: '맑은 고딕', sz: 10 },
               alignment: { horizontal: leftCols.has(ci) ? 'left' : 'center', vertical: 'center' },
@@ -509,7 +529,7 @@ export default function SoldOutAnalysis() {
           }
         }
         ws['!cols'] = [{ wch: 34 }, { wch: 22 }, { wch: 8 }, { wch: 11 }, { wch: 26 }, { wch: 14 }];
-        ws['!rows'] = [{ hpt: 24 }, ...Array(Math.max(0, cellRange.e.r)).fill({ hpt: 19 })];
+        ws['!rows'] = [{ hpt: 26 }, { hpt: 24 }, ...Array(Math.max(0, cellRange.e.r - 1)).fill({ hpt: 19 })];
         XLSX.utils.book_append_sheet(wb, ws, sheetName);
       });
 
