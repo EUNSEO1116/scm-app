@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import * as XLSX from 'xlsx';
+import XLSX from 'xlsx-js-style';
 import { dbStoreGet, dbStoreSet } from '../utils/dbApi';
 
 const SHEET_ID = '1NXhW_gG0b-gXuVqrhbY9ErWi8uO_7pXIy-NTo4FbE1I';
@@ -463,16 +463,53 @@ export default function SoldOutAnalysis() {
             }
           }
         }
-        const rows = [...itemMap.values()].map(v => v.row).sort((a, b) => b['연속품절일'] - a['연속품절일']);
+        const rows = [...itemMap.values()].map(v => v.row).sort((a, b) => {
+          const ax = a['품절율 제외여부'] === 'X' ? 0 : 1;
+          const bx = b['품절율 제외여부'] === 'X' ? 0 : 1;
+          if (ax !== bx) return ax - bx; // 제외 아닌(X) 항목 먼저
+          return b['연속품절일'] - a['연속품절일']; // 그 다음 연속품절일 내림차순
+        });
         totalRows += rows.length;
 
         const firstDay = wk.days[0], lastDay = wk.days[wk.days.length - 1];
         const range = `${pad2(firstDay.getMonth()+1)}.${pad2(firstDay.getDate())}-${pad2(lastDay.getMonth()+1)}.${pad2(lastDay.getDate())}`;
         const sheetName = `${month+1}월 ${idx+1}주차 (${range})`;
-        const ws = rows.length
-          ? XLSX.utils.json_to_sheet(rows)
-          : XLSX.utils.aoa_to_sheet([['상품명','옵션명','등급','연속품절일','사유','품절율 제외여부'], ['해당 주 품절 없음']]);
-        ws['!cols'] = [{ wch: 30 }, { wch: 20 }, { wch: 10 }, { wch: 12 }, { wch: 24 }, { wch: 14 }];
+
+        const header = ['상품명', '옵션명', '등급', '연속품절일', '사유', '품절율 제외여부'];
+        const aoa = rows.length
+          ? [header, ...rows.map(r => [r['상품명'], r['옵션명'], r['등급'], r['연속품절일'], r['사유'], r['품절율 제외여부']])]
+          : [header, ['해당 주 품절 없음', '', '', '', '', '']];
+        const ws = XLSX.utils.aoa_to_sheet(aoa);
+
+        // === 스타일링 (가독성) ===
+        const thin = { style: 'thin', color: { rgb: 'D9D9D9' } };
+        const border = { top: thin, bottom: thin, left: thin, right: thin };
+        const headerStyle = {
+          font: { name: '맑은 고딕', sz: 10, bold: true, color: { rgb: 'FFFFFF' } },
+          fill: { patternType: 'solid', fgColor: { rgb: '374151' } },
+          alignment: { horizontal: 'center', vertical: 'center' },
+          border,
+        };
+        const yellowFill = { patternType: 'solid', fgColor: { rgb: 'FFF2CC' } }; // 제외 아닌 행 강조
+        const leftCols = new Set([0, 1, 4]); // 상품명, 옵션명, 사유는 좌측정렬
+        const cellRange = XLSX.utils.decode_range(ws['!ref']);
+        for (let ri = cellRange.s.r; ri <= cellRange.e.r; ri++) {
+          const isData = ri > 0 && rows.length > 0;
+          const isActive = isData && rows[ri - 1]['품절율 제외여부'] === 'X'; // 제외 아님
+          for (let ci = cellRange.s.c; ci <= cellRange.e.c; ci++) {
+            const ref = XLSX.utils.encode_cell({ r: ri, c: ci });
+            if (!ws[ref]) ws[ref] = { v: '', t: 's' };
+            if (ri === 0) { ws[ref].s = headerStyle; continue; }
+            ws[ref].s = {
+              font: { name: '맑은 고딕', sz: 10 },
+              alignment: { horizontal: leftCols.has(ci) ? 'left' : 'center', vertical: 'center' },
+              border,
+              ...(isActive ? { fill: yellowFill } : {}),
+            };
+          }
+        }
+        ws['!cols'] = [{ wch: 34 }, { wch: 22 }, { wch: 8 }, { wch: 11 }, { wch: 26 }, { wch: 14 }];
+        ws['!rows'] = [{ hpt: 24 }, ...Array(Math.max(0, cellRange.e.r)).fill({ hpt: 19 })];
         XLSX.utils.book_append_sheet(wb, ws, sheetName);
       });
 
