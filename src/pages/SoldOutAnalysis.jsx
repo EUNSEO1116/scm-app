@@ -902,8 +902,8 @@ export default function SoldOutAnalysis() {
                         <td style={{ fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap' }}>{keyToDisplay(sp.startDate)}</td>
                         <td style={{ fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap', color: sp.releaseKey ? '#2e7d32' : '#c5221f' }}>{sp.releaseKey ? keyToDisplay(sp.releaseKey) : '진행중'}</td>
                         <td className="center"><span style={{ fontWeight: 700, color: sp.days >= 7 ? '#d93025' : sp.days >= 3 ? '#e65100' : 'var(--text)' }}>{sp.days}일</span></td>
-                        <td className="center">{sp.startStock > 0 ? fmt(sp.startStock) : '-'}</td>
-                        <td className="center">{sp.startAvg > 0 ? fmtDec(sp.startAvg) : '-'}</td>
+                        <td className="center">{sp.startStock != null ? fmt(sp.startStock) : '-'}</td>
+                        <td className="center">{sp.startAvg != null ? fmtDec(sp.startAvg) : '-'}</td>
                       </tr>
                       {open && (
                         <tr>
