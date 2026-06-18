@@ -33,6 +33,22 @@ function cartonsPerPallet(w, d, h) {
   return best;
 }
 
+// 제품(pw×pd×ph)을 카톤(cw×cd×ch) 안에 최적 단일 방향으로 채웠을 때 최대 개수
+function itemsPerCarton(pw, pd, ph, cw, cd, ch) {
+  if (!(pw > 0 && pd > 0 && ph > 0 && cw > 0 && cd > 0 && ch > 0)) return 0;
+  const orientations = [
+    [pw, pd, ph], [pd, pw, ph],
+    [pw, ph, pd], [ph, pw, pd],
+    [pd, ph, pw], [ph, pd, pw],
+  ];
+  let best = 0;
+  for (const [bw, bd, bh] of orientations) {
+    const n = Math.floor(cw / bw) * Math.floor(cd / bd) * Math.floor(ch / bh);
+    best = Math.max(best, n);
+  }
+  return best;
+}
+
 const initialForm = {
   prodW: '', prodD: '', prodH: '',
   cartonW: '', cartonD: '', cartonH: '',
@@ -57,10 +73,33 @@ export default function FbcPalletCalculator() {
       return null;
     }
 
-    // 카톤당 개수 = 무게로 자동 계산 (20kg까지 OK)
-    const qtyPerCarton = Math.floor(CARTON_WEIGHT_LIMIT / weight);
-    if (qtyPerCarton < 1) {
+    // 카톤당 개수 = 무게 기준과 사이즈 기준 중 더 작은 값(교집합 최소치)
+    const qtyByWeight = Math.floor(CARTON_WEIGHT_LIMIT / weight);
+    if (qtyByWeight < 1) {
       return { error: '제품 1개가 20kg을 초과합니다. 카톤에 담을 수 없습니다.' };
+    }
+
+    const pw = parseFloat(form.prodW);
+    const pd = parseFloat(form.prodD);
+    const ph = parseFloat(form.prodH);
+    const hasSize = pw > 0 && pd > 0 && ph > 0;
+    const qtyBySize = hasSize ? itemsPerCarton(pw, pd, ph, cw, cd, ch) : null;
+
+    if (hasSize && qtyBySize < 1) {
+      return { error: '제품이 카톤(외박스)보다 커서 1개도 들어가지 않습니다. 사이즈를 확인하세요.' };
+    }
+
+    let qtyPerCarton, qtyConstraint, qtyNote;
+    if (hasSize) {
+      qtyPerCarton = Math.min(qtyByWeight, qtyBySize);
+      qtyConstraint = qtyByWeight < qtyBySize ? 'weight' : (qtyBySize < qtyByWeight ? 'size' : 'both');
+      if (qtyConstraint === 'weight') qtyNote = `무게 제한으로 결정됨 — 무게 기준 ${qtyByWeight}개 ≤ 사이즈 기준 ${qtyBySize}개`;
+      else if (qtyConstraint === 'size') qtyNote = `카톤 크기 제한으로 결정됨 — 사이즈 기준 ${qtyBySize}개 ≤ 무게 기준 ${qtyByWeight}개`;
+      else qtyNote = `무게·사이즈 기준 모두 ${qtyPerCarton}개로 동일`;
+    } else {
+      qtyPerCarton = qtyByWeight;
+      qtyConstraint = 'weight-only';
+      qtyNote = '제품 사이즈 미입력 — 무게(20kg) 기준만으로 계산했습니다';
     }
 
     const cartonWeight = qtyPerCarton * weight;
@@ -116,7 +155,8 @@ export default function FbcPalletCalculator() {
     }
 
     return {
-      qtyPerCarton, cartonWeight, cartonCount,
+      qtyPerCarton, qtyByWeight, qtyBySize, hasSize, qtyConstraint, qtyNote,
+      cartonWeight, cartonCount,
       perPalletEstimate, perPalletUsed, usingManual, palletCount,
       unitsFor1Pallet: perPalletUsed > 0 ? perPalletUsed * qtyPerCarton : null,
       options, cheapestKey: cheapest ? cheapest.key : null, notes,
@@ -137,7 +177,7 @@ export default function FbcPalletCalculator() {
         {/* 입력 */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 16, marginBottom: 20 }}>
           <div>
-            <label style={labelStyle}>제품 1개 사이즈 (cm) · 참고용</label>
+            <label style={labelStyle}>제품 1개 사이즈 (cm) · 선택 (입력 시 사이즈 기준 반영)</label>
             <div style={dimRow}>
               <input style={inputStyle} type="number" placeholder="가로" value={form.prodW} onChange={set('prodW')} />
               <input style={inputStyle} type="number" placeholder="세로" value={form.prodD} onChange={set('prodD')} />
@@ -177,9 +217,13 @@ export default function FbcPalletCalculator() {
           <>
             <div className="summary-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12, marginBottom: 20 }}>
               <div className="summary-item" style={{ background: '#f7f7f8', borderRadius: 10, padding: '14px 16px', border: '1px solid #ececef' }}>
-                <span style={{ fontSize: 12, color: '#666' }}>카톤당 개수 (20kg 기준)</span>
+                <span style={{ fontSize: 12, color: '#666' }}>카톤당 개수</span>
                 <span style={{ fontSize: 22, fontWeight: 700, display: 'block' }}>{result.qtyPerCarton.toLocaleString()}</span>
-                <span style={{ fontSize: 11, color: '#888' }}>≈ {result.cartonWeight.toFixed(1)}kg / 카톤</span>
+                <span style={{ fontSize: 11, color: '#888' }}>
+                  {result.hasSize
+                    ? `무게 ${result.qtyByWeight} · 사이즈 ${result.qtyBySize}개`
+                    : `무게 기준만 (사이즈 미입력)`} · ≈ {result.cartonWeight.toFixed(1)}kg
+                </span>
               </div>
               <div className="summary-item" style={{ background: '#f7f7f8', borderRadius: 10, padding: '14px 16px', border: '1px solid #ececef' }}>
                 <span style={{ fontSize: 12, color: '#666' }}>총 카톤 수</span>
@@ -200,6 +244,15 @@ export default function FbcPalletCalculator() {
                 <span style={{ fontSize: 22, fontWeight: 700, display: 'block' }}>{result.palletCount !== null ? result.palletCount.toLocaleString() : '-'}</span>
                 <span style={{ fontSize: 11, color: '#888' }}>파레트</span>
               </div>
+            </div>
+
+            <div style={{
+              padding: '10px 14px', borderRadius: 8, fontSize: 13, marginBottom: 16,
+              background: result.qtyConstraint === 'weight-only' ? '#fff4e5' : '#eef4ff',
+              color: result.qtyConstraint === 'weight-only' ? '#a15c00' : '#2b5dad',
+              border: `1px solid ${result.qtyConstraint === 'weight-only' ? '#ffd8a8' : '#cfe0ff'}`,
+            }}>
+              📦 카톤당 <b>{result.qtyPerCarton.toLocaleString()}개</b> — {result.qtyNote}
             </div>
 
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
