@@ -33,20 +33,39 @@ function cartonsPerPallet(w, d, h) {
   return best;
 }
 
-// 제품(pw×pd×ph)을 카톤(cw×cd×ch) 안에 최적 단일 방향으로 채웠을 때 최대 개수
+// 제품(pw×pd×ph)을 카톤(cw×cd×ch) 안에 회전·혼합 배치로 최대한 많이 채웠을 때 개수
+// (블록 분할 휴리스틱: 주 블록을 채우고 남는 3개 영역을 다른 방향으로 재귀 충전)
 function itemsPerCarton(pw, pd, ph, cw, cd, ch) {
   if (!(pw > 0 && pd > 0 && ph > 0 && cw > 0 && cd > 0 && ch > 0)) return 0;
-  const orientations = [
-    [pw, pd, ph], [pd, pw, ph],
-    [pw, ph, pd], [ph, pw, pd],
-    [pd, ph, pw], [ph, pd, pw],
+  const EPS = 1e-9;
+  const dims = [
+    [pw, pd, ph], [pw, ph, pd], [pd, pw, ph],
+    [pd, ph, pw], [ph, pw, pd], [ph, pd, pw],
   ];
-  let best = 0;
-  for (const [bw, bd, bh] of orientations) {
-    const n = Math.floor(cw / bw) * Math.floor(cd / bd) * Math.floor(ch / bh);
-    best = Math.max(best, n);
+  const memo = new Map();
+  function maxFit(W, D, H) {
+    if (W <= 0 || D <= 0 || H <= 0) return 0;
+    const key = W.toFixed(3) + ',' + D.toFixed(3) + ',' + H.toFixed(3);
+    if (memo.has(key)) return memo.get(key);
+    let best = 0;
+    for (const [a, b, c] of dims) {
+      if (a > W + EPS || b > D + EPS || c > H + EPS) continue;
+      const nx = Math.floor(W / a + EPS);
+      const ny = Math.floor(D / b + EPS);
+      const nz = Math.floor(H / c + EPS);
+      const main = nx * ny * nz;
+      const usedW = nx * a, usedD = ny * b, usedH = nz * c;
+      // 남는 3개 직육면체 영역(서로 겹치지 않게 분할)을 재귀로 채움
+      const total = main
+        + maxFit(W - usedW, D, H)
+        + maxFit(usedW, D - usedD, H)
+        + maxFit(usedW, usedD, H - usedH);
+      if (total > best) best = total;
+    }
+    memo.set(key, best);
+    return best;
   }
-  return best;
+  return maxFit(cw, cd, ch);
 }
 
 const initialForm = {
@@ -177,7 +196,7 @@ export default function FbcPalletCalculator() {
         {/* 입력 */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 16, marginBottom: 20 }}>
           <div>
-            <label style={labelStyle}>제품 1개 사이즈 (cm) · 선택 (입력 시 사이즈 기준 반영)</label>
+            <label style={labelStyle}>제품 1개 사이즈 (cm) · 선택</label>
             <div style={dimRow}>
               <input style={inputStyle} type="number" placeholder="가로" value={form.prodW} onChange={set('prodW')} />
               <input style={inputStyle} type="number" placeholder="세로" value={form.prodD} onChange={set('prodD')} />
