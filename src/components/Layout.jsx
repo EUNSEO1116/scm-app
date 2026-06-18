@@ -30,6 +30,7 @@ const navItems = [
     { label: 'FBC 비용 계산기', path: '/fbc' },
     { label: '절감 대시보드', path: '/dashboard' },
     { label: 'FBC 품목', path: '/fbc/items' },
+    { label: 'FBC 사전계산기', path: '/fbc/pallet' },
   ]},
 ];
 
@@ -69,6 +70,7 @@ const pageTitles = {
   '/fbc': 'FBC 비용 계산기',
   '/dashboard': '절감 대시보드',
   '/fbc/items': 'FBC 품목',
+  '/fbc/pallet': 'FBC 사전계산기',
   '/sales': '매출관리',
   '/soldout': '품절 현황',
   '/soldout/rate': '월별 품절률',

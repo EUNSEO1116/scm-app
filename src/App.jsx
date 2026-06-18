@@ -15,6 +15,7 @@ import ProductImprovement from './pages/ProductImprovement';
 import OrderBook from './pages/OrderBook';
 import OrderRequest from './pages/OrderRequest';
 import FbcItems from './pages/FbcItems';
+import FbcPalletCalculator from './pages/FbcPalletCalculator';
 import Home from './pages/Home';
 import Sales from './pages/Sales';
 import Placeholder from './pages/Placeholder';
@@ -45,6 +46,7 @@ function App() {
           <Route path="/fbc" element={<FbcCalculator />} />
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/fbc/items" element={<FbcItems />} />
+          <Route path="/fbc/pallet" element={<FbcPalletCalculator />} />
           <Route path="/sales" element={<Sales />} />
           <Route path="/soldout" element={<SoldOut />} />
           <Route path="/soldout/rate" element={<SoldOutRate />} />
