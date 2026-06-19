@@ -18,6 +18,7 @@ import FbcItems from './pages/FbcItems';
 import FbcPalletCalculator from './pages/FbcPalletCalculator';
 import Home from './pages/Home';
 import Sales from './pages/Sales';
+import SalesForecast from './pages/SalesForecast';
 import Placeholder from './pages/Placeholder';
 import IncheonIncoming from './pages/IncheonIncoming';
 import ClosedProducts from './pages/ClosedProducts';
@@ -48,6 +49,7 @@ function App() {
           <Route path="/fbc/items" element={<FbcItems />} />
           <Route path="/fbc/pallet" element={<FbcPalletCalculator />} />
           <Route path="/sales" element={<Sales />} />
+          <Route path="/sales/forecast" element={<SalesForecast />} />
           <Route path="/soldout" element={<SoldOut />} />
           <Route path="/soldout/rate" element={<SoldOutRate />} />
           <Route path="/soldout/exclude" element={<SoldOutExclude />} />

@@ -10,7 +10,10 @@ const navItems = [
     { label: '인천입고신청', path: '/inventory/incheon' },
     { label: '마감 상품', path: '/inventory/closed' },
   ]},
-  { id: 'sales', label: '매출관리', path: '/sales', icon: 'sales' },
+  { id: 'sales', label: '매출관리', icon: 'sales', children: [
+    { label: '매출관리', path: '/sales' },
+    { label: '수요 예측', path: '/sales/forecast' },
+  ]},
   { id: 'soldout-analysis', label: '품절 분석', icon: 'soldoutAnalysis', children: [
     { label: '(NEW)품절 현황', path: '/soldout-analysis' },
     { label: '데이터 기록', path: '/soldout-analysis/history' },
@@ -72,6 +75,7 @@ const pageTitles = {
   '/fbc/items': 'FBC 품목',
   '/fbc/pallet': 'FBC 사전계산기',
   '/sales': '매출관리',
+  '/sales/forecast': '수요 예측',
   '/soldout': '품절 현황',
   '/soldout/rate': '월별 품절률',
   '/soldout/exclude': '제외 품목 관리',
