@@ -416,29 +416,30 @@ export default function SalesForecast() {
       }
 
       // 과재고 분석 (엑셀 전용·독립 계산): 총재고(O) ÷ 일평균 판매 = 소진 예상 일수.
-      //  - F열 상태 기준 '최종마감'·'마감대상'만 제외, '품질확인서' 등은 포함(메인 rows와 다른 규칙).
+      //  - 상태 무관: 과재고 조건(재고·소진일수)만 충족하면 '품질확인서'·'최종마감' 등 모두 포함.
+      //  - 판매량 음수(반품 등)는 0으로 치환하여 일평균·소진일수·추세 계산.
       //  - 판매 전무(일평균 0)인데 재고 있는 건 데드스톡 → 소진 ∞ 로 최상단.
+      //  - 루프 대상은 재고 시트 전체(calcMap): 판매 0건이라도 재고가 있으면 과재고로 포착.
       const overstockList = [];
-      for (const oid of appeared) {
+      for (const oid of Object.keys(calcMap)) {
         const bc = bcMap[oid];
         if (!bc) continue;
         const calc = calcMap[oid];
         if (!calc) continue;
         const fStatus = calc.status || '';
-        if (/최종마감|마감대상/.test(fStatus)) continue;
         const totalStock = calc.totalStock || 0;
         if (totalStock < OVERSTOCK_MIN_STOCK) continue;
         let sum = 0;
-        for (const k of availKeys) sum += (itemsByKey[k].get(oid) || 0);
+        for (const k of availKeys) sum += Math.max(0, itemsByKey[k].get(oid) || 0);
         const dailyAvg = availKeys.length ? sum / availKeys.length : 0;
         const daysOfStock = dailyAvg > 0 ? totalStock / dailyAvg : Infinity;
         if (daysOfStock < OVERSTOCK_MIN_DAYS) continue;
-        const ovVals = buckets.filter(b => b.hasData).map(b => b.keys.reduce((s, k) => s + (itemsByKey[k].get(oid) || 0), 0));
+        const ovVals = buckets.filter(b => b.hasData).map(b => b.keys.reduce((s, k) => s + Math.max(0, itemsByKey[k].get(oid) || 0), 0));
         let dir;
         if (range === '30') dir = computeTrend(ovVals, 7).dir;
         else {
           let mSum = 0, mCnt = 0, aSum = 0, aCnt = 0;
-          for (const k of availKeys) { const q = itemsByKey[k].get(oid) || 0; aSum += q; aCnt++; if (k.slice(4, 6) === curMonth) { mSum += q; mCnt++; } }
+          for (const k of availKeys) { const q = Math.max(0, itemsByKey[k].get(oid) || 0); aSum += q; aCnt++; if (k.slice(4, 6) === curMonth) { mSum += q; mCnt++; } }
           const allAvg = aCnt ? aSum / aCnt : 0, monthAvg = mCnt ? mSum / mCnt : allAvg, eps = Math.max(0.3, allAvg * 0.1), diff = monthAvg - allAvg;
           dir = Math.abs(diff) < eps ? 'flat' : (diff > 0 ? 'up' : 'down');
         }
