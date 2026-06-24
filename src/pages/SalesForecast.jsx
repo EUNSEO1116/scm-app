@@ -7,10 +7,16 @@ const STREAK_MIN = 20; // 30일 기준: 우상향·우하향 20일 이상부터 
 
 const SHEET_ID = '1NXhW_gG0b-gXuVqrhbY9ErWi8uO_7pXIy-NTo4FbE1I';
 const CSV_BARCODE = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent('쿠팡바코드')}`;
+const TSV_CALC = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=tsv&gid=1349677364`; // 재고 계산기 (B:옵션ID, C:바코드, O(14):총재고)
+
+const OVERSTOCK_MIN_DAYS = 60;  // 소진 예상 일수 이 이상이면 과재고
+const OVERSTOCK_MIN_STOCK = 10; // 총재고 최소치 (잡음 제거)
 
 const STORE_PREFIX = 'soldout_analysis_';
 const SEASONS_STORE = 'sales_forecast_seasons';      // { [optionId]: { period, tags:[] } }
 const SEASON_TAGS_STORE = 'sales_forecast_season_tags'; // 사용자 추가 커스텀 태그 목록
+const SOLDOUT_TRACKER_STORE = 'soldout_analysis_tracker'; // { [optionId]: { reason 사유, days, startDate } }
+const IMPROVE_STORE = 'improvement_items';            // [{ status, barcode, productName, startDate, endDate }]
 
 const EXCLUDE_KEYWORDS = ['최종마감', '품질확인서', '마감대상', '덤핑'];
 
@@ -45,6 +51,7 @@ function parseCsvRow(line) {
   }
   result.push(current); return result;
 }
+function safeNum(v) { if (v === '' || v === '-' || v == null) return 0; const n = Number(v); return isNaN(n) ? 0 : n; }
 function pad2(n) { return String(n).padStart(2, '0'); }
 function dateToKey(d) { return `${d.getFullYear()}${pad2(d.getMonth() + 1)}${pad2(d.getDate())}`; }
 function keyToMMDD(k) { return `${k.slice(4, 6)}/${k.slice(6, 8)}`; }
@@ -143,18 +150,42 @@ function makeBuckets(availKeys, bucketDays) {
   return [...map.entries()].sort((a, b) => a[0] - b[0]).map(([, keys]) => keys);
 }
 
-function analysisComment(row, unit) {
-  const { trend, season, inSeason, vals, avg } = row;
-  const peak = Math.max(...vals, 0);
-  const recent = vals[vals.length - 1] ?? 0;
-  const streakTxt = trend.streak >= STREAK_MIN ? `${trend.streak}${unit} 연속 ` : '';
-  let msg;
-  if (trend.dir === 'up') msg = `${streakTxt}상승세 (현재 ${recent}개). 수요 증가 → 재고 확보 권장.`;
-  else if (trend.dir === 'down') msg = `${streakTxt}하락세 (현재 ${recent}개). 수요 둔화 → 발주량 조절 검토.`;
-  else msg = `뚜렷한 추세 없음(보합, 현재 ${recent}개).`;
-  msg += ` 평균 ${avg}개 · 기간 최고 ${peak}개.`;
-  if (inSeason && season.tags.length) msg += ` 현재 시즌(${season.tags.join(', ')}) 진입 구간.`;
-  return msg;
+// 급상승/급하락 판정: 최근 구간 평균을 기존(기준) 구간 평균과 비교.
+//  - 급상승: 최근 평균이 기준의 3배 이상 + 절대 증가 5개 이상.
+//    잠깐 튀었다 되돌아온 스파이크 제외 → 마지막 값도 기준의 2배 이상 유지될 때만.
+//  - 급하락: 기준 평균이 5개 이상으로 어느 정도 팔리던 상품이, 최근 평균이 기준의 1/3 이하로 떨어지고
+//    마지막 값도 기준의 1/2 이하로 내려앉았을 때(유지된 하락).
+function classifyMagnitude(vals) {
+  if (!vals || vals.length < 4) return null;
+  const recentN = Math.max(2, Math.round(vals.length * 0.3));
+  const recent = vals.slice(-recentN);
+  const base = vals.slice(0, vals.length - recentN);
+  if (!base.length) return null;
+  const baseAvg = base.reduce((s, v) => s + v, 0) / base.length;
+  const recentAvg = recent.reduce((s, v) => s + v, 0) / recent.length;
+  const last = vals[vals.length - 1];
+  if (baseAvg >= 1 && recentAvg >= baseAvg * 3 && (recentAvg - baseAvg) >= 5 && last >= baseAvg * 2) {
+    return { kind: 'surge', baseAvg, recentAvg };
+  }
+  if (baseAvg >= 5 && recentAvg <= baseAvg / 3 && last <= baseAvg / 2) {
+    return { kind: 'drop', baseAvg, recentAvg };
+  }
+  return null;
+}
+
+// 시즌 임박 판정: 시즌기간(월 범위) 기준.
+//  - ending(곧 마감): 이번 달은 시즌이고 다음 달은 비시즌.
+//  - starting(곧 시작): 이번 달은 비시즌이고 다음 달은 시즌.
+//  - 상시(빈칸)나 그 외는 null.
+function seasonImminence(period) {
+  const months = parseSeasonMonths(period);
+  if (!months) return null;
+  const now = new Date().getMonth() + 1;
+  const next = now === 12 ? 1 : now + 1;
+  const inNow = months.has(now), inNext = months.has(next);
+  if (inNow && !inNext) return 'ending';
+  if (!inNow && inNext) return 'starting';
+  return null;
 }
 
 export default function SalesForecast() {
@@ -167,6 +198,7 @@ export default function SalesForecast() {
   const [coverage, setCoverage] = useState({ partial: false, firstDate: '' });
 
   const [top20, setTop20] = useState([]);
+  const [overstockRows, setOverstockRows] = useState([]);
 
   // 필터
   const [search, setSearch] = useState('');
@@ -201,12 +233,44 @@ export default function SalesForecast() {
       const dayList = [];
       for (let i = days - 1; i >= 0; i--) { const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - i); dayList.push(d); }
 
-      const [barcodeRes, dbSeasons, dbTags, ...stores] = await Promise.all([
+      const [barcodeRes, calcRes, dbSeasons, dbTags, dbImprove, dbTracker, ...stores] = await Promise.all([
         fetch(CSV_BARCODE),
+        fetch(TSV_CALC),
         dbStoreGet(SEASONS_STORE),
         dbStoreGet(SEASON_TAGS_STORE),
+        dbStoreGet(IMPROVE_STORE).catch(() => null),
+        dbStoreGet(SOLDOUT_TRACKER_STORE).catch(() => null),
         ...dayList.map(d => dbStoreGet(`${STORE_PREFIX}${dateToKey(d)}`).catch(() => null)),
       ]);
+
+      // 재고 계산기: 옵션ID → 상태(F,5)·그로스재고(G,6)·박스히어로(J,9)·총재고(O,14) (과재고 분석용)
+      const calcMap = {};
+      try {
+        const calcCsv = await calcRes.text();
+        const calcLines = calcCsv.split('\n').filter(l => l.trim());
+        for (let i = 1; i < calcLines.length; i++) {
+          const c = calcLines[i].split('\t');
+          const oid = (c[1] || '').trim();
+          if (oid) calcMap[oid] = {
+            barcode: (c[2] || '').trim(),
+            status: (c[5] || '').trim(),       // F열 상태
+            grossStock: safeNum(c[6]),         // G열 그로스(쿠팡)재고
+            boxhero: safeNum(c[9]),            // J열 박스히어로
+            totalStock: safeNum(c[14]),        // O열 총재고
+          };
+        }
+      } catch { /* 재고 시트 실패 시 과재고 분석만 비활성 */ }
+
+      // 상품개선: 바코드 → 진행 상태(처리중/시작전만 = 상품개선중)
+      const improveMap = {};
+      for (const it of (Array.isArray(dbImprove) ? dbImprove : [])) {
+        if (!it.barcode) continue;
+        if (it.status === '처리중' || it.status === '시작전') {
+          const prev = improveMap[it.barcode];
+          if (!prev || (prev !== '처리중' && it.status === '처리중')) improveMap[it.barcode] = it.status;
+        }
+      }
+      const trackerData = dbTracker || {}; // optionId -> { reason 사유 }
 
       // 쿠팡바코드: 상태·이름·시즌기간(Q,16)·시즌(R,17)
       const bcCsv = await barcodeRes.text();
@@ -233,14 +297,17 @@ export default function SalesForecast() {
 
       // 업로드 데이터가 있는 날짜만 사용
       const itemsByKey = {}; // dayKey -> Map(oid -> salesQty)
+      const stockByKey = {}; // dayKey -> Map(oid -> coupangStock) (품절 매칭용)
       const availKeys = [];
       dayList.forEach((d, i) => {
         const st = stores[i];
         if (!st?.items) return;
         const key = dateToKey(d);
         const m = new Map();
-        for (const it of st.items) m.set(it.optionId, it.salesQty || 0);
+        const sm = new Map();
+        for (const it of st.items) { m.set(it.optionId, it.salesQty || 0); sm.set(it.optionId, it.coupangStock); }
         itemsByKey[key] = m;
+        stockByKey[key] = sm;
         availKeys.push(key);
       });
       setDataDays(availKeys.length);
@@ -327,13 +394,62 @@ export default function SalesForecast() {
         }
         const inSeason = isInSeasonNow(parseSeasonMonths(season.period));
         const avg = Math.round((totalSales / vals.length) * 10) / 10;
+
+        // 품절 매칭: 최근 7개 데이터 일자 중 쿠팡재고 0(품절)인 날이 있으면 품절됨 + 사유(추적기)
+        let soldOut = false;
+        for (const k of availKeys.slice(-7)) {
+          if (stockByKey[k]?.get(oid) === 0) { soldOut = true; break; }
+        }
+        const soldOutReason = soldOut ? (trackerData[oid]?.reason || '') : '';
+        // 상품개선 매칭: 바코드 기준 처리중/시작전이면 상품개선중
+        const improving = improveMap[bc.barcode] || null;
+
         list.push({
           optionId: oid,
           productName: bc.productName, optionName: bc.optionName,
           brand: bc.brand, status: bc.status, barcode: bc.barcode,
           season, inSeason, chartData, vals, trend, totalSales, avg,
+          soldOut, soldOutReason, improving,
         });
       }
+
+      // 과재고 분석 (엑셀 전용·독립 계산): 총재고(O) ÷ 일평균 판매 = 소진 예상 일수.
+      //  - F열 상태 기준 '최종마감'·'마감대상'만 제외, '품질확인서' 등은 포함(메인 rows와 다른 규칙).
+      //  - 판매 전무(일평균 0)인데 재고 있는 건 데드스톡 → 소진 ∞ 로 최상단.
+      const overstockList = [];
+      for (const oid of appeared) {
+        const bc = bcMap[oid];
+        if (!bc) continue;
+        const calc = calcMap[oid];
+        if (!calc) continue;
+        const fStatus = calc.status || '';
+        if (/최종마감|마감대상/.test(fStatus)) continue;
+        const totalStock = calc.totalStock || 0;
+        if (totalStock < OVERSTOCK_MIN_STOCK) continue;
+        let sum = 0;
+        for (const k of availKeys) sum += (itemsByKey[k].get(oid) || 0);
+        const dailyAvg = availKeys.length ? sum / availKeys.length : 0;
+        const daysOfStock = dailyAvg > 0 ? totalStock / dailyAvg : Infinity;
+        if (daysOfStock < OVERSTOCK_MIN_DAYS) continue;
+        const ovVals = buckets.filter(b => b.hasData).map(b => b.keys.reduce((s, k) => s + (itemsByKey[k].get(oid) || 0), 0));
+        let dir;
+        if (range === '30') dir = computeTrend(ovVals, 7).dir;
+        else {
+          let mSum = 0, mCnt = 0, aSum = 0, aCnt = 0;
+          for (const k of availKeys) { const q = itemsByKey[k].get(oid) || 0; aSum += q; aCnt++; if (k.slice(4, 6) === curMonth) { mSum += q; mCnt++; } }
+          const allAvg = aCnt ? aSum / aCnt : 0, monthAvg = mCnt ? mSum / mCnt : allAvg, eps = Math.max(0.3, allAvg * 0.1), diff = monthAvg - allAvg;
+          dir = Math.abs(diff) < eps ? 'flat' : (diff > 0 ? 'up' : 'down');
+        }
+        const season = merged[oid] || seed[oid] || { period: '', tags: [] };
+        overstockList.push({
+          optionId: oid, barcode: bc.barcode || calc.barcode || '',
+          productName: bc.productName, optionName: bc.optionName, brand: bc.brand,
+          season, fStatus, totalStock, grossStock: calc.grossStock || 0, boxhero: calc.boxhero || 0,
+          dailyAvg, daysOfStock, trendDir: dir,
+        });
+      }
+      overstockList.sort((a, b) => b.daysOfStock - a.daysOfStock);
+      setOverstockRows(overstockList);
 
       // TOP20 수요예측: 기간 전체 판매량 합 기준 상위 20개
       //  - 30일: 주 평균 점,  3개월: 2주 평균 점 (점이 촘촘해지지 않게 평균)
@@ -420,6 +536,25 @@ export default function SalesForecast() {
     return sorted;
   }, [rows, trendFilter, statusFilter, brandFilter, seasonFilter, inSeasonOnly, search, sortKey]);
 
+  // 보고서·엑셀 공용 분석 결과 (필터 적용된 품목 대상)
+  const analysis = useMemo(() => {
+    const surge = [], drop = [];
+    for (const r of filtered) {
+      const mag = classifyMagnitude(r.vals);
+      if (mag?.kind === 'surge') surge.push({ ...r, mag });
+      else if (mag?.kind === 'drop') drop.push({ ...r, mag });
+    }
+    surge.sort((a, b) => (b.mag.recentAvg - b.mag.baseAvg) - (a.mag.recentAvg - a.mag.baseAvg));
+    drop.sort((a, b) => (a.mag.recentAvg - a.mag.baseAvg) - (b.mag.recentAvg - b.mag.baseAvg));
+    const seasonStarting = [], seasonEnding = [];
+    for (const r of filtered) {
+      const s = seasonImminence(r.season.period);
+      if (s === 'starting') seasonStarting.push(r);
+      else if (s === 'ending') seasonEnding.push(r);
+    }
+    return { surge, drop, seasonStarting, seasonEnding };
+  }, [filtered]);
+
   // 카드 펼침 여부: 기본은 우상향·우하향 7(단위) 이상만 펼침, 수동 토글이 우선
   // 30일: 우상향·우하향 20일 이상만 자동 펼침. 3개월: 강도 기준이 없어 기본 접힘(전체 펼치기로 확인).
   const defaultOpen = (row) => range === '30' && row.trend.dir !== 'flat' && row.trend.streak >= STREAK_MIN;
@@ -447,6 +582,35 @@ export default function SalesForecast() {
     XLSX.utils.book_append_sheet(wb, ws, '시즌데이터');
     XLSX.writeFile(wb, `시즌데이터_${dateToKey(new Date())}.xlsx`);
     showToast('success', `시즌 데이터 ${entries.length}건 다운로드`);
+  };
+
+  // ───────── 분석 엑셀 (급상승 · 급하락 · 과재고 3시트) ─────────
+  const exportAnalysisExcel = () => {
+    const { surge, drop } = analysis;
+    const dec = n => Math.round(n * 10) / 10;
+    const seasonTxt = r => (r.season.tags || []).join(', ');
+    const wb = XLSX.utils.book_new();
+    const addSheet = (aoa, name, cols) => {
+      const ws = XLSX.utils.aoa_to_sheet(aoa);
+      ws['!cols'] = cols;
+      XLSX.utils.book_append_sheet(wb, ws, name);
+    };
+
+    const surgeAoa = [['바코드', '옵션ID', '상품명', '옵션명', '브랜드', '시즌', '기존평균', '최근평균', '추세', '상품개선']];
+    for (const r of surge) surgeAoa.push([r.barcode, r.optionId, r.productName, r.optionName, r.brand, seasonTxt(r), dec(r.mag.baseAvg), dec(r.mag.recentAvg), TREND_LABEL[r.trend.dir], r.improving || '']);
+
+    const dropAoa = [['바코드', '옵션ID', '상품명', '옵션명', '브랜드', '시즌', '기존평균', '최근평균', '품절', '품절사유', '상품개선']];
+    for (const r of drop) dropAoa.push([r.barcode, r.optionId, r.productName, r.optionName, r.brand, seasonTxt(r), dec(r.mag.baseAvg), dec(r.mag.recentAvg), r.soldOut ? '품절됨' : '', r.soldOutReason || '', r.improving || '']);
+
+    const overAoa = [['바코드', '옵션ID', '상품명', '옵션명', '브랜드', '시즌', '상태', '총재고', '그로스재고', '박스히어로', '일평균판매', '소진예상일수', '추세']];
+    for (const r of overstockRows) overAoa.push([r.barcode, r.optionId, r.productName, r.optionName, r.brand, seasonTxt(r), r.fStatus, r.totalStock, r.grossStock, r.boxhero, dec(r.dailyAvg), r.daysOfStock === Infinity ? '판매없음' : Math.round(r.daysOfStock), TREND_LABEL[r.trendDir]]);
+
+    addSheet(surgeAoa, '급상승', [{ wch: 16 }, { wch: 16 }, { wch: 40 }, { wch: 24 }, { wch: 14 }, { wch: 18 }, { wch: 10 }, { wch: 10 }, { wch: 8 }, { wch: 10 }]);
+    addSheet(dropAoa, '급하락', [{ wch: 16 }, { wch: 16 }, { wch: 40 }, { wch: 24 }, { wch: 14 }, { wch: 18 }, { wch: 10 }, { wch: 10 }, { wch: 8 }, { wch: 24 }, { wch: 10 }]);
+    addSheet(overAoa, '과재고', [{ wch: 16 }, { wch: 16 }, { wch: 40 }, { wch: 24 }, { wch: 14 }, { wch: 18 }, { wch: 12 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 12 }, { wch: 12 }, { wch: 8 }]);
+
+    XLSX.writeFile(wb, `수요예측_분석_${dateToKey(new Date())}.xlsx`);
+    showToast('success', `분석 다운로드 (급상승 ${surge.length} · 급하락 ${drop.length} · 과재고 ${overstockRows.length})`);
   };
 
   // ───────── 시즌 편집 ─────────
@@ -510,16 +674,40 @@ export default function SalesForecast() {
       `<li><b>${esc(r.productName)}</b> ${esc(r.optionName)} — <span style="color:${TREND_COLOR[r.trend.dir]}">${TREND_LABEL[r.trend.dir]}${r.trend.streak >= STREAK_MIN ? ` ${r.trend.streak}${unit}째` : ''}</span> (현재 ${r.vals[r.vals.length - 1]}개)</li>`
     ).join('');
 
-    const cardsHtml = reportRows.map(r => {
-      const color = TREND_COLOR[r.trend.dir];
+    // 공용 분석 결과 (급상승/급하락/시즌임박)
+    const { surge, drop, seasonStarting, seasonEnding } = analysis;
+
+    const dec = n => Math.round(n * 10) / 10;
+    // 급상승/급하락 카드: 상품개선중 + (급하락) 품절 사유 표시
+    const magCard = (r, kind) => {
+      const color = kind === 'surge' ? TREND_COLOR.up : TREND_COLOR.down;
+      const ann = [];
+      if (kind === 'drop' && r.soldOut) ann.push(`<span class="ann soldout">📦 품절됨${r.soldOutReason ? ' · 사유: ' + esc(r.soldOutReason) : ''}</span>`);
+      if (r.improving) ann.push(`<span class="ann improve">🛠 상품개선중 (${esc(r.improving)})</span>`);
       return `<div class="card">
         <div class="pn">${esc(r.productName)}</div>
-        <div class="on">${esc(r.optionName)} · ${esc(r.status)}${r.inSeason ? ' · <span class="season">시즌중</span>' : ''}${(r.season.tags || []).length ? ' · ' + esc(r.season.tags.join(', ')) : ''}</div>
-        <div class="badge" style="background:${color}">${TREND_LABEL[r.trend.dir]} ${r.trend.dir !== 'flat' && r.trend.streak >= STREAK_MIN ? r.trend.streak + unit + '째' : ''}</div>
+        <div class="on">${esc(r.optionName)} · ${esc(r.status)}${(r.season.tags || []).length ? ' · ' + esc(r.season.tags.join(', ')) : ''}</div>
+        <div class="badge" style="background:${color}">${kind === 'surge' ? '급상승' : '급하락'} · 평균 ${dec(r.mag.baseAvg)}개 → 최근 ${dec(r.mag.recentAvg)}개</div>
         ${sparkline(r.vals, color)}
-        <div class="cmt">${esc(analysisComment(r, unit))}</div>
+        ${ann.length ? '<div class="anns">' + ann.join('') + '</div>' : ''}
       </div>`;
-    }).join('');
+    };
+    // 시즌 임박 카드
+    const seasonCard = (r, kind) => {
+      const label = kind === 'starting' ? '곧 시작' : '곧 마감';
+      const bg = kind === 'starting' ? '#1a73e8' : '#b8860b';
+      return `<div class="card">
+        <div class="pn">${esc(r.productName)}</div>
+        <div class="on">${esc(r.optionName)} · ${esc(r.status)}${(r.season.tags || []).length ? ' · ' + esc(r.season.tags.join(', ')) : ''}</div>
+        <div class="badge" style="background:${bg}">${label}${r.season.period ? ' · 시즌 ' + esc(r.season.period) + '월' : ''}</div>
+        ${sparkline(r.vals, TREND_COLOR[r.trend.dir])}
+      </div>`;
+    };
+
+    const surgeHtml = surge.length ? surge.map(r => magCard(r, 'surge')).join('') : '<div class="empty">해당 없음</div>';
+    const dropHtml = drop.length ? drop.map(r => magCard(r, 'drop')).join('') : '<div class="empty">해당 없음</div>';
+    const seasonImm = [...seasonStarting.map(r => seasonCard(r, 'starting')), ...seasonEnding.map(r => seasonCard(r, 'ending'))];
+    const seasonHtml = seasonImm.length ? seasonImm.join('') : '<div class="empty">해당 없음</div>';
 
     win.document.write(`<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>수요 예측 분석 보고서</title>
       <style>
@@ -535,7 +723,11 @@ export default function SalesForecast() {
         .pn{font-size:13px;font-weight:700;line-height:1.3;} .on{font-size:11px;color:#666;margin:2px 0 8px;}
         .badge{display:inline-block;color:#fff;font-size:11px;font-weight:700;border-radius:8px;padding:2px 10px;margin-bottom:6px;}
         .season{color:#b8860b;font-weight:700;}
-        .cmt{font-size:11px;color:#444;margin-top:6px;line-height:1.5;}
+        .anns{margin-top:8px;display:flex;flex-direction:column;gap:4px;}
+        .ann{font-size:11px;font-weight:700;border-radius:6px;padding:3px 8px;display:inline-block;}
+        .ann.soldout{background:#fce8e6;color:#c5221f;}
+        .ann.improve{background:#fff3cd;color:#b8860b;}
+        .empty{color:#aaa;font-size:13px;padding:8px 2px;grid-column:1/-1;}
         @media print{ .noprint{display:none;} }
       </style></head><body>
       <h1>수요 예측 분석 보고서</h1>
@@ -549,8 +741,12 @@ export default function SalesForecast() {
       </div>
       <h2>📈 우상향 TOP</h2><ul>${topUp.length ? listHtml(topUp) : '<li>해당 없음</li>'}</ul>
       <h2>📉 우하향 TOP (연속 하락)</h2><ul>${topDown.length ? listHtml(topDown) : '<li>해당 없음</li>'}</ul>
-      <h2>🗂 품목별 추이 및 분석</h2>
-      <div class="grid">${cardsHtml}</div>
+      <h2>🚀 급상승 품목 (${surge.length})</h2>
+      <div class="grid">${surgeHtml}</div>
+      <h2>📉 급하락 품목 · 원인 분석 (${drop.length})</h2>
+      <div class="grid">${dropHtml}</div>
+      <h2>🗓 시즌 임박 품목 (${seasonImm.length})</h2>
+      <div class="grid">${seasonHtml}</div>
       <div class="noprint" style="margin-top:24px;text-align:center;">
         <button onclick="window.print()" style="padding:10px 24px;font-size:14px;background:#374151;color:#fff;border:none;border-radius:8px;cursor:pointer;">PDF로 저장 / 인쇄</button>
       </div>
@@ -584,6 +780,9 @@ export default function SalesForecast() {
           </button>
           <button onClick={exportSeasonExcel} style={{ padding: '5px 14px', fontSize: 13, borderRadius: 8, border: '1px solid #1e7e34', background: '#fff', color: '#1e7e34', cursor: 'pointer' }}>
             ⬇ 시즌 데이터 (엑셀)
+          </button>
+          <button onClick={exportAnalysisExcel} disabled={!filtered.length} style={{ padding: '5px 14px', fontSize: 13, borderRadius: 8, border: '1px solid #8e44ad', background: '#fff', color: '#8e44ad', cursor: 'pointer', opacity: filtered.length ? 1 : 0.5 }}>
+            ⬇ 분석 데이터 (엑셀)
           </button>
           <button onClick={openReport} disabled={!filtered.length} style={{ padding: '5px 14px', fontSize: 13, borderRadius: 8, border: 'none', background: '#1a73e8', color: '#fff', cursor: 'pointer', opacity: filtered.length ? 1 : 0.5 }}>
             📄 분석 보고서 (PDF)
