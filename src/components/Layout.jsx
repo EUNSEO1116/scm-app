@@ -5,6 +5,7 @@ const navItems = [
   { id: 'inventory', label: '재고관리', icon: 'inventory', children: [
     { label: '재고 계산기', path: '/inventory' },
     { label: '입고신청', path: '/inventory/incoming' },
+    { label: '발주추천', path: '/inventory/recommend' },
     { label: '발주신청', path: '/inventory/order' },
     { label: '발주장부', path: '/inventory/orderbook' },
     { label: '인천입고신청', path: '/inventory/incheon' },
@@ -66,6 +67,7 @@ const pageTitles = {
   '/': 'ARIPPLE SCM',
   '/inventory': '재고 계산기',
   '/inventory/incoming': '입고신청',
+  '/inventory/recommend': '발주추천',
   '/inventory/order': '발주신청',
   '/inventory/orderbook': '발주장부',
   '/inventory/incheon': '인천입고신청',

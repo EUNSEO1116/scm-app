@@ -14,6 +14,7 @@ import IssueManagement from './pages/IssueManagement';
 import ProductImprovement from './pages/ProductImprovement';
 import OrderBook from './pages/OrderBook';
 import OrderRequest from './pages/OrderRequest';
+import OrderRecommend from './pages/OrderRecommend';
 import FbcItems from './pages/FbcItems';
 import FbcPalletCalculator from './pages/FbcPalletCalculator';
 import Home from './pages/Home';
@@ -40,6 +41,7 @@ function App() {
           <Route path="/" element={<Home />} />
           <Route path="/inventory" element={<InventoryCalculator />} />
           <Route path="/inventory/incoming" element={<Incoming />} />
+          <Route path="/inventory/recommend" element={<OrderRecommend />} />
           <Route path="/inventory/order" element={<OrderRequest />} />
           <Route path="/inventory/orderbook" element={<OrderBook />} />
           <Route path="/inventory/incheon" element={<IncheonIncoming />} />
