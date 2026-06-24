@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback, Fragment } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef, Fragment } from 'react';
 import { LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, ResponsiveContainer, ReferenceLine } from 'recharts';
 import XLSX from 'xlsx-js-style';
 import { dbStoreGet, dbStoreSet } from '../utils/dbApi';
@@ -17,6 +17,8 @@ const SEASONS_STORE = 'sales_forecast_seasons';      // { [optionId]: { period, 
 const SEASON_TAGS_STORE = 'sales_forecast_season_tags'; // 사용자 추가 커스텀 태그 목록
 const SOLDOUT_TRACKER_STORE = 'soldout_analysis_tracker'; // { [optionId]: { reason 사유, days, startDate } }
 const IMPROVE_STORE = 'improvement_items';            // [{ status, barcode, productName, startDate, endDate }]
+const FORECAST_CACHE_STORE = 'sales_forecast_cache'; // { [range]: { date(YYYYMMDD|null), rows, top20, overstockRows, dataDays, coverage, nameMap, seasonMap, customTags, lastUpdated } }
+const SOLDOUT_RATE_STORE = 'soldout_rate';           // 품절현황 갱신 시 { [YYYYMMDD]: snapshot } 저장 (오늘 키 존재 = 품절현황 업데이트 완료)
 
 const EXCLUDE_KEYWORDS = ['최종마감', '품질확인서', '마감대상', '덤핑'];
 
@@ -313,7 +315,7 @@ export default function SalesForecast() {
       setDataDays(availKeys.length);
 
       if (availKeys.length === 0) {
-        setRows([]); setError('해당 기간에 업로드된 판매 데이터가 없습니다.'); setLoading(false); return;
+        setRows([]); setError('해당 기간에 업로드된 판매 데이터가 없습니다.'); setLoading(false); return null;
       }
 
       // 표시 구간 버킷 — 달력 전체 구간을 만들고 DB 없는 구간은 hasData=false (회색 표시)
@@ -468,14 +470,103 @@ export default function SalesForecast() {
       setLastUpdated(new Date());
       setVisibleCount(60);
       setOpenOverride({}); // 펼침 수동 토글 초기화 → 기본 규칙(7일 이상) 재적용
+      setLoading(false);
+      // 캐시 저장용 스냅샷 반환 (decideLoad가 받아 DB 캐시에 보관)
+      return {
+        rows: list,
+        top20: top,
+        overstockRows: overstockList,
+        dataDays: availKeys.length,
+        coverage: { partial, firstDate: availKeys.length ? keyToMMDD(availKeys[0]) : '' },
+        nameMap: nm,
+        seasonMap: merged,
+        customTags: Array.isArray(dbTags) ? dbTags : [],
+        lastUpdated: Date.now(),
+      };
     } catch (e) {
       console.error(e);
       setError('데이터를 불러오는 중 오류가 발생했습니다.');
     }
     setLoading(false);
+    return null;
   }, [range]);
 
-  useEffect(() => { load(); }, [load]);
+  // 캐시 스냅샷을 화면 상태에 적용 (재계산 없이 즉시 표시)
+  const applySnapshot = useCallback((s) => {
+    setRows(s.rows || []);
+    setTop20(s.top20 || []);
+    setOverstockRows(s.overstockRows || []);
+    setDataDays(s.dataDays || 0);
+    setCoverage(s.coverage || { partial: false, firstDate: '' });
+    setNameMap(s.nameMap || {});
+    setSeasonMap(s.seasonMap || {});
+    setCustomTags(Array.isArray(s.customTags) ? s.customTags : []);
+    setLastUpdated(s.lastUpdated ? new Date(s.lastUpdated) : null);
+    setVisibleCount(60);
+    setOpenOverride({});
+    setError(null);
+    setLoading(false);
+  }, []);
+
+  // DB 캐시 맵 (range별 스냅샷). 최초 1회만 DB에서 읽고 이후 메모리 유지.
+  const cacheRef = useRef(null);
+  const persistCache = useCallback((map) => {
+    dbStoreSet(FORECAST_CACHE_STORE, map, { skipLog: true }).catch(() => {});
+  }, []);
+
+  // 자동 갱신 판단: 오늘 캐시가 있으면 그대로 표시, 없으면 두 트리거(데이터 업로드·품절현황 업데이트)가
+  // 오늘 모두 완료된 경우에만 1회 재계산. 미충족 시 직전 캐시 유지 표시.
+  const decideLoad = useCallback(async () => {
+    const rk = range;
+    const today = dateToKey(new Date());
+
+    // 1) 캐시 맵 로드 (최초 1회)
+    if (cacheRef.current === null) {
+      const fromDb = await dbStoreGet(FORECAST_CACHE_STORE).catch(() => null);
+      cacheRef.current = (fromDb && typeof fromDb === 'object') ? fromDb : {};
+    }
+    const map = cacheRef.current;
+    const entry = map[rk];
+
+    // 2) 오늘 자 캐시 존재 → 재계산 없이 즉시 표시 (로딩 단축)
+    if (entry && entry.date === today) { applySnapshot(entry); return; }
+
+    // 3) 두 트리거 오늘 완료 여부 확인
+    setLoading(true);
+    const [analysisToday, rateSnap] = await Promise.all([
+      dbStoreGet(`${STORE_PREFIX}${today}`).catch(() => null),
+      dbStoreGet(SOLDOUT_RATE_STORE).catch(() => null),
+    ]);
+    const dataUploaded = !!analysisToday;                       // 데이터 업로드 오늘 완료
+    const soldoutUpdated = !!(rateSnap && rateSnap[today]);     // 품절현황 업데이트 오늘 완료
+    const bothMet = dataUploaded && soldoutUpdated;
+
+    if (bothMet) {
+      // 4) 둘 다 완료 → 1회 재계산 후 오늘 자 캐시로 저장
+      const snap = await load();
+      if (snap) { map[rk] = { date: today, ...snap }; persistCache(map); }
+      return;
+    }
+
+    // 5) 미충족 → 직전 캐시가 있으면 그대로 유지 표시
+    if (entry) { applySnapshot(entry); return; }
+
+    // 6) 캐시가 전혀 없으면(최초) 1회 계산해 기준선 확보 (date=null → 오늘 자 아님)
+    const snap = await load();
+    if (snap) { map[rk] = { date: null, ...snap }; persistCache(map); }
+  }, [range, load, applySnapshot, persistCache]);
+
+  // 현재 range의 캐시 스냅샷에 시즌 편집 결과를 반영 (재계산 없이 일관성 유지)
+  const patchCache = useCallback((newRows, newSeasonMap, newCustomTags) => {
+    const map = cacheRef.current;
+    if (!map) return;
+    const entry = map[range];
+    if (!entry) return;
+    map[range] = { ...entry, rows: newRows, seasonMap: newSeasonMap, customTags: newCustomTags };
+    persistCache(map);
+  }, [range, persistCache]);
+
+  useEffect(() => { decideLoad(); }, [decideLoad]);
 
   const allTags = useMemo(() => {
     const set = new Set([...DEFAULT_SEASON_TAGS, ...customTags]);
@@ -639,14 +730,16 @@ export default function SalesForecast() {
       setSaving(true);
       setSeasonMap(next);
       // 화면 행 즉시 반영
-      setRows(prev => prev.map(r => updates[r.optionId]
+      const newRows = rows.map(r => updates[r.optionId]
         ? { ...r, season: updates[r.optionId], inSeason: isInSeasonNow(parseSeasonMonths(updates[r.optionId].period)) }
-        : r));
+        : r);
+      setRows(newRows);
+      const finalTags = newTags.length ? [...customTags, ...newTags] : customTags;
       if (newTags.length) {
-        const nextTags = [...customTags, ...newTags];
-        setCustomTags(nextTags);
-        dbStoreSet(SEASON_TAGS_STORE, nextTags, { skipLog: true });
+        setCustomTags(finalTags);
+        dbStoreSet(SEASON_TAGS_STORE, finalTags, { skipLog: true });
       }
+      patchCache(newRows, next, finalTags); // 캐시 일관성 유지
       const ok = await dbStoreSet(SEASONS_STORE, next, { logDesc: `수요예측 시즌 일괄 업로드 (${count}건)` });
       setSaving(false);
       showToast(ok ? 'success' : 'error', ok
@@ -708,12 +801,15 @@ export default function SalesForecast() {
   };
   const saveEdit = async () => {
     setSaving(true);
-    const next = { ...seasonMap, [editing]: { period: editPeriod.trim(), tags: editTags } };
+    const newSeason = { period: editPeriod.trim(), tags: editTags };
+    const next = { ...seasonMap, [editing]: newSeason };
     setSeasonMap(next);
     // 화면 행 즉시 반영
-    setRows(prev => prev.map(r => r.optionId === editing
-      ? { ...r, season: { period: editPeriod.trim(), tags: editTags }, inSeason: isInSeasonNow(parseSeasonMonths(editPeriod.trim())) }
-      : r));
+    const newRows = rows.map(r => r.optionId === editing
+      ? { ...r, season: newSeason, inSeason: isInSeasonNow(parseSeasonMonths(editPeriod.trim())) }
+      : r);
+    setRows(newRows);
+    patchCache(newRows, next, customTags); // 캐시 일관성 유지
     const ok = await dbStoreSet(SEASONS_STORE, next, { logDesc: '수요예측 시즌 정보 수정' });
     setSaving(false);
     setEditing(null);
@@ -849,8 +945,8 @@ export default function SalesForecast() {
             <button onClick={() => setRange('30')} style={{ ...filterBtn(range === '30'), border: 'none', borderRadius: 0 }}>30일</button>
             <button onClick={() => setRange('90')} style={{ ...filterBtn(range === '90'), border: 'none', borderRadius: 0 }}>3개월</button>
           </div>
-          <button onClick={load} disabled={loading} style={{ padding: '5px 14px', fontSize: 13, borderRadius: 8, border: '1px solid #ddd', background: '#fff', cursor: 'pointer' }}>
-            {loading ? '불러오는 중…' : '↻ 새로고침'}
+          <button onClick={decideLoad} disabled={loading} style={{ padding: '5px 14px', fontSize: 13, borderRadius: 8, border: '1px solid #ddd', background: '#fff', cursor: 'pointer' }}>
+            {loading ? '불러오는 중…' : '↻ 다시 보기'}
           </button>
           <button onClick={exportSeasonExcel} style={{ padding: '5px 14px', fontSize: 13, borderRadius: 8, border: '1px solid #1e7e34', background: '#fff', color: '#1e7e34', cursor: 'pointer' }}>
             ⬇ 시즌 데이터 (엑셀)
