@@ -584,6 +584,80 @@ export default function SalesForecast() {
     showToast('success', `시즌 데이터 ${entries.length}건 다운로드`);
   };
 
+  // ───────── 시즌 데이터 엑셀 업로드 (대량편집·병합 덮어쓰기) ─────────
+  const importSeasonExcel = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // 같은 파일 재선택 가능하게 초기화
+    if (!file) return;
+    try {
+      const buf = await file.arrayBuffer();
+      const wb = XLSX.read(buf, { type: 'array' });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+      if (!aoa.length) { showToast('error', '빈 파일입니다.'); return; }
+      // 헤더에서 옵션ID/시즌/시즌기간 컬럼 위치 찾기
+      const header = aoa[0].map(h => String(h).trim());
+      const idxOf = (...names) => header.findIndex(h => names.includes(h));
+      const oidCol = idxOf('옵션ID', '옵션id', 'optionId');
+      const tagCol = idxOf('시즌');
+      const periodCol = idxOf('시즌기간', '시즌 기간');
+      if (oidCol < 0 || tagCol < 0 || periodCol < 0) {
+        showToast('error', '옵션ID·시즌·시즌기간 컬럼이 필요합니다.');
+        return;
+      }
+      // 셀 규칙: 빈칸=기존값 유지, '-'=삭제, 값=갱신
+      const updates = {};
+      for (let i = 1; i < aoa.length; i++) {
+        const row = aoa[i];
+        const oid = String(row[oidCol] ?? '').trim();
+        if (!oid) continue;
+        const tagsStr = String(row[tagCol] ?? '').trim();
+        const periodStr = String(row[periodCol] ?? '').trim();
+        if (!tagsStr && !periodStr) continue; // 둘 다 빈칸이면 변화 없음 → 건너뛰기
+        const existing = seasonMap[oid] || { period: '', tags: [] };
+        // 시즌기간
+        let period;
+        if (periodStr === '-') period = '';
+        else if (periodStr === '') period = existing.period || '';
+        else period = periodStr;
+        // 시즌 태그
+        let tags;
+        if (tagsStr === '-') tags = [];
+        else if (tagsStr === '') tags = existing.tags || [];
+        else tags = tagsStr.split(',').map(t => t.trim()).filter(Boolean);
+        updates[oid] = { period, tags };
+      }
+      const count = Object.keys(updates).length;
+      if (!count) { showToast('error', '반영할 데이터가 없습니다.'); return; }
+      const next = { ...seasonMap, ...updates }; // 병합 덮어쓰기
+      // 업로드 태그 중 DB·기본 목록에 없던 새 태그는 커스텀 태그로 등록
+      const knownTags = new Set([...DEFAULT_SEASON_TAGS, ...customTags]);
+      const newTags = [];
+      for (const u of Object.values(updates)) {
+        for (const t of u.tags) { if (!knownTags.has(t)) { knownTags.add(t); newTags.push(t); } }
+      }
+      setSaving(true);
+      setSeasonMap(next);
+      // 화면 행 즉시 반영
+      setRows(prev => prev.map(r => updates[r.optionId]
+        ? { ...r, season: updates[r.optionId], inSeason: isInSeasonNow(parseSeasonMonths(updates[r.optionId].period)) }
+        : r));
+      if (newTags.length) {
+        const nextTags = [...customTags, ...newTags];
+        setCustomTags(nextTags);
+        dbStoreSet(SEASON_TAGS_STORE, nextTags, { skipLog: true });
+      }
+      const ok = await dbStoreSet(SEASONS_STORE, next, { logDesc: `수요예측 시즌 일괄 업로드 (${count}건)` });
+      setSaving(false);
+      showToast(ok ? 'success' : 'error', ok
+        ? `시즌 데이터 ${count}건 업로드 저장됨${newTags.length ? ` · 새 태그 ${newTags.length}개 추가` : ''}`
+        : '저장 실패');
+    } catch (err) {
+      console.error(err);
+      showToast('error', '엑셀 읽기 실패: ' + (err.message || err));
+    }
+  };
+
   // ───────── 분석 엑셀 (급상승 · 급하락 · 과재고 3시트) ─────────
   const exportAnalysisExcel = () => {
     const { surge, drop } = analysis;
@@ -781,6 +855,10 @@ export default function SalesForecast() {
           <button onClick={exportSeasonExcel} style={{ padding: '5px 14px', fontSize: 13, borderRadius: 8, border: '1px solid #1e7e34', background: '#fff', color: '#1e7e34', cursor: 'pointer' }}>
             ⬇ 시즌 데이터 (엑셀)
           </button>
+          <label style={{ padding: '5px 14px', fontSize: 13, borderRadius: 8, border: '1px solid #1e7e34', background: '#1e7e34', color: '#fff', cursor: saving ? 'default' : 'pointer', opacity: saving ? 0.6 : 1 }}>
+            {saving ? '업로드 중…' : '⬆ 시즌 업로드 (엑셀)'}
+            <input type="file" accept=".xlsx,.xls" onChange={importSeasonExcel} disabled={saving} style={{ display: 'none' }} />
+          </label>
           <button onClick={exportAnalysisExcel} disabled={!filtered.length} style={{ padding: '5px 14px', fontSize: 13, borderRadius: 8, border: '1px solid #8e44ad', background: '#fff', color: '#8e44ad', cursor: 'pointer', opacity: filtered.length ? 1 : 0.5 }}>
             ⬇ 분석 데이터 (엑셀)
           </button>
