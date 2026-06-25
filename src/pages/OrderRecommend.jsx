@@ -91,19 +91,23 @@ function computeTrend(vals, smoothWindow) {
   return { dir, streak };
 }
 
-// availKeys를 bucketDays씩 묶어 그룹화 (주간 버킷용)
-function makeBuckets(availKeys, bucketDays) {
+// 가장 최근 데이터일을 기준으로 bucketDays씩 뒤로 끊는 롤링 윈도우.
+// 첫 데이터일 기준이 아니라 "오늘 기준 최근 7일/8~14일/…"로 묶어, 최근 며칠이 항상 포함되게 한다.
+// 반환: 오래된→최근 순의 [[keys],...]
+function makeRecentWindows(availKeys, bucketDays) {
   if (availKeys.length === 0) return [];
-  const f = availKeys[0];
-  const first = new Date(+f.slice(0, 4), +f.slice(4, 6) - 1, +f.slice(6, 8));
+  const last = availKeys[availKeys.length - 1]; // 최근 데이터일을 앵커로
+  const anchor = new Date(+last.slice(0, 4), +last.slice(4, 6) - 1, +last.slice(6, 8));
   const map = new Map();
   for (const k of availKeys) {
     const d = new Date(+k.slice(0, 4), +k.slice(4, 6) - 1, +k.slice(6, 8));
-    const bi = Math.floor((d - first) / (bucketDays * 86400000));
-    if (!map.has(bi)) map.set(bi, []);
-    map.get(bi).push(k);
+    const daysAgo = Math.floor((anchor - d) / 86400000);
+    const wi = Math.floor(daysAgo / bucketDays); // 0 = 최근 윈도우
+    if (!map.has(wi)) map.set(wi, []);
+    map.get(wi).push(k);
   }
-  return [...map.entries()].sort((a, b) => a[0] - b[0]).map(([, keys]) => keys);
+  // wi 큰값(오래됨) → 작은값(최근) 순으로 정렬 = 오래된→최근
+  return [...map.entries()].sort((a, b) => b[0] - a[0]).map(([, keys]) => keys);
 }
 
 // 트렌드보정 지수평활(Holt 선형) → 4주 누적 예측.
@@ -123,16 +127,15 @@ function holtCumForecast(weekly) {
   return sum;
 }
 
-// 최근 4주 가중평균(최근 주가 오래된 주의 2배 가중) × 4주
+// 최근 4주 가중평균 × 4주. 최근 주에 큰 가중치 — 4주전→1주전 = 1 / 1.5 / 2.5 / 4
+const RECENT_WEIGHTS = [1, 1.5, 2.5, 4]; // 오래된→최근 (HORIZON_WEEKS=4 기준)
 function weightedCumForecast(weekly) {
   const recent = weekly.slice(-HORIZON_WEEKS);
   const n = recent.length;
   if (n === 0) return 0;
+  const w = RECENT_WEIGHTS.slice(-n); // 데이터가 4주 미만이면 최근쪽 가중치만 사용
   let wsum = 0, vsum = 0;
-  for (let i = 0; i < n; i++) {
-    const w = n === 1 ? 1 : (1 + i / (n - 1)); // 오래된→최근: 1 → 2
-    wsum += w; vsum += recent[i] * w;
-  }
+  for (let i = 0; i < n; i++) { wsum += w[i]; vsum += recent[i] * w[i]; }
   return (vsum / wsum) * HORIZON_WEEKS;
 }
 
@@ -171,10 +174,9 @@ export default function OrderRecommend() {
         availKeys.push(key);
       });
       setDataDays(availKeys.length);
-      const weekBuckets = makeBuckets(availKeys, 7); // [[keys],...] 오래된→최근
-      // 부분 주(7일 미만, 보통 맨 끝의 진행 중인 주)는 예측에서 제외 — 왜곡 방지
-      const fullWeeks = weekBuckets.filter(ks => ks.length === 7);
-      const useBuckets = fullWeeks.length >= 2 ? fullWeeks : weekBuckets;
+      // 최근 데이터일 기준 7일 롤링 윈도우 [[keys],...] 오래된→최근.
+      // 최근 며칠(진행 중 주)도 항상 포함된다 — 예전처럼 부분 주를 잘라내지 않음.
+      const useBuckets = makeRecentWindows(availKeys, 7);
 
       // 시즌기간 시드: 쿠팡바코드 시트 Q(16) → 옵션id별 period
       const seedPeriod = {};
@@ -340,12 +342,12 @@ export default function OrderRecommend() {
             </summary>
             <div style={{ position: 'absolute', top: 'calc(100% + 6px)', left: 0, zIndex: 20, width: 560, maxWidth: '88vw', maxHeight: '70vh', overflowY: 'auto', background: '#fff', border: '1px solid #e8eaed', borderRadius: 10, boxShadow: '0 4px 16px rgba(0,0,0,0.12)', padding: '14px 16px', fontSize: 12.5, color: '#3c4043', lineHeight: 1.7 }}>
           <div style={{ marginBottom: 6 }}><b>① 데이터 매칭</b> — 재고계산기 시트의 각 상품을 <b>옵션ID</b>로 수요예측 일별 판매 데이터와 매칭합니다.</div>
-          <div style={{ marginBottom: 6 }}><b>② 4주 판매 예측 (F)</b> — 최근 판매를 주(7일) 단위로 묶어,
+          <div style={{ marginBottom: 6 }}><b>② 4주 판매 예측 (F)</b> — <b>오늘 기준 최근 7일/8~14일/15~21일/22~28일</b>로 묶어(진행 중인 최근 며칠도 항상 포함),
             우하향(감소) 추세 상품은 <b>Holt 선형추세 지수평활</b>로, 그 외는 <b>최근 4주 가중평균</b>(최근일수록 가중)으로 향후 4주 판매량을 예측합니다.
             (우하향 상품의 Holt 예측은 과발주 방지를 위해 가중평균을 넘지 않도록 캡)
             <div style={{ marginTop: 6, marginLeft: 14, padding: '8px 12px', background: '#fff', border: '1px solid #e8eaed', borderRadius: 8, color: '#5f6368', fontSize: 12 }}>
-              <div style={{ marginBottom: 4 }}>• <b>최근 4주 가중평균</b> : 최근 4주 판매량의 평균을 내되, <u>오래된 주보다 최근 주에 더 큰 가중치</u>를 줘서 평균냅니다.
-                예) 4주 전부터 <code>10·20·30·40</code>개 팔렸으면 단순평균은 25지만, 최근에 가중을 두면 <b>약 30개</b> 쪽으로 계산 → 최근 흐름을 더 반영.</div>
+              <div style={{ marginBottom: 4 }}>• <b>최근 4주 가중평균</b> : 4주전→1주전에 <u>가중치 1 / 1.5 / 2.5 / 4</u>를 줘서 평균냅니다(최근 1주가 4주전의 4배).
+                예) 4주 전부터 <code>10·20·30·40</code>개 팔렸으면 단순평균은 25지만, 이 가중이면 <b>약 31개</b> 쪽으로 계산 → 최근 흐름을 강하게 반영.</div>
               <div>• <b>Holt 선형추세 지수평활</b> : 판매가 꾸준히 줄고 있는(우하향) 상품에 쓰는 방식으로,
                 현재 <u>판매 수준(level)</u>과 <u>주마다 늘거나 줄어드는 변화량(trend)</u> 두 가지를 함께 추정해서
                 "<b>지금 추세대로 가면 4주 뒤엔 얼마나 팔릴까</b>"를 예측합니다. 감소세가 이어지면 예측치도 따라 낮아져 과발주를 막습니다.</div>
