@@ -206,7 +206,9 @@ export default function OrderRecommend() {
         }
       } catch { /* 시즌 시드 실패 시 DB값만 사용 */ }
       const seasons = dbSeasons || {};
-      const periodOf = (oid) => (seasons[oid]?.period) || seedPeriod[oid] || '';
+      // DB에 키가 있으면(시즌 삭제로 빈칸이어도) DB값 우선 — 시트 시드로 부활 방지.
+      // 빈칸 period는 seasonMult에서 '상시'(보정 없음)로 처리됨.
+      const periodOf = (oid) => (oid in seasons) ? (seasons[oid].period || '') : (seedPeriod[oid] || '');
 
       // VOC: 쿠팡바코드 → 상품문제/재수배 & 처리중/시작전
       const vocBarcodes = new Set();
