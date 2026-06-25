@@ -13,14 +13,30 @@ const IMPROVE_STORE = 'improvement_items';
 
 const FORECAST_DAYS = 90;     // 수요예측 일별 데이터 로딩 기간
 const HORIZON_WEEKS = 4;      // 발주 커버 기간 (4주)
+const HORIZON_DAYS = HORIZON_WEEKS * 7; // 28일 (예측 주간율 환산 기준)
+const REVIEW_DAYS = 4; // 발주 주기 (월·금 발주, 최대 간격 4일)
+const SAFETY_BUFFER_DAYS = 7; // 안전재고: 평균 7일치 여유분
+const DEFAULT_LEAD_DAYS = 20; // AF열 리드타임 빈칸 시 기본값
 const HOLT_ALPHA = 0.3;       // 레벨 평활 계수
 const HOLT_BETA = 0.1;        // 트렌드 평활 계수
-const PEAK_MULT = 1.2;        // 시즌피크 버퍼
-const ENDING_MULT = 0.7;      // 시즌종료 4주전 축소
-const ENDING_DAYS = 28;       // 시즌 막달 말일까지 남은 일수 ≤ 이 값이면 종료임박
+const PEAK_MULT = 1.2;        // 시즌피크: 입고예정일이 시즌 한가운데
+const ENDING_MULT = 0.7;      // 끝물: 입고예정일이 시즌 마지막 달
+const OFFSEASON_MULT = 0.2;   // 시즌밖 입고: 시즌 종료 후 도착 — 트리클(소량)만 채움
 
 const VOC_ACTIVE_STATUS = ['처리중', '시작전'];
 const VOC_TARGET_TYPE = ['상품문제', '재수배'];
+
+// 발주추천 태그별 색상 (필터/식별용)
+const TAG_COLORS = {
+  '시즌피크': { bg: '#fce8e6', fg: '#c5221f' },
+  '끝물발주': { bg: '#feefc3', fg: '#b06000' },
+  '시즌밖발주': { bg: '#fef7e0', fg: '#9a6700' },
+  '일반발주': { bg: '#e6f4ea', fg: '#1e8e3e' },
+  '시즌마감보류': { bg: '#e8eaed', fg: '#5f6368' },
+  '재고충분': { bg: '#e8f0fe', fg: '#1a73e8' },
+  '제외': { bg: '#f1f3f4', fg: '#80868b' },
+  '데이터없음': { bg: '#f1f3f4', fg: '#bdc1c6' },
+};
 
 // 판매중이 아닌 제외 대상(발주추천 안 함) — 수요예측과 동일 기준
 const EXCLUDE_KEYWORDS = ['최종마감', '품질확인서', '마감대상', '덤핑'];
@@ -201,20 +217,19 @@ export default function OrderRecommend() {
         }
       }
 
-      // 시즌 보정 계수 계산
+      // 시즌 보정 계수 — 입고예정일(오늘+리드타임) 기준 판정
       const now = new Date();
       const curM = now.getMonth() + 1;
-      const nextM = curM === 12 ? 1 : curM + 1;
-      const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-      const daysLeftInMonth = lastDay - now.getDate();
-      function seasonMult(period) {
+      // 현재 시즌 중인 상품만 입고예정일로 보정. 시즌 밖이면 baseF가 이미 비시즌 속도라 보정 없음.
+      function seasonMult(period, arrival) {
         const months = parseSeasonMonths(period);
-        if (!months) return 1; // 상시(시즌 미지정) → 보정 없음
-        const inNow = months.has(curM);
-        const endingSoon = inNow && !months.has(nextM) && daysLeftInMonth <= ENDING_DAYS;
-        if (endingSoon) return ENDING_MULT; // 시즌종료 4주전 우선
-        if (inNow) return PEAK_MULT;        // 시즌피크
-        return 1;
+        if (!months) return 1;            // 상시(시즌 미지정)
+        if (!months.has(curM)) return 1;  // 현재 시즌 아님(시즌 전/후) → 보정 없음
+        const aM = arrival.getMonth() + 1;
+        const aNextM = aM === 12 ? 1 : aM + 1;
+        if (!months.has(aM)) return OFFSEASON_MULT;  // 입고예정이 시즌밖 → 트리클만 ×0.2
+        if (!months.has(aNextM)) return ENDING_MULT; // 입고예정이 시즌 마지막 달 → ×0.7
+        return PEAK_MULT;                            // 시즌 한가운데 → ×1.2
       }
 
       // 재고 계산기: 시트 순서 그대로 전 품목
@@ -233,14 +248,16 @@ export default function OrderRecommend() {
         const productName = (c[3] || '').trim();
         // 시트의 상품 간 간격(빈 행)은 그대로 유지 — 세로 복붙 정렬용
         if (!barcode && !productName) {
-          out.push({ spacer: true, barcode: '', productName: '', optionName: '', status: '', recQty: '', sPos: '', tPos: '', note: '', weeksStock: '', reason: '' });
+          out.push({ spacer: true, barcode: '', productName: '', optionName: '', status: '', recQty: '', sPos: '', tPos: '', note: '', weeksStock: '', totalStock: '', reason: '', tag: '' });
           continue;
         }
         if (!barcode) continue; // 바코드 없는 비정상 행 제외
         const optionId = (c[1] || '').trim();
         const optionName = (c[4] || '').trim();
         const status = (c[5] || '').trim();
-        const totalStock = safeNum(c[14]);          // O열 총재고
+        const totalStock = safeNum(c[14]);          // O열 총재고 (그로스+박스히어로+미입고 구매분 포함)
+        const leadRaw = (c[31] || '').trim();        // AF열 리드타임(일)
+        const leadDays = (leadRaw === '' || isNaN(Number(leadRaw))) ? DEFAULT_LEAD_DAYS : Number(leadRaw);
         const orderUnit = (c[17] || '').trim();      // R열 발주단위
         const sRaw = safeNum(c[18]);
         const tRaw = safeNum(c[19]);
@@ -251,9 +268,12 @@ export default function OrderRecommend() {
 
         let recQty = '';
         let reason = '';
+        let tag = '';
 
         // 최종마감·품질확인서 등 판매중 아닌 대상은 발주추천 제외
-        if (!shouldExclude(status)) {
+        if (shouldExclude(status)) {
+          tag = '제외';
+        } else {
           // 6주 판매 예측치 F
           let baseF = null;
           let method = '';
@@ -274,21 +294,45 @@ export default function OrderRecommend() {
             }
           }
 
-          if (baseF != null) {
-            const mult = seasonMult(periodOf(optionId));
-            const q = Math.ceil(baseF * mult - totalStock);
+          if (baseF == null) {
+            tag = '데이터없음';
+          } else {
+            // 입고예정일 = 오늘 + 리드타임 → 시즌 보정에 사용
+            const arrivalDate = new Date(now);
+            arrivalDate.setDate(arrivalDate.getDate() + leadDays);
+            const mult = seasonMult(periodOf(optionId), arrivalDate);
+            // 커버일수 = 리드타임 + 발주주기 + 안전. baseF(4주=28일 예측)를 커버일수로 비례 확대.
+            const coverDays = leadDays + REVIEW_DAYS + SAFETY_BUFFER_DAYS;
+            const demand = baseF * (coverDays / HORIZON_DAYS) * mult;
+            const q = Math.ceil(demand - totalStock);
+            const demandRound = Math.round(demand);
+            const seasonTxt = mult === PEAK_MULT ? '·시즌피크 ×1.2'
+              : mult === ENDING_MULT ? '·시즌 끝물 ×0.7'
+              : mult === OFFSEASON_MULT ? '·시즌밖 입고 ×0.2' : '';
             if (q > 0) {
               recQty = q;
-              // 사유는 추천발주량이 있는 행에만 표시
-              const fRound = Math.round(baseF * 10) / 10;
-              const adjRound = Math.round(baseF * mult * 10) / 10;
+              const fRound = Math.round(baseF);
               const methodTxt = method === 'Holt'
-                ? `우하향 추세·Holt ${HORIZON_WEEKS}주예측 ${fRound}`
-                : `최근${HORIZON_WEEKS}주 가중평균·${HORIZON_WEEKS}주예측 ${fRound}`;
-              let seasonTxt = '';
-              if (mult === PEAK_MULT) seasonTxt = ` → 시즌피크 ×1.2 = ${adjRound}`;
-              else if (mult === ENDING_MULT) seasonTxt = ` → 시즌종료 4주전 ×0.7 = ${adjRound}`;
-              reason = `${methodTxt}${seasonTxt} − 재고 ${totalStock} = ${q}`;
+                ? `우하향 추세 ${HORIZON_WEEKS}주예측 필요재고 ${fRound}개`
+                : `${HORIZON_WEEKS}주예측 필요재고 ${fRound}개`;
+              reason = `${methodTxt}${seasonTxt} → 커버 ${coverDays}일(리드 ${leadDays}) 수요 ${demandRound} − 재고 ${totalStock} = ${q}`;
+              tag = mult === PEAK_MULT ? '시즌피크'
+                : mult === ENDING_MULT ? '끝물발주'
+                : mult === OFFSEASON_MULT ? '시즌밖발주' : '일반발주';
+            } else {
+              // 발주 없음. 시즌 보정(×0.7·×0.2)으로 빠졌고, 원래(시즌피크 ×1.2)였다면 발주대상이던 경우만 사유/태그 표시.
+              const peakDemand = baseF * (coverDays / HORIZON_DAYS) * PEAK_MULT;
+              const qPeak = Math.ceil(peakDemand - totalStock);
+              if ((mult === ENDING_MULT || mult === OFFSEASON_MULT) && qPeak > 0) {
+                const arrLabel = `${arrivalDate.getFullYear()}-${pad2(arrivalDate.getMonth() + 1)}-${pad2(arrivalDate.getDate())}`;
+                const adjTxt = mult === OFFSEASON_MULT
+                  ? `시즌(${periodOf(optionId)}) 종료 후 도착 ×0.2`
+                  : `시즌(${periodOf(optionId)}) 끝물 도착 ×0.7`;
+                reason = `원래 ${qPeak}개 발주 대상이나, 입고예정 ${arrLabel} ${adjTxt}로 보정 → 보정수요 ${demandRound} ≤ 재고 ${totalStock}, 발주안함`;
+                tag = '시즌마감보류';
+              } else {
+                tag = '재고충분';
+              }
             }
           }
         }
@@ -299,7 +343,7 @@ export default function OrderRecommend() {
         if (vocBarcodes.has(barcode)) noteParts.push('voc 확인');
         const note = noteParts.join(', ');
 
-        out.push({ barcode, productName, optionName, status, recQty, sPos, tPos, note, weeksStock, reason });
+        out.push({ barcode, productName, optionName, status, recQty, sPos, tPos, note, weeksStock, totalStock, reason, tag });
       }
 
       setRows(out);
@@ -315,10 +359,25 @@ export default function OrderRecommend() {
   useEffect(() => { load(); }, [load]);
 
   const exportExcel = () => {
-    const header = ['쿠팡바코드', '상품명', '옵션명', '상태', '추천 발주량', 'S열 발주필요', 'T열 발주필요', '비고', '재고주수(W)', '발주추천 사유'];
-    const aoa = [header, ...rows.map(r => [r.barcode, r.productName, r.optionName, r.status, r.recQty, r.sPos, r.tPos, r.note, r.weeksStock, r.reason])];
+    const header = ['쿠팡바코드', '상품명', '옵션명', '상태', '추천 발주량', '태그', 'S열 발주필요', 'T열 발주필요', '비고', '재고주수(W)', '현재 총재고', '발주추천 사유'];
+    const aoa = [header, ...rows.map(r => [r.barcode, r.productName, r.optionName, r.status, r.recQty, r.tag, r.sPos, r.tPos, r.note, r.weeksStock, r.totalStock, r.reason])];
     const ws = XLSX.utils.aoa_to_sheet(aoa);
-    ws['!cols'] = [{ wch: 16 }, { wch: 28 }, { wch: 20 }, { wch: 10 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 22 }, { wch: 11 }, { wch: 48 }];
+    ws['!cols'] = [{ wch: 16 }, { wch: 28 }, { wch: 20 }, { wch: 10 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 22 }, { wch: 11 }, { wch: 12 }, { wch: 48 }];
+    // 전체 셀 폰트 Arial 적용 (헤더는 굵게)
+    const WEEKS_COL = 9; // 재고주수(W) 컬럼 인덱스
+    const range = XLSX.utils.decode_range(ws['!ref']);
+    for (let R = range.s.r; R <= range.e.r; R++) {
+      for (let C = range.s.c; C <= range.e.c; C++) {
+        const addr = XLSX.utils.encode_cell({ r: R, c: C });
+        const cell = ws[addr];
+        if (!cell) continue;
+        cell.s = { ...(cell.s || {}), font: { ...((cell.s && cell.s.font) || {}), name: 'Arial', bold: R === 0 } };
+        // 재고주수 4 미만(재고 부족)이면 연한 빨강 채움
+        if (C === WEEKS_COL && R > 0 && typeof cell.v === 'number' && cell.v < 4) {
+          cell.s.fill = { patternType: 'solid', fgColor: { rgb: 'FCE8E6' } };
+        }
+      }
+    }
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, '발주추천');
     XLSX.writeFile(wb, `발주추천_${dateToKey(new Date())}.xlsx`);
@@ -352,9 +411,14 @@ export default function OrderRecommend() {
                 현재 <u>판매 수준(level)</u>과 <u>주마다 늘거나 줄어드는 변화량(trend)</u> 두 가지를 함께 추정해서
                 "<b>지금 추세대로 가면 4주 뒤엔 얼마나 팔릴까</b>"를 예측합니다. 감소세가 이어지면 예측치도 따라 낮아져 과발주를 막습니다.</div>
             </div></div>
-          <div style={{ marginBottom: 6 }}><b>③ 시즌 보정</b> — 시즌 피크 기간 <b>×1.2</b>, 시즌 종료 4주 전 <b>×0.7</b>(종료 우선 적용), 상시 상품은 보정 없음.</div>
-          <div style={{ marginBottom: 6 }}><b>④ 추천 발주량</b> = 올림( 예측 F × 시즌계수 − O열 총재고 ). 0 이하거나 예측 데이터 없으면 공백.</div>
-          <div><b>⑤ 제외 대상</b> — 최종마감 · 품질확인서 · 마감대상 · 덤핑 상태 상품은 발주추천에서 제외됩니다. 사유는 추천 발주량이 있는 행에만 표시됩니다.</div>
+          <div style={{ marginBottom: 6 }}><b>③ 시즌 보정 (입고예정일 기준)</b> — 오늘 발주분의 <b>입고예정일(오늘+리드타임)</b>이
+            시즌 한가운데면 <b>×1.2</b>, 시즌 <b>마지막 달</b>이면 <b>×0.7</b>, 시즌 <b>종료 후</b>면 <b>×0.2</b>(시즌밖 소량판매분만 채움).
+            현재 시즌이 아닌(전·후) 상품과 상시 상품은 보정 없음. 리드타임이 길어 입고가 시즌을 넘기면 자동으로 발주가 줄어듭니다.</div>
+          <div style={{ marginBottom: 6 }}><b>④ 리드타임·안전재고 반영</b> — 오늘 발주해도 입고까지 걸리는 <b>리드타임(AF열, 일)</b> 동안 못 팔고, 입고분은 <b>다음 발주분이 들어올 때까지</b>만 버티면 되므로
+            커버기간을 <b>리드타임 + 발주주기 {REVIEW_DAYS}일 + 안전 {SAFETY_BUFFER_DAYS}일</b>로 잡습니다. 월·금 주 2회 발주(최대 간격 4일) 기준. 4주예측 F에서 주간율을 뽑아 이 커버일수로 환산해 필요 수요를 구합니다.
+            (AF열이 비어있으면 리드타임 <b>{DEFAULT_LEAD_DAYS}일</b> 기본 적용. 안전 {SAFETY_BUFFER_DAYS}일은 평균 변동 대비 여유분.)</div>
+          <div style={{ marginBottom: 6 }}><b>⑤ 추천 발주량</b> = 올림( F × (커버일수 ÷ 28) × 시즌계수 − O열 총재고 ). O열 총재고는 그로스+박스히어로+미입고 구매분을 포함하므로 중복발주가 방지됩니다. 0 이하거나 예측 데이터 없으면 공백.</div>
+          <div><b>⑥ 제외 대상</b> — 최종마감 · 품질확인서 · 마감대상 · 덤핑 상태 상품은 발주추천에서 제외됩니다. 사유는 추천 발주량이 있는 행과, <b>시즌-입고 보정(×0.7·×0.2)으로 발주가 빠진 행</b>에 표시됩니다.</div>
         </div>
       </details>
 
@@ -452,7 +516,7 @@ export default function OrderRecommend() {
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
           <thead style={{ position: 'sticky', top: 0, background: '#f8f9fa', zIndex: 1 }}>
             <tr>
-              {['쿠팡바코드', '상품명', '옵션명', '상태', '추천 발주량', 'S열', 'T열', '비고', '재고주수', '발주추천 사유'].map(h => (
+              {['쿠팡바코드', '상품명', '옵션명', '상태', '추천 발주량', '태그', 'S열', 'T열', '비고', '재고주수', '현재 총재고', '발주추천 사유'].map(h => (
                 <th key={h} style={{ padding: '8px 10px', textAlign: 'left', borderBottom: '2px solid #e0e0e0', whiteSpace: 'nowrap' }}>{h}</th>
               ))}
             </tr>
@@ -465,10 +529,17 @@ export default function OrderRecommend() {
                 <td style={{ padding: '6px 10px' }}>{r.optionName}</td>
                 <td style={{ padding: '6px 10px', whiteSpace: 'nowrap' }}>{r.status}</td>
                 <td style={{ padding: '6px 10px', textAlign: 'right', fontWeight: r.recQty ? 700 : 400, color: r.recQty ? '#1e8e3e' : '#bbb' }}>{r.recQty}</td>
+                <td style={{ padding: '6px 10px', whiteSpace: 'nowrap' }}>
+                  {r.tag && (() => {
+                    const c = TAG_COLORS[r.tag] || { bg: '#f1f3f4', fg: '#5f6368' };
+                    return <span style={{ display: 'inline-block', padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 600, background: c.bg, color: c.fg, whiteSpace: 'nowrap' }}>{r.tag}</span>;
+                  })()}
+                </td>
                 <td style={{ padding: '6px 10px', textAlign: 'right', color: '#5f6368' }}>{r.sPos || ''}</td>
                 <td style={{ padding: '6px 10px', textAlign: 'right', color: '#5f6368' }}>{r.tPos || ''}</td>
                 <td style={{ padding: '6px 10px', color: '#c5221f' }}>{r.note}</td>
-                <td style={{ padding: '6px 10px', textAlign: 'right', color: '#5f6368', whiteSpace: 'nowrap' }}>{r.weeksStock}</td>
+                <td style={{ padding: '6px 10px', textAlign: 'right', color: '#5f6368', whiteSpace: 'nowrap', background: (typeof r.weeksStock === 'number' && r.weeksStock < 4) ? '#fce8e6' : undefined }}>{r.weeksStock}</td>
+                <td style={{ padding: '6px 10px', textAlign: 'right', color: '#3c4043', whiteSpace: 'nowrap' }}>{r.totalStock}</td>
                 <td style={{ padding: '6px 10px', color: '#5f6368', fontSize: 12, minWidth: 320 }}>{r.reason}</td>
               </tr>
             ))}
