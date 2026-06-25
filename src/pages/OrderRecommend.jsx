@@ -411,14 +411,44 @@ export default function OrderRecommend() {
                 현재 <u>판매 수준(level)</u>과 <u>주마다 늘거나 줄어드는 변화량(trend)</u> 두 가지를 함께 추정해서
                 "<b>지금 추세대로 가면 4주 뒤엔 얼마나 팔릴까</b>"를 예측합니다. 감소세가 이어지면 예측치도 따라 낮아져 과발주를 막습니다.</div>
             </div></div>
-          <div style={{ marginBottom: 6 }}><b>③ 시즌 보정 (입고예정일 기준)</b> — 오늘 발주분의 <b>입고예정일(오늘+리드타임)</b>이
-            시즌 한가운데면 <b>×1.2</b>, 시즌 <b>마지막 달</b>이면 <b>×0.7</b>, 시즌 <b>종료 후</b>면 <b>×0.2</b>(시즌밖 소량판매분만 채움).
-            현재 시즌이 아닌(전·후) 상품과 상시 상품은 보정 없음. 리드타임이 길어 입고가 시즌을 넘기면 자동으로 발주가 줄어듭니다.</div>
-          <div style={{ marginBottom: 6 }}><b>④ 리드타임·안전재고 반영</b> — 오늘 발주해도 입고까지 걸리는 <b>리드타임(AF열, 일)</b> 동안 못 팔고, 입고분은 <b>다음 발주분이 들어올 때까지</b>만 버티면 되므로
-            커버기간을 <b>리드타임 + 발주주기 {REVIEW_DAYS}일 + 안전 {SAFETY_BUFFER_DAYS}일</b>로 잡습니다. 월·금 주 2회 발주(최대 간격 4일) 기준. 4주예측 F에서 주간율을 뽑아 이 커버일수로 환산해 필요 수요를 구합니다.
-            (AF열이 비어있으면 리드타임 <b>{DEFAULT_LEAD_DAYS}일</b> 기본 적용. 안전 {SAFETY_BUFFER_DAYS}일은 평균 변동 대비 여유분.)</div>
-          <div style={{ marginBottom: 6 }}><b>⑤ 추천 발주량</b> = 올림( F × (커버일수 ÷ 28) × 시즌계수 − O열 총재고 ). O열 총재고는 그로스+박스히어로+미입고 구매분을 포함하므로 중복발주가 방지됩니다. 0 이하거나 예측 데이터 없으면 공백.</div>
-          <div><b>⑥ 제외 대상</b> — 최종마감 · 품질확인서 · 마감대상 · 덤핑 상태 상품은 발주추천에서 제외됩니다. 사유는 추천 발주량이 있는 행과, <b>시즌-입고 보정(×0.7·×0.2)으로 발주가 빠진 행</b>에 표시됩니다.</div>
+          <div style={{ marginBottom: 6 }}><b>③ 시즌 보정 — "물건이 도착하는 날" 기준</b>
+            <div style={{ marginTop: 2 }}>오늘 발주분이 입고되는 날(<b>오늘 + 리드타임</b>)이 시즌의 어디에 떨어지는지로 계수를 정합니다.</div>
+            <div style={{ marginTop: 6, marginLeft: 14, padding: '8px 12px', background: '#fff', border: '1px solid #e8eaed', borderRadius: 8, color: '#5f6368', fontSize: 12 }}>
+              <div>• 입고가 <b>시즌 한가운데</b> → <b style={{ color: '#c5221f' }}>×1.2</b> (피크, 넉넉히)</div>
+              <div>• 입고가 <b>시즌 마지막 달</b> → <b style={{ color: '#b06000' }}>×0.7</b> (끝물, 줄임)</div>
+              <div>• 입고가 <b>시즌 끝난 뒤</b> → <b style={{ color: '#9a6700' }}>×0.2</b> (시즌밖 소량분만)</div>
+              <div>• <b>현재 시즌이 아님(전·후)·상시 상품</b> → 보정 없음 (×1.0)</div>
+            </div>
+            <div style={{ marginTop: 4 }}>→ 리드타임이 길어 물건이 시즌 끝난 뒤 도착하면 발주가 자동으로 확 줄어 <b>끝물 과발주</b>를 막습니다.</div></div>
+          <div style={{ marginBottom: 6 }}><b>④ 리드타임 · 커버기간</b> — 커버기간 = <b>리드타임(AF열) + 발주주기 {REVIEW_DAYS}일 + 안전 {SAFETY_BUFFER_DAYS}일</b>.
+            발주주기·안전은 고정값(월·금 주 2회 발주 기준)이고, AF열이 비면 리드타임 <b>{DEFAULT_LEAD_DAYS}일</b> 기본 적용. 4주예측 F를 이 커버일수에 맞춰 환산합니다.</div>
+          <div style={{ marginBottom: 6 }}><b>⑤ 추천 발주량</b> = <b>올림( F × (커버일수 ÷ 28) × 시즌계수 − O열 총재고 )</b>.
+            O열 총재고는 <u>그로스 + 박스히어로 + 미입고(오고있는) 구매분</u>을 모두 포함하므로 중복발주가 방지됩니다. 결과가 0 이하거나 예측 데이터가 없으면 공백.
+            <div style={{ marginTop: 6, marginLeft: 14, padding: '8px 12px', background: '#f8faf9', border: '1px solid #e8eaed', borderRadius: 8, fontSize: 12 }}>
+              <b>예시</b> — 리드 30 · 4주예측 필요재고 84개 · 시즌피크 ×1.2 → 커버 41일, 수요 84×(41÷28)×1.2 ≈ <b>148</b>, 재고 132 → 추천 <b>16개</b>.</div></div>
+          <div style={{ marginBottom: 6 }}><b>⑥ 태그(분류) — 엑셀에서 필터로 빠르게 거를 수 있습니다</b>
+            <div style={{ marginTop: 6, marginLeft: 14, fontSize: 12, lineHeight: 1.9 }}>
+              {[
+                ['시즌피크', '×1.2로 발주'],
+                ['끝물발주', '×0.7인데 재고 부족해 발주'],
+                ['시즌밖발주', '×0.2 소량 발주'],
+                ['일반발주', '상시·시즌전후 정상 발주'],
+                ['시즌마감보류', '원래 발주대상인데 시즌 끝물/밖 보정으로 빠짐'],
+                ['재고충분', '재고가 많아 발주 불필요'],
+                ['제외', '최종마감·품질확인서 등 상태 제외'],
+                ['데이터없음', '수요예측 매칭 데이터 없음'],
+              ].map(([t, d]) => {
+                const c = TAG_COLORS[t];
+                return (<div key={t}><span style={{ display: 'inline-block', minWidth: 78, textAlign: 'center', padding: '1px 8px', borderRadius: 10, fontSize: 11, fontWeight: 600, background: c.bg, color: c.fg, marginRight: 6 }}>{t}</span>{d}</div>);
+              })}
+            </div></div>
+          <div style={{ marginBottom: 6 }}><b>⑦ 사유 읽는 법</b> — 사유 칸은 아래 순서로 읽으면 됩니다(숫자는 정수 표기).
+            <div style={{ marginTop: 6, marginLeft: 14, padding: '8px 12px', background: '#fff', border: '1px solid #e8eaed', borderRadius: 8, fontSize: 12, color: '#5f6368' }}>
+              <div style={{ fontFamily: 'monospace', color: '#3c4043' }}>우하향 추세 4주예측 필요재고 84개·시즌피크 ×1.2 → 커버 41일(리드 30) 수요 148 − 재고 132 = 16</div>
+              <div style={{ marginTop: 4 }}>= [예측방식] · 4주예측 <u>필요재고 F</u> · [시즌계수] → 커버 <u>총일수</u>(리드 <u>일</u>) · <u>환산수요</u> − <u>O열 총재고</u> = <b>추천량</b></div>
+            </div></div>
+          <div><b>⑧ 제외 대상 & 표 보기</b> — 최종마감 · 품질확인서 · 마감대상 · 덤핑 상태는 발주추천에서 제외됩니다.
+            표의 <b>재고주수(W)</b> 값이 <b>4 미만</b>이면 셀이 연한 빨강으로 표시(재고 부족 경고)되고, <b>현재 총재고</b> 컬럼에서 O열 총재고를 바로 볼 수 있습니다.</div>
         </div>
       </details>
 
