@@ -770,12 +770,12 @@ export default function SalesForecast() {
     const dropAoa = [['바코드', '옵션ID', '상품명', '옵션명', '브랜드', '시즌', '기존평균', '최근평균', '품절', '품절사유', '상품개선']];
     for (const r of drop) dropAoa.push([r.barcode, r.optionId, r.productName, r.optionName, r.brand, seasonTxt(r), dec(r.mag.baseAvg), dec(r.mag.recentAvg), r.soldOut ? '품절됨' : '', r.soldOutReason || '', r.improving || '']);
 
-    const overAoa = [['바코드', '옵션ID', '상품명', '옵션명', '브랜드', '시즌', '상태', '총재고', '그로스재고', '박스히어로', '일평균판매', '소진예상일수', '추세']];
-    for (const r of overstockRows) overAoa.push([r.barcode, r.optionId, r.productName, r.optionName, r.brand, seasonTxt(r), r.fStatus, r.totalStock, r.grossStock, r.boxhero, dec(r.dailyAvg), r.daysOfStock === Infinity ? '판매없음' : Math.round(r.daysOfStock), TREND_LABEL[r.trendDir]]);
+    const overAoa = [['바코드', '옵션ID', '상품명', '옵션명', '브랜드', '시즌', '시즌기간', '상태', '총재고', '그로스재고', '박스히어로', '일평균판매', '소진예상일수', '소진예상주차', '추세']];
+    for (const r of overstockRows) overAoa.push([r.barcode, r.optionId, r.productName, r.optionName, r.brand, seasonTxt(r), r.season.period || '', r.fStatus, r.totalStock, r.grossStock, r.boxhero, dec(r.dailyAvg), !Number.isFinite(r.daysOfStock) ? '판매없음' : Math.round(r.daysOfStock), !Number.isFinite(r.daysOfStock) ? '판매없음' : dec(r.daysOfStock / 7), TREND_LABEL[r.trendDir]]);
 
     addSheet(surgeAoa, '급상승', [{ wch: 16 }, { wch: 16 }, { wch: 40 }, { wch: 24 }, { wch: 14 }, { wch: 18 }, { wch: 10 }, { wch: 10 }, { wch: 8 }, { wch: 10 }]);
     addSheet(dropAoa, '급하락', [{ wch: 16 }, { wch: 16 }, { wch: 40 }, { wch: 24 }, { wch: 14 }, { wch: 18 }, { wch: 10 }, { wch: 10 }, { wch: 8 }, { wch: 24 }, { wch: 10 }]);
-    addSheet(overAoa, '과재고', [{ wch: 16 }, { wch: 16 }, { wch: 40 }, { wch: 24 }, { wch: 14 }, { wch: 18 }, { wch: 12 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 12 }, { wch: 12 }, { wch: 8 }]);
+    addSheet(overAoa, '과재고', [{ wch: 16 }, { wch: 16 }, { wch: 40 }, { wch: 24 }, { wch: 14 }, { wch: 18 }, { wch: 16 }, { wch: 12 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 8 }]);
 
     XLSX.writeFile(wb, `수요예측_분석_${dateToKey(new Date())}.xlsx`);
     showToast('success', `분석 다운로드 (급상승 ${surge.length} · 급하락 ${drop.length} · 과재고 ${overstockRows.length})`);
