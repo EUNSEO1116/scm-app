@@ -365,6 +365,7 @@ export default function OrderRecommend() {
     ws['!cols'] = [{ wch: 16 }, { wch: 28 }, { wch: 20 }, { wch: 10 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 22 }, { wch: 11 }, { wch: 12 }, { wch: 48 }];
     // 전체 셀 폰트 Arial 적용 (헤더는 굵게)
     const WEEKS_COL = 9; // 재고주수(W) 컬럼 인덱스
+    const NOTE_COL = 8; // 비고 컬럼 인덱스
     const range = XLSX.utils.decode_range(ws['!ref']);
     for (let R = range.s.r; R <= range.e.r; R++) {
       for (let C = range.s.c; C <= range.e.c; C++) {
@@ -375,6 +376,11 @@ export default function OrderRecommend() {
         // 재고주수 4 미만(재고 부족)이면 연한 빨강 채움
         if (C === WEEKS_COL && R > 0 && typeof cell.v === 'number' && cell.v < 4) {
           cell.s.fill = { patternType: 'solid', fgColor: { rgb: 'FCE8E6' } };
+        }
+        // 비고에 VOC 확인이 있으면 진한 빨강 채움(글자 흰색)
+        if (C === NOTE_COL && R > 0 && typeof cell.v === 'string' && /voc/i.test(cell.v)) {
+          cell.s.fill = { patternType: 'solid', fgColor: { rgb: 'CC0000' } };
+          cell.s.font = { ...cell.s.font, color: { rgb: 'FFFFFF' }, bold: true };
         }
       }
     }
