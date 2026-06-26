@@ -401,6 +401,52 @@ app.post('/api/activity-log/revert/:id', (req, res) => {
   }
 });
 
+// ===== 이슈관리 사진 복구 (활동로그 스냅샷 → 바코드별 개별 저장소) =====
+// 과거 단일 블롭(issue_img_data) 저장 로그의 before/after 스냅샷에서
+// 바코드별 최대 이미지 세트를 복원한다. (한 번 호출로 안전하게 복구)
+app.get('/api/recover-issue-images', (req, res) => {
+  try {
+    const rows = db.prepare("SELECT before_data, after_data FROM activity_log WHERE target = 'issue_img_data'").all();
+    // 바코드별로 이력 전체에서 가장 많은 사진을 가진 버전을 채택 (합집합 복구)
+    const merged = {};
+    for (const row of rows) {
+      for (const raw of [row.after_data, row.before_data]) {
+        if (!raw) continue;
+        let obj;
+        try { obj = JSON.parse(raw); } catch { continue; }
+        if (!obj || typeof obj !== 'object') continue;
+        for (const [barcode, imgs] of Object.entries(obj)) {
+          if (Array.isArray(imgs) && imgs.length > 0) {
+            if (!merged[barcode] || imgs.length > merged[barcode].length) merged[barcode] = imgs;
+          }
+        }
+      }
+    }
+    if (Object.keys(merged).length === 0) {
+      return res.json({ ok: false, message: '활동로그에 복구할 사진 스냅샷이 없습니다.', recoveredBarcodes: 0, recoveredImages: 0 });
+    }
+    // 기존 counts 유지 + 복구분 병합
+    let counts = {};
+    try { const r = db.prepare('SELECT data FROM issue_img_counts ORDER BY id DESC LIMIT 1').get(); if (r) counts = JSON.parse(r.data) || {}; } catch {}
+    let barcodes = 0, images = 0;
+    for (const [barcode, imgs] of Object.entries(merged)) {
+      const name = `issue_img_${barcode.toLowerCase()}`;
+      if (!isValidStore(name)) continue;
+      try { db.prepare(`DELETE FROM ${name}`).run(); }
+      catch { db.exec(`CREATE TABLE IF NOT EXISTS ${name} (id INTEGER PRIMARY KEY AUTOINCREMENT, data TEXT NOT NULL, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)`); }
+      db.prepare(`INSERT INTO ${name} (data) VALUES (?)`).run(JSON.stringify(imgs));
+      counts[barcode] = imgs.length;
+      barcodes++; images += imgs.length;
+    }
+    db.prepare('DELETE FROM issue_img_counts').run();
+    db.prepare('INSERT INTO issue_img_counts (data) VALUES (?)').run(JSON.stringify(counts));
+    res.json({ ok: true, recoveredBarcodes: barcodes, recoveredImages: images });
+  } catch (e) {
+    console.error('Recover issue images error:', e);
+    res.status(500).json({ error: 'recover failed', message: e.message });
+  }
+});
+
 app.listen(PORT, '0.0.0.0', () => {
   console.log('SCM API server running on port ' + PORT);
 });

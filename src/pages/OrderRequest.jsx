@@ -240,14 +240,14 @@ export default function OrderRequest() {
     setPhotoLoading(true);
     setPhotoModal({ items: [] });
 
-    // 1) 이슈관리 사진
-    let allData = {};
-    try { const d = await dbStoreGet('issue_img_data'); if (d && typeof d === 'object') allData = d; } catch {}
+    // 1) 이슈관리 사진 — 바코드별 개별 저장소에서 조회
     const withImg = rows.filter(r => imgCounts[r.sku] > 0);
-    const photoItems = withImg.map((r) => {
-      const images = allData[r.sku];
-      return { source: 'issue', orderNo: r.orderNo, productName: r.productName, sku: r.sku, images: Array.isArray(images) ? images : [] };
-    }).filter(it => it.images.length > 0);
+    const fetched = await Promise.all(withImg.map(async (r) => {
+      let images = [];
+      try { const imgs = await dbStoreGet(`issue_img_${r.sku.toLowerCase()}`); if (Array.isArray(imgs)) images = imgs; } catch {}
+      return { source: 'issue', orderNo: r.orderNo, productName: r.productName, sku: r.sku, images };
+    }));
+    const photoItems = fetched.filter(it => it.images.length > 0);
 
     // 2) 상품개선 재수배(시작전/처리중) 중 발주신청 상품명과 키워드 매칭
     let impItems = [];
@@ -256,15 +256,16 @@ export default function OrderRequest() {
       if (!Array.isArray(dbImpItems) || dbImpItems.length === 0) {
         try { dbImpItems = JSON.parse(localStorage.getItem('improvement_items') || 'null'); } catch {}
       }
+      // 레거시 블롭/로컬 폴백 맵 (항목별 저장소 우선, 없으면 폴백)
       let dbImpImages = await dbStoreGet('improvement_images');
       if (!dbImpImages || typeof dbImpImages !== 'object') {
         try { dbImpImages = JSON.parse(localStorage.getItem('improvement_images') || 'null'); } catch {}
       }
+      const impImgFallback = (dbImpImages && typeof dbImpImages === 'object') ? dbImpImages : {};
       if (Array.isArray(dbImpItems)) {
         const normalize = s => (s || '').replace(/\s+/g, ' ').trim();
         const orderProductNames = rows.map(r => normalize(r.productName));
-        const impImgData = (dbImpImages && typeof dbImpImages === 'object') ? dbImpImages : {};
-        impItems = dbImpItems
+        const matchedImps = dbImpItems
           .filter(imp => (imp.type === '재수배' || imp.type === '상품문제') && (imp.status === '시작전' || imp.status === '처리중'))
           .filter(imp => {
             const impName = normalize(imp.productName);
@@ -275,14 +276,19 @@ export default function OrderRequest() {
               const matched = keywords.filter(k => orderName.includes(k)).length;
               return matched >= Math.ceil(keywords.length * 0.7);
             });
-          })
-          .map(imp => ({
+          });
+        impItems = await Promise.all(matchedImps.map(async (imp) => {
+          let images = [];
+          try { const imgs = await dbStoreGet(`imp_img_${imp.id}`); if (Array.isArray(imgs)) images = imgs; } catch {}
+          if (images.length === 0 && Array.isArray(impImgFallback[imp.id])) images = impImgFallback[imp.id];
+          return {
             source: 'improvement',
             impType: imp.type,
             productName: imp.productName,
             barcode: imp.barcode || '',
-            images: Array.isArray(impImgData[imp.id]) ? impImgData[imp.id] : [],
-          }));
+            images,
+          };
+        }));
       }
     } catch {}
 

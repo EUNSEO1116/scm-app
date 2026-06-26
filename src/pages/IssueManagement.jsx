@@ -139,8 +139,8 @@ export default function IssueManagement() {
     setImgModal({ barcode, productName });
     setImgLoading(true);
     try {
-      const allData = await dbStoreGet('issue_img_data');
-      const imgs = (allData && allData[barcode]) ? allData[barcode] : [];
+      // 바코드별 개별 저장소에서 로드 (바코드 대문자 → 소문자 키)
+      const imgs = await dbStoreGet(`issue_img_${barcode.toLowerCase()}`);
       setImgModalImages(Array.isArray(imgs) ? imgs : []);
     } catch { setImgModalImages([]); }
     setImgLoading(false);
@@ -148,11 +148,8 @@ export default function IssueManagement() {
 
   const saveImages = async (barcode, images) => {
     setImgModalImages(images);
-    // 전체 이미지 데이터를 하나의 저장소에 저장
-    let allData = {};
-    try { const d = await dbStoreGet('issue_img_data'); if (d && typeof d === 'object') allData = d; } catch {}
-    if (images.length > 0) { allData[barcode] = images; } else { delete allData[barcode]; }
-    await dbStoreSet('issue_img_data', allData, { logDesc: `이슈 이미지 ${images.length > 0 ? '저장' : '삭제'}: ${barcode}` });
+    // 바코드별 개별 저장소에 저장 (4.5MB 단일 블롭 한도 회피)
+    await dbStoreSet(`issue_img_${barcode.toLowerCase()}`, images, { logDesc: `이슈 이미지 ${images.length > 0 ? '저장' : '삭제'}: ${barcode}` });
     const newCounts = { ...imgCounts, [barcode]: images.length };
     if (images.length === 0) delete newCounts[barcode];
     setImgCounts(newCounts);
@@ -195,8 +192,15 @@ export default function IssueManagement() {
     if (imgDownloading) return;
     setImgDownloading(true);
     try {
-      const allData = await dbStoreGet('issue_img_data');
-      if (!allData || typeof allData !== 'object' || Object.keys(allData).length === 0) {
+      // 바코드별 개별 저장소에서 모아 받기
+      const barcodes = Object.keys(imgCounts).filter(b => imgCounts[b] > 0);
+      const fetched = await Promise.all(barcodes.map(async (b) => {
+        try { const imgs = await dbStoreGet(`issue_img_${b.toLowerCase()}`); return [b, Array.isArray(imgs) ? imgs : []]; }
+        catch { return [b, []]; }
+      }));
+      const allData = {};
+      fetched.forEach(([b, imgs]) => { if (imgs.length > 0) allData[b] = imgs; });
+      if (Object.keys(allData).length === 0) {
         alert('다운로드할 사진이 없습니다.');
         setImgDownloading(false);
         return;

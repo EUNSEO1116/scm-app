@@ -182,37 +182,57 @@ export default function ProductImprovement() {
     // DB에서도 시도 (로컬과 비교 후 더 많은 쪽 사용)
     Promise.all([
       dbStoreGet('improvement_items'),
-      dbStoreGet('improvement_images'),
-    ]).then(([dbItems, dbImgs]) => {
+      dbStoreGet('improvement_images'),   // 레거시 단일 블롭 (마이그레이션용)
+      dbStoreGet('imp_img_migrated'),     // 마이그레이션 완료 플래그
+    ]).then(async ([dbItems, legacyImgs, migrated]) => {
       // items: 로컬이 더 많으면 로컬 유지 + DB에 동기화
+      let finalItems = [];
       if (Array.isArray(dbItems) && Array.isArray(localItems)) {
         if (localItems.length > dbItems.length) {
+          finalItems = localItems;
           setItems(localItems);
           dbStoreSet('improvement_items', localItems, { skipLog: true });
         } else {
+          finalItems = dbItems;
           setItems(dbItems);
           localStorage.setItem('improvement_items', JSON.stringify(dbItems));
         }
       } else if (Array.isArray(dbItems)) {
+        finalItems = dbItems;
         setItems(dbItems);
         localStorage.setItem('improvement_items', JSON.stringify(dbItems));
       } else if (Array.isArray(localItems) && localItems.length > 0) {
+        finalItems = localItems;
         dbStoreSet('improvement_items', localItems, { skipLog: true });
       }
-      // images: 로컬이 더 많으면 로컬 유지 + DB에 동기화
-      if (dbImgs && typeof dbImgs === 'object') {
-        const dbKeys = Object.keys(dbImgs).length;
-        const localKeys = localImgs ? Object.keys(localImgs).length : 0;
-        if (localKeys > dbKeys) {
-          setImpImages(localImgs);
-          dbStoreSet('improvement_images', localImgs, { skipLog: true });
-        } else {
-          setImpImages(dbImgs);
-          localStorage.setItem('improvement_images', JSON.stringify(dbImgs));
-        }
-      } else if (localImgs && Object.keys(localImgs).length > 0) {
-        dbStoreSet('improvement_images', localImgs, { skipLog: true });
+
+      // images: 항목별 개별 저장소 방식 (4.5MB 단일 블롭 한도 회피)
+      const hasLegacy = legacyImgs && typeof legacyImgs === 'object' && Object.keys(legacyImgs).length > 0;
+      // 1) 레거시 블롭 → 항목별 저장소로 일회성 마이그레이션 (블롭은 백업으로 보존)
+      if (!migrated && hasLegacy) {
+        await Promise.all(Object.entries(legacyImgs).map(([id, imgs]) =>
+          (Array.isArray(imgs) && imgs.length > 0) ? dbStoreSet(`imp_img_${id}`, imgs, { skipLog: true }) : null
+        ));
+        dbStoreSet('imp_img_migrated', true, { skipLog: true });
       }
+      // 2) 항목별 저장소에서 메모리 맵 재구성
+      const ids = finalItems.map(i => i.id).filter(Boolean);
+      const entries = await Promise.all(ids.map(async (id) => {
+        try { const imgs = await dbStoreGet(`imp_img_${id}`); return [id, Array.isArray(imgs) ? imgs : []]; }
+        catch { return [id, []]; }
+      }));
+      const map = {};
+      entries.forEach(([id, imgs]) => { if (imgs.length > 0) map[id] = imgs; });
+      // 항목별 저장소가 권위 소스. DB가 완전히 비어 받아온 게 하나도 없을 때만(전송 장애 등)
+      // 로컬 백업으로 폴백 — 삭제된 사진을 부활시키지 않기 위해 평소엔 폴백하지 않음
+      const dbHadAny = entries.some(([, imgs]) => imgs.length > 0);
+      if (!dbHadAny && localImgs && typeof localImgs === 'object' && Object.keys(localImgs).length > 0) {
+        Object.entries(localImgs).forEach(([id, imgs]) => {
+          if (Array.isArray(imgs) && imgs.length > 0) map[id] = imgs;
+        });
+      }
+      setImpImages(map);
+      localStorage.setItem('improvement_images', JSON.stringify(map));
       setLoaded(true);
     }).catch(() => setLoaded(true));
   }, []);
@@ -263,10 +283,18 @@ export default function ProductImprovement() {
     dbSaveWithRetry('improvement_items', updated, { logDesc: logDesc || '상품개선 항목 수정' });
   }, [dbSaveWithRetry]);
 
-  const saveImagesDb = useCallback((updated, logDesc) => {
-    setImpImages(updated);
-    localStorage.setItem('improvement_images', JSON.stringify(updated));
-    dbSaveWithRetry('improvement_images', updated, { logDesc: logDesc || '상품개선 이미지 수정' });
+  // 항목별 개별 저장 (4.5MB 단일 블롭 한도 회피). fullMap은 메모리/로컬 동기화용
+  const persistImpImages = useCallback((itemId, images, fullMap, logDesc) => {
+    setImpImages(fullMap);
+    localStorage.setItem('improvement_images', JSON.stringify(fullMap));
+    dbSaveWithRetry(`imp_img_${itemId}`, images || [], { logDesc: logDesc || '상품개선 이미지 수정' });
+  }, [dbSaveWithRetry]);
+
+  // 전체 맵을 항목별 저장소로 일괄 재저장 (재시도 버튼용)
+  const dbSaveAllImpImages = useCallback((map) => {
+    Object.entries(map || {}).forEach(([id, imgs]) => {
+      if (Array.isArray(imgs) && imgs.length > 0) dbSaveWithRetry(`imp_img_${id}`, imgs, { skipLog: true });
+    });
   }, [dbSaveWithRetry]);
 
   const suggestions = useMemo(() => {
@@ -322,8 +350,7 @@ export default function ProductImprovement() {
     }
 
     if (formImages.length > 0) {
-      const updated = { ...impImages, [itemId]: formImages };
-      saveImagesDb(updated);
+      persistImpImages(itemId, formImages, { ...impImages, [itemId]: formImages });
     }
 
     setForm(emptyForm);
@@ -374,7 +401,7 @@ export default function ProductImprovement() {
     } else {
       delete updatedImg[editingId];
     }
-    saveImagesDb(updatedImg);
+    persistImpImages(editingId, formImages.length > 0 ? formImages : [], updatedImg);
 
     setEditingId(null);
     setForm(emptyForm);
@@ -411,7 +438,7 @@ export default function ProductImprovement() {
     saveItems(items.filter(i => i.id !== id));
     const updatedImg = { ...impImages };
     delete updatedImg[id];
-    saveImagesDb(updatedImg);
+    persistImpImages(id, [], updatedImg);
   };
 
   const handleStatusChange = (id, status) => {
@@ -446,11 +473,11 @@ export default function ProductImprovement() {
   const openImpImgModal = async (itemId) => {
     setImpImgModal(itemId);
     setImpImgLoading(true);
+    const fallback = Array.isArray(impImages[itemId]) ? impImages[itemId] : [];
     try {
-      const allData = await dbStoreGet('improvement_images');
-      const imgs = (allData && allData[itemId]) ? allData[itemId] : [];
-      setImpImgModalImages(Array.isArray(imgs) ? imgs : []);
-    } catch { setImpImgModalImages([]); }
+      const imgs = await dbStoreGet(`imp_img_${itemId}`);
+      setImpImgModalImages(Array.isArray(imgs) ? imgs : fallback);
+    } catch { setImpImgModalImages(fallback); }
     setImpImgLoading(false);
   };
 
@@ -458,7 +485,7 @@ export default function ProductImprovement() {
     setImpImgModalImages(images);
     let allData = { ...impImages };
     if (images.length > 0) { allData[itemId] = images; } else { delete allData[itemId]; }
-    saveImagesDb(allData);
+    persistImpImages(itemId, images, allData);
   };
 
   const handleImpImgAdd = async (e) => {
@@ -524,7 +551,8 @@ export default function ProductImprovement() {
     if (zipDownloading) return;
     setZipDownloading(true);
     try {
-      const allImg = await dbStoreGet('improvement_images');
+      // 메모리 전체 맵 사용 (항목별 저장소가 로드 시 이미 반영됨)
+      const allImg = impImages;
       if (!allImg || Object.keys(allImg).length === 0) {
         alert('다운로드할 사진이 없습니다.');
         setZipDownloading(false);
@@ -606,7 +634,7 @@ export default function ProductImprovement() {
             DB 저장 실패 — 현재 로컬에만 저장됨. 다른 컴퓨터에서 보이지 않을 수 있습니다.
           </span>
           <button className="btn btn-sm" style={{ fontSize: 12, background: '#c62828', color: '#fff', border: 'none', borderRadius: 6, padding: '4px 12px' }}
-            onClick={() => { dbSaveWithRetry('improvement_items', items); dbSaveWithRetry('improvement_images', impImages); }}>
+            onClick={() => { dbSaveWithRetry('improvement_items', items); dbSaveAllImpImages(impImages); }}>
             재시도
           </button>
         </div>
