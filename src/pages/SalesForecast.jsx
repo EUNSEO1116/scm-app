@@ -215,10 +215,6 @@ export default function SalesForecast() {
   const [nameMap, setNameMap] = useState({}); // optionId -> { productName, optionName, barcode, status }
   const [customTags, setCustomTags] = useState([]);
   const [openOverride, setOpenOverride] = useState({}); // optionId -> bool (펼침 수동 토글)
-  const [editing, setEditing] = useState(null); // optionId
-  const [editTags, setEditTags] = useState([]);
-  const [editPeriod, setEditPeriod] = useState('');
-  const [newTag, setNewTag] = useState('');
   const [saving, setSaving] = useState(false);
 
   const [visibleCount, setVisibleCount] = useState(60);
@@ -782,42 +778,6 @@ export default function SalesForecast() {
     showToast('success', `분석 다운로드 (급상승 ${surge.length} · 급하락 ${drop.length} · 과재고 ${overstockRows.length})`);
   };
 
-  // ───────── 시즌 편집 ─────────
-  const openEdit = (row) => {
-    setEditing(row.optionId);
-    setEditTags([...(row.season.tags || [])]);
-    setEditPeriod(row.season.period || '');
-    setNewTag('');
-  };
-  const toggleEditTag = (tag) => setEditTags(prev => prev.includes(tag) ? prev.filter(t => t !== tag) : [...prev, tag]);
-  const addCustomTag = () => {
-    const t = newTag.trim();
-    if (!t) return;
-    if (!allTags.includes(t)) {
-      const next = [...customTags, t];
-      setCustomTags(next);
-      dbStoreSet(SEASON_TAGS_STORE, next, { skipLog: true });
-    }
-    if (!editTags.includes(t)) setEditTags(prev => [...prev, t]);
-    setNewTag('');
-  };
-  const saveEdit = async () => {
-    setSaving(true);
-    const newSeason = { period: editPeriod.trim(), tags: editTags };
-    const next = { ...seasonMap, [editing]: newSeason };
-    setSeasonMap(next);
-    // 화면 행 즉시 반영
-    const newRows = rows.map(r => r.optionId === editing
-      ? { ...r, season: newSeason, inSeason: isInSeasonNow(parseSeasonMonths(editPeriod.trim())) }
-      : r);
-    setRows(newRows);
-    patchCache(newRows, next, customTags); // 캐시 일관성 유지
-    const ok = await dbStoreSet(SEASONS_STORE, next, { logDesc: '수요예측 시즌 정보 수정' });
-    setSaving(false);
-    setEditing(null);
-    showToast(ok ? 'success' : 'error', ok ? '시즌 정보 저장됨' : '저장 실패');
-  };
-
   // ───────── 보고서(PDF) ─────────
   const openReport = () => {
     const reportRows = filtered;
@@ -1100,7 +1060,6 @@ export default function SalesForecast() {
                     <span style={{ background: color, color: '#fff', fontSize: 11, fontWeight: 700, borderRadius: 8, padding: '2px 8px', minWidth: 84, textAlign: 'center' }}>
                       {row.trend.dir === 'up' ? '↑' : row.trend.dir === 'down' ? '↓' : '→'} {TREND_LABEL[row.trend.dir]}{row.trend.dir !== 'flat' && row.trend.streak >= STREAK_MIN ? ` ${row.trend.streak}${unit}째` : ''}
                     </span>
-                    <button onClick={(e) => { e.stopPropagation(); openEdit(row); }} style={{ fontSize: 11, color: '#888', background: 'none', border: '1px dashed #ccc', borderRadius: 6, padding: '1px 7px', cursor: 'pointer' }}>시즌 편집</button>
                   </div>
                 </div>
 
@@ -1146,45 +1105,6 @@ export default function SalesForecast() {
 
       {!loading && !error && filtered.length === 0 && rows.length > 0 && (
         <div style={{ textAlign: 'center', padding: '60px 20px', color: '#aaa', fontSize: 14 }}>필터 조건에 맞는 상품이 없습니다.</div>
-      )}
-
-      {/* 시즌 편집 모달 */}
-      {editing && (
-        <div onClick={() => setEditing(null)} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
-          <div onClick={e => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, padding: 22, width: 'min(440px, 92vw)', maxHeight: '86vh', overflowY: 'auto' }}>
-            <h3 style={{ margin: '0 0 4px' }}>시즌 정보 편집</h3>
-            <div style={{ fontSize: 12, color: '#888', marginBottom: 16 }}>변경 내용은 DB에 저장됩니다 (스프레드시트 대신 DB가 원본).</div>
-
-            <label style={{ fontSize: 13, fontWeight: 600 }}>시즌기간 (월 범위)</label>
-            <input value={editPeriod} onChange={e => setEditPeriod(e.target.value)} placeholder="예: 12~2 / 6~8 (빈칸=시즌 미등록)"
-              style={{ width: '100%', boxSizing: 'border-box', padding: '8px 10px', fontSize: 13, border: '1px solid #ddd', borderRadius: 8, margin: '6px 0 4px' }} />
-            <div style={{ fontSize: 11, color: '#999', marginBottom: 16 }}>
-              {(() => { const ms = parseSeasonMonths(editPeriod.trim()); return ms === null ? '시즌 미등록 (시즌중 표시 안 함)' : `${[...ms].sort((a, b) => a - b).join(', ')}월 · ${isInSeasonNow(ms) ? '현재 시즌중' : '비시즌'}`; })()}
-            </div>
-
-            <label style={{ fontSize: 13, fontWeight: 600 }}>시즌 태그</label>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, margin: '8px 0 12px' }}>
-              {allTags.map(t => (
-                <button key={t} onClick={() => toggleEditTag(t)} style={{
-                  fontSize: 12, padding: '4px 10px', borderRadius: 16, cursor: 'pointer',
-                  border: editTags.includes(t) ? '1px solid #1967d2' : '1px solid #ddd',
-                  background: editTags.includes(t) ? '#e8f0fe' : '#fff', color: editTags.includes(t) ? '#1967d2' : '#666', fontWeight: editTags.includes(t) ? 700 : 400,
-                }}>{t}</button>
-              ))}
-            </div>
-
-            <div style={{ display: 'flex', gap: 6, marginBottom: 18 }}>
-              <input value={newTag} onChange={e => setNewTag(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') addCustomTag(); }} placeholder="새 시즌 태그 추가"
-                style={{ flex: 1, padding: '7px 10px', fontSize: 13, border: '1px solid #ddd', borderRadius: 8 }} />
-              <button onClick={addCustomTag} style={{ padding: '7px 14px', fontSize: 13, border: '1px solid #ddd', borderRadius: 8, background: '#f8f9fa', cursor: 'pointer' }}>추가</button>
-            </div>
-
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-              <button onClick={() => setEditing(null)} style={{ padding: '8px 18px', fontSize: 13, border: '1px solid #ddd', borderRadius: 8, background: '#fff', cursor: 'pointer' }}>취소</button>
-              <button onClick={saveEdit} disabled={saving} style={{ padding: '8px 18px', fontSize: 13, border: 'none', borderRadius: 8, background: '#1a73e8', color: '#fff', cursor: 'pointer' }}>{saving ? '저장 중…' : '저장'}</button>
-            </div>
-          </div>
-        </div>
       )}
 
       {/* 토스트 */}
