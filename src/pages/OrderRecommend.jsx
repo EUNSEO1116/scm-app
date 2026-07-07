@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import XLSX from 'xlsx-js-style';
-import { dbStoreGet } from '../utils/dbApi';
+import { dbStoreGet, dbStoreSet, dbGetCaution } from '../utils/dbApi';
 
 // ───────── 상수 ─────────
 const SHEET_ID = '1NXhW_gG0b-gXuVqrhbY9ErWi8uO_7pXIy-NTo4FbE1I';
@@ -25,6 +25,12 @@ const OFFSEASON_MULT = 0.2;   // 시즌밖 입고: 시즌 종료 후 도착 — 
 
 const VOC_ACTIVE_STATUS = ['처리중', '시작전'];
 const VOC_TARGET_TYPE = ['상품문제', '재수배'];
+
+// 대량구매(1인 몰아사기) 의심 판정 — 이번주 일별에서 특정 하루가 튀는 경우
+const SPIKE_RATIO = 3;        // 그날 판매 ≥ 나머지 요일 평균의 3배
+const SPIKE_MIN_QTY = 12;     // 그날 판매 ≥ 12개 (자잘한 알럿 방지 하한)
+const CORRECTIONS_STORE = 'order_recommend_corrections'; // 보정 저장소 (날짜_옵션ID 키)
+const CORRECTION_MAX_AGE_DAYS = 30; // 30일 초과 보정 기록은 로드 시 자동 정리
 
 // 발주추천 태그별 색상 (필터/식별용)
 const TAG_COLORS = {
@@ -145,11 +151,12 @@ function holtCumForecast(weekly) {
 
 // 최근 4주 가중평균 × 4주. 최근 주에 큰 가중치 — 4주전→1주전 = 1 / 1.5 / 2.5 / 4
 const RECENT_WEIGHTS = [1, 1.5, 2.5, 4]; // 오래된→최근 (HORIZON_WEEKS=4 기준)
-function weightedCumForecast(weekly) {
+const SENSITIVE_WEIGHTS = [0.5, 1, 2, 6]; // 재고주수 4주 미만: 최근 1주에 더 민감(최근≈63%)
+function weightedCumForecast(weekly, weights = RECENT_WEIGHTS) {
   const recent = weekly.slice(-HORIZON_WEEKS);
   const n = recent.length;
   if (n === 0) return 0;
-  const w = RECENT_WEIGHTS.slice(-n); // 데이터가 4주 미만이면 최근쪽 가중치만 사용
+  const w = weights.slice(-n); // 데이터가 4주 미만이면 최근쪽 가중치만 사용
   let wsum = 0, vsum = 0;
   for (let i = 0; i < n; i++) { wsum += w[i]; vsum += recent[i] * w[i]; }
   return (vsum / wsum) * HORIZON_WEEKS;
@@ -161,6 +168,11 @@ export default function OrderRecommend() {
   const [error, setError] = useState(null);
   const [lastUpdated, setLastUpdated] = useState(null);
   const [dataDays, setDataDays] = useState(0);
+  const [corrections, setCorrections] = useState({});   // 저장된 보정 { "YYYYMMDD_옵션ID": {corrected|ignored} }
+  const [spikes, setSpikes] = useState([]);             // 보정 대상 목록 (유형1/2)
+  const [showCorrModal, setShowCorrModal] = useState(false);
+  const [corrDraft, setCorrDraft] = useState({});       // 모달 임시 입력 { spikeId: {value|ignored} }
+  const [savingCorr, setSavingCorr] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true); setError(null);
@@ -168,13 +180,33 @@ export default function OrderRecommend() {
       const dayList = [];
       for (let i = FORECAST_DAYS - 1; i >= 0; i--) { const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - i); dayList.push(d); }
 
-      const [calcRes, barcodeRes, dbSeasons, dbImprove, ...stores] = await Promise.all([
+      const [calcRes, barcodeRes, dbSeasons, dbImprove, dbCorrections, dbCaution, ...stores] = await Promise.all([
         fetch(TSV_CALC),
         fetch(CSV_BARCODE),
         dbStoreGet(SEASONS_STORE).catch(() => null),
         dbStoreGet(IMPROVE_STORE).catch(() => null),
+        dbStoreGet(CORRECTIONS_STORE).catch(() => null),
+        dbGetCaution().catch(() => new Set()),
         ...dayList.map(d => dbStoreGet(`${STORE_PREFIX}${dateToKey(d)}`).catch(() => null)),
       ]);
+      const cautionSet = (dbCaution instanceof Set) ? dbCaution : new Set();
+
+      // 대량구매 보정: { "YYYYMMDD_옵션ID": { corrected } | { ignored } }. 30일 초과분 자동 정리.
+      const corrections = (dbCorrections && typeof dbCorrections === 'object') ? dbCorrections : {};
+      const pruneBefore = new Date(); pruneBefore.setHours(0, 0, 0, 0); pruneBefore.setDate(pruneBefore.getDate() - CORRECTION_MAX_AGE_DAYS);
+      let prunedAny = false;
+      for (const ck of Object.keys(corrections)) {
+        const dkey = ck.slice(0, 8);
+        const cd = new Date(+dkey.slice(0, 4), +dkey.slice(4, 6) - 1, +dkey.slice(6, 8));
+        if (!(cd >= pruneBefore)) { delete corrections[ck]; prunedAny = true; }
+      }
+      if (prunedAny) dbStoreSet(CORRECTIONS_STORE, corrections, { skipLog: true }).catch(() => {});
+      setCorrections(corrections);
+      // 보정 적용값 조회 (corrected 있으면 교체)
+      const corrQty = (key, oid, raw) => {
+        const c = corrections[`${key}_${oid}`];
+        return (c && typeof c.corrected === 'number') ? c.corrected : raw;
+      };
 
       // 일별 판매 (옵션id → 판매량)
       const itemsByKey = {};
@@ -193,6 +225,9 @@ export default function OrderRecommend() {
       // 최근 데이터일 기준 7일 롤링 윈도우 [[keys],...] 오래된→최근.
       // 최근 며칠(진행 중 주)도 항상 포함된다 — 예전처럼 부분 주를 잘라내지 않음.
       const useBuckets = makeRecentWindows(availKeys, 7);
+      // 이번주(최근 7일 버킷) — 대량구매/0판매 스파이크 감지 대상. 오래된→최근 순.
+      const recentBucket = useBuckets.length ? useBuckets[useBuckets.length - 1] : [];
+      const spikeList = []; // 보정 알럿 목록
 
       // 시즌기간 시드: 쿠팡바코드 시트 Q(16) → 옵션id별 period
       const seedPeriod = {};
@@ -250,7 +285,7 @@ export default function OrderRecommend() {
         const productName = (c[3] || '').trim();
         // 시트의 상품 간 간격(빈 행)은 그대로 유지 — 세로 복붙 정렬용
         if (!barcode && !productName) {
-          out.push({ spacer: true, barcode: '', productName: '', optionName: '', status: '', recQty: '', sPos: '', tPos: '', note: '', weeksStock: '', totalStock: '', reason: '', tag: '' });
+          out.push({ spacer: true, barcode: '', productName: '', optionName: '', status: '', recQty: '', sPos: '', tPos: '', note: '', weeksStock: '', totalStock: '', reason: '', tag: '', kws: [] });
           continue;
         }
         if (!barcode) continue; // 바코드 없는 비정상 행 제외
@@ -271,6 +306,8 @@ export default function OrderRecommend() {
         let recQty = '';
         let reason = '';
         let tag = '';
+        let kws = [];                              // 엑셀 사유 키워드(사유1~5)
+        let isUrgent = false, isCautionRow = false;
 
         // 최종마감·품질확인서 등 판매중 아닌 대상은 발주추천 제외
         if (shouldExclude(status)) {
@@ -280,12 +317,20 @@ export default function OrderRecommend() {
           let baseF = null;
           let method = '';
           if (optionId && appeared.has(optionId)) {
-            const dailyVals = availKeys.map(k => itemsByKey[k].get(optionId) || 0);
+            // 보정값(corrected) 반영한 일별/주간 판매
+            const dailyVals = availKeys.map(k => corrQty(k, optionId, itemsByKey[k].get(optionId) || 0));
             // 주간 판매 합 (음수=반품/보정은 0으로 정리)
-            const weeklyVals = useBuckets.map(ks => Math.max(0, ks.reduce((s, k) => s + (itemsByKey[k].get(optionId) || 0), 0)));
+            const weeklyVals = useBuckets.map(ks => Math.max(0, ks.reduce((s, k) => s + corrQty(k, optionId, itemsByKey[k].get(optionId) || 0), 0)));
             const down = computeTrend(dailyVals, 7).dir === 'down';
             const weighted = weightedCumForecast(weeklyVals);
-            if (down && weeklyVals.length >= 3) {
+            const urgent = typeof weeksStock === 'number' && weeksStock < 4;
+            const isCaution = cautionSet.has(optionId);
+            isUrgent = urgent; isCautionRow = isCaution;
+            if (urgent || isCaution) {
+              // 재고주수 4주 미만 또는 주의품목: 최근 1주 민감가중(0.5/1/2/6) — 등락 민감 반영(Holt 미사용)
+              baseF = weightedCumForecast(weeklyVals, SENSITIVE_WEIGHTS);
+              method = urgent ? '긴급민감' : '주의민감';
+            } else if (down && weeklyVals.length >= 3) {
               const holt = holtCumForecast(weeklyVals);
               // 우하향: Holt 예측이 평탄 가중평균을 넘지 못하게 캡 — 감소 상품 과발주 방지
               baseF = (holt == null) ? weighted : Math.min(holt, weighted);
@@ -316,8 +361,20 @@ export default function OrderRecommend() {
               const fRound = Math.round(baseF);
               const methodTxt = method === 'Holt'
                 ? `우하향 추세 ${HORIZON_WEEKS}주예측 필요재고 ${fRound}개`
+                : method === '긴급민감'
+                ? `긴급(재고주수 ${weeksStock}주) 최근1주 민감가중 ${HORIZON_WEEKS}주예측 필요재고 ${fRound}개`
+                : method === '주의민감'
+                ? `주의품목 최근1주 민감가중 ${HORIZON_WEEKS}주예측 필요재고 ${fRound}개`
                 : `${HORIZON_WEEKS}주예측 필요재고 ${fRound}개`;
               reason = `${methodTxt}${seasonTxt} → 커버 ${coverDays}일(리드 ${leadDays}) 수요 ${demandRound} − 재고 ${totalStock} = ${q}`;
+              // 엑셀 사유 키워드 — 적용된 것만 순서대로(사유1~5)
+              if (method === 'Holt') kws.push('우하향');
+              if (mult === PEAK_MULT) kws.push('시즌피크');
+              else if (mult === ENDING_MULT) kws.push('끝물');
+              else if (mult === OFFSEASON_MULT) kws.push('시즌밖');
+              if (leadDays > DEFAULT_LEAD_DAYS) kws.push('리드타임');
+              if (isUrgent) kws.push('긴급');
+              if (isCautionRow) kws.push('주의품목');
               tag = mult === PEAK_MULT ? '시즌피크'
                 : mult === ENDING_MULT ? '끝물발주'
                 : mult === OFFSEASON_MULT ? '시즌밖발주' : '일반발주';
@@ -334,9 +391,44 @@ export default function OrderRecommend() {
                 tag = '시즌마감보류';
               } else {
                 tag = '재고충분';
+                // 재고주수 5주 미만인데 재고충분인 상품 — 왜 충분한지 사유 표시
+                if (typeof weeksStock === 'number' && weeksStock < 5) {
+                  kws.push(`수요 ${demandRound} ≤ 재고 ${totalStock}`);
+                }
               }
             }
           }
+        }
+
+        // ── 보정 알럿 스파이크 감지 (이번주 원본값 기준) + 이미 반영된 보정 표시 ──
+        if (optionId && recentBucket.length >= 1 && !shouldExclude(status)) {
+          const wk = recentBucket.map(k => ({ key: k, qty: itemsByKey[k]?.get(optionId) || 0 }));
+          // 유형1: 대량구매 의심 — 그날 ≥12 & 나머지 요일 평균의 3배↑ (여러 날 가능)
+          if (wk.length >= 3) {
+            const flagged = [];
+            for (let j = 0; j < wk.length; j++) {
+              const qty = wk[j].qty;
+              if (qty < SPIKE_MIN_QTY) continue;
+              let os = 0; for (let m = 0; m < wk.length; m++) if (m !== j) os += wk[m].qty;
+              const avgOthers = os / (wk.length - 1);
+              if (qty >= SPIKE_RATIO * avgOthers) flagged.push({ key: wk[j].key, qty, avgOthers });
+            }
+            if (flagged.length) spikeList.push({ id: `bulk_${optionId}`, type: 'bulk', optionId, barcode, productName, optionName, week: wk, flagged });
+          }
+          // 유형2: 주의품목 0판매 — 이번주 0인 날 전부
+          if (cautionSet.has(optionId)) {
+            const zeros = wk.filter(d => d.qty === 0).map(d => ({ key: d.key, qty: 0 }));
+            if (zeros.length) spikeList.push({ id: `caution0_${optionId}`, type: 'caution0', optionId, barcode, productName, optionName, week: wk, flagged: zeros });
+          }
+        }
+        // 이미 저장된 보정이 이번주에 적용됐으면 사유에 표시
+        if (optionId) {
+          const cp = [];
+          for (const k of recentBucket) {
+            const cc = corrections[`${k}_${optionId}`];
+            if (cc && typeof cc.corrected === 'number') { const raw = itemsByKey[k]?.get(optionId) || 0; cp.push(`${k.slice(4, 6)}-${k.slice(6, 8)} ${raw}→${cc.corrected}`); }
+          }
+          if (cp.length) reason = (reason ? reason + ' | ' : '') + `판매보정(${cp.join(', ')})`;
         }
 
         // 비고
@@ -345,10 +437,15 @@ export default function OrderRecommend() {
         if (vocBarcodes.has(barcode)) noteParts.push('voc 확인');
         const note = noteParts.join(', ');
 
-        out.push({ barcode, productName, optionName, status, recQty, sPos, tPos, note, weeksStock, totalStock, reason, tag });
+        out.push({ barcode, productName, optionName, status, recQty, sPos, tPos, note, weeksStock, totalStock, reason, tag, kws });
       }
 
       setRows(out);
+      setSpikes(spikeList);
+      // 아직 보정/무시 안 한 날(pending)이 하나라도 있으면 자동으로 모달 오픈
+      const hasPending = spikeList.some(sp => sp.flagged.some(f => !corrections[`${f.key}_${sp.optionId}`]));
+      setShowCorrModal(hasPending);
+      setCorrDraft({});
       setLastUpdated(new Date());
       if (availKeys.length === 0) setError('수요예측 일별 데이터가 없어 계산 발주량은 모두 공백입니다. (S/T 열은 시트값으로 표시)');
     } catch (e) {
@@ -360,11 +457,36 @@ export default function OrderRecommend() {
 
   useEffect(() => { load(); }, [load]);
 
+  // 모달 입력 → 저장 → DB 반영 → 재계산
+  const applyCorrections = async () => {
+    setSavingCorr(true);
+    const next = { ...corrections };
+    for (const sp of spikes) {
+      const draft = corrDraft[sp.id];
+      if (!draft) continue;
+      if (draft.reset) { for (const f of sp.flagged) delete next[`${f.key}_${sp.optionId}`]; }
+      else if (draft.ignored) { for (const f of sp.flagged) next[`${f.key}_${sp.optionId}`] = { ignored: true }; }
+      else if (draft.value !== undefined && draft.value !== '') {
+        const m = Number(draft.value);
+        if (!isNaN(m) && m >= 0) for (const f of sp.flagged) next[`${f.key}_${sp.optionId}`] = { corrected: m };
+      }
+    }
+    await dbStoreSet(CORRECTIONS_STORE, next, { logDesc: '발주추천 판매 보정' }).catch(() => {});
+    setSavingCorr(false);
+    setShowCorrModal(false);
+    await load(); // 보정 반영해 추천 발주량·엑셀 재계산
+  };
+
+  const pendingSpikeCount = spikes.reduce((n, sp) => n + (sp.flagged.some(f => !corrections[`${f.key}_${sp.optionId}`]) ? 1 : 0), 0);
+
   const exportExcel = () => {
-    const header = ['쿠팡바코드', '상품명', '옵션명', '상태', '추천 발주량', '태그', 'S열 발주필요', 'T열 발주필요', '비고', '재고주수(W)', '현재 총재고', '발주추천 사유'];
-    const aoa = [header, ...rows.map(r => [r.barcode, r.productName, r.optionName, r.status, r.recQty, r.tag, r.sPos, r.tPos, r.note, r.weeksStock, r.totalStock, r.reason])];
+    const header = ['쿠팡바코드', '상품명', '옵션명', '상태', '추천 발주량', '태그', 'S열 발주필요', 'T열 발주필요', '비고', '재고주수(W)', '현재 총재고', '사유1', '사유2', '사유3', '사유4', '사유5'];
+    const aoa = [header, ...rows.map(r => {
+      const kw = r.kws || [];
+      return [r.barcode, r.productName, r.optionName, r.status, r.recQty, r.tag, r.sPos, r.tPos, r.note, r.weeksStock, r.totalStock, kw[0] || '', kw[1] || '', kw[2] || '', kw[3] || '', kw[4] || ''];
+    })];
     const ws = XLSX.utils.aoa_to_sheet(aoa);
-    ws['!cols'] = [{ wch: 16 }, { wch: 28 }, { wch: 20 }, { wch: 10 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 22 }, { wch: 11 }, { wch: 12 }, { wch: 48 }];
+    ws['!cols'] = [{ wch: 16 }, { wch: 28 }, { wch: 20 }, { wch: 10 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 22 }, { wch: 11 }, { wch: 12 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 10 }];
     // 전체 셀 폰트 Arial 적용 (헤더는 굵게)
     const WEEKS_COL = 9; // 재고주수(W) 컬럼 인덱스
     const NOTE_COL = 8; // 비고 컬럼 인덱스
@@ -501,6 +623,21 @@ export default function OrderRecommend() {
           </details>
         </div>
         <div style={{ display: 'flex', gap: 10 }}>
+          {spikes.length > 0 && (
+            <button
+              onClick={() => setShowCorrModal(true)}
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 6,
+                padding: '9px 16px', borderRadius: 8, fontSize: 13, fontWeight: 600,
+                border: '1px solid ' + (pendingSpikeCount > 0 ? '#f0b429' : '#dadce0'),
+                background: pendingSpikeCount > 0 ? '#fef7e0' : '#fff',
+                color: pendingSpikeCount > 0 ? '#b06000' : '#5f6368',
+                cursor: 'pointer', boxShadow: '0 1px 2px rgba(0,0,0,0.04)',
+              }}
+            >
+              ⚠ 판매 보정 {pendingSpikeCount > 0 ? `${pendingSpikeCount}건` : `(${spikes.length})`}
+            </button>
+          )}
           <button
             onClick={load}
             disabled={loading}
@@ -584,6 +721,104 @@ export default function OrderRecommend() {
           </tbody>
         </table>
       </div>
+
+      {/* 판매량 보정 모달 (유형1 대량구매 / 유형2 주의품목 0판매) */}
+      {showCorrModal && (
+        <div onClick={() => setShowCorrModal(false)} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div onClick={e => e.stopPropagation()} style={{ background: '#fff', borderRadius: 12, padding: 20, width: '95%', maxWidth: 1200, maxHeight: '85vh', display: 'flex', flexDirection: 'column', boxShadow: '0 8px 32px rgba(0,0,0,0.2)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+              <h3 style={{ margin: 0, fontSize: 16 }}>⚠ 판매량 보정 ({spikes.length}건)</h3>
+              <button onClick={() => setShowCorrModal(false)} style={{ background: 'none', border: 'none', fontSize: 20, cursor: 'pointer', color: '#666' }}>✕</button>
+            </div>
+            <div style={{ fontSize: 12, color: '#5f6368', marginBottom: 10, textAlign: 'center', lineHeight: 1.6 }}>
+              🔴 대량구매 의심 = 1인 몰아사기로 튄 날 → <b>실제값으로 낮춰</b> 입력 · 🟠 주의품목 0판매 = 품절 등으로 0인 날 → <b>실제 판매량</b> 입력<br />
+              입력값은 <b>표시된 대상 날짜 전부에 일괄 적용</b>되며, 저장 시 추천 발주량·엑셀에 반영됩니다.
+            </div>
+            {spikes.length === 0 ? (
+              <p style={{ textAlign: 'center', color: '#999', padding: 20 }}>보정할 항목이 없습니다.</p>
+            ) : (
+              <div style={{ overflowY: 'auto', border: '1px solid #e0e0e0', borderRadius: 8 }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, textAlign: 'center' }}>
+                  <thead style={{ position: 'sticky', top: 0, background: '#f8f9fa', zIndex: 1 }}>
+                    <tr>
+                      {['유형', '옵션ID', '상품/옵션'].map(h => (
+                        <th key={h} style={{ padding: '8px 10px', textAlign: 'center', borderBottom: '2px solid #e0e0e0', whiteSpace: 'nowrap' }}>{h}</th>
+                      ))}
+                      <th style={{ padding: '6px 10px', textAlign: 'center', borderBottom: '2px solid #e0e0e0', whiteSpace: 'nowrap' }}>
+                        <div style={{ marginBottom: 5 }}>이번주 일별 판매 (강조=대상)</div>
+                        <div style={{ display: 'inline-flex', border: '1px solid #dadce0', borderRadius: 6, overflow: 'hidden' }}>
+                          {spikes[0].week.map((d, di) => (
+                            <div key={di} style={{ width: 40, borderLeft: di ? '1px solid #e8eaed' : 'none', fontSize: 10, fontWeight: 600, color: '#5f6368', padding: '4px 0', background: '#f1f3f4', textAlign: 'center', whiteSpace: 'nowrap' }}>
+                              {d.key.slice(4, 6)}-{d.key.slice(6, 8)}
+                            </div>
+                          ))}
+                        </div>
+                      </th>
+                      {['실제 판매량', '무시'].map(h => (
+                        <th key={h} style={{ padding: '8px 10px', textAlign: 'center', borderBottom: '2px solid #e0e0e0', whiteSpace: 'nowrap' }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {spikes.map(sp => {
+                      const flaggedKeys = new Set(sp.flagged.map(f => f.key));
+                      const saved = corrections[`${sp.flagged[0].key}_${sp.optionId}`];
+                      const draft = corrDraft[sp.id];
+                      const isIgnored = draft ? !!draft.ignored : !!saved?.ignored;
+                      const inputVal = draft && 'value' in draft ? draft.value
+                        : (saved && typeof saved.corrected === 'number' ? String(saved.corrected) : '');
+                      const isBulk = sp.type === 'bulk';
+                      return (
+                        <tr key={sp.id} style={{ borderBottom: '1px solid #f0f0f0', background: isIgnored ? '#f5f5f5' : undefined, opacity: isIgnored ? 0.6 : 1 }}>
+                          <td style={{ padding: '6px 10px', whiteSpace: 'nowrap' }}>
+                            <span style={{ display: 'inline-block', padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 600, background: isBulk ? '#fce8e6' : '#fef7e0', color: isBulk ? '#c5221f' : '#b06000' }}>{isBulk ? '🔴 대량구매' : '🟠 주의품목0'}</span>
+                          </td>
+                          <td style={{ padding: '6px 10px', textAlign: 'center', fontFamily: 'monospace', fontSize: 12, color: '#5f6368', whiteSpace: 'nowrap' }}>{sp.optionId}</td>
+                          <td style={{ padding: '6px 14px', textAlign: 'left', minWidth: 320 }}>
+                            <div style={{ fontWeight: 600 }}>{sp.productName}</div>
+                            <div style={{ fontSize: 11, color: '#5f6368' }}>{sp.optionName}</div>
+                          </td>
+                          <td style={{ padding: '6px 10px' }}>
+                            <div style={{ display: 'inline-flex', border: '1px solid #dadce0', borderRadius: 6, overflow: 'hidden' }}>
+                              {sp.week.map((d, di) => {
+                                const isFlagged = flaggedKeys.has(d.key);
+                                const bg = isFlagged ? (isBulk ? '#fce8e6' : '#fef7e0') : '#fff';
+                                const fg = isFlagged ? (isBulk ? '#c5221f' : '#b06000') : '#3c4043';
+                                return (
+                                  <div key={di} style={{ width: 40, borderLeft: di ? '1px solid #e8eaed' : 'none', padding: '6px 0', textAlign: 'center', fontFamily: 'monospace', fontSize: 13, fontWeight: isFlagged ? 700 : 400, background: bg, color: fg }}>
+                                    {d.qty}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </td>
+                          <td style={{ padding: '6px 10px' }}>
+                            <input type="number" min="0" value={inputVal} disabled={isIgnored}
+                              onChange={e => setCorrDraft(d => ({ ...d, [sp.id]: { value: e.target.value } }))}
+                              placeholder={isBulk ? '낮춰서' : '실제값'}
+                              style={{ width: 72, padding: '5px 8px', textAlign: 'center', border: '1px solid #dadce0', borderRadius: 6, fontSize: 13 }} />
+                          </td>
+                          <td style={{ padding: '6px 10px' }}>
+                            {isIgnored ? (
+                              <button onClick={() => setCorrDraft(d => ({ ...d, [sp.id]: { reset: true } }))} style={{ border: '1px solid #dadce0', background: '#fff', borderRadius: 6, padding: '4px 8px', fontSize: 12, cursor: 'pointer' }}>↺ 되돌리기</button>
+                            ) : (
+                              <button onClick={() => setCorrDraft(d => ({ ...d, [sp.id]: { ignored: true } }))} style={{ border: '1px solid #dadce0', background: '#fff', borderRadius: 6, padding: '4px 8px', fontSize: 12, cursor: 'pointer' }}>정상</button>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            <div style={{ display: 'flex', justifyContent: 'center', gap: 10, marginTop: 14 }}>
+              <button onClick={() => setShowCorrModal(false)} disabled={savingCorr} style={{ padding: '9px 18px', borderRadius: 8, border: '1px solid #dadce0', background: '#fff', color: '#3c4043', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>닫기</button>
+              <button onClick={applyCorrections} disabled={savingCorr} style={{ padding: '9px 18px', borderRadius: 8, border: 'none', background: '#1e8e3e', color: '#fff', fontSize: 13, fontWeight: 600, cursor: savingCorr ? 'not-allowed' : 'pointer', opacity: savingCorr ? 0.6 : 1 }}>{savingCorr ? '저장 중…' : '보정 완료 · 재계산'}</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
