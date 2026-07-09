@@ -202,6 +202,49 @@ function computeShipFlags(rows, stockMap) {
   }
 }
 
+// 공백 제거 정규화 ("작업 대기" == "작업대기", "CN 출고완료" == "CN출고완료")
+function normSpace(s) { return (s || '').replace(/\s/g, ''); }
+
+// 재촉필요 행 중 I열(CN상태)에 이 상태가 있는 다른 발주번호가 있으면 맨 아래로
+const REMIND_BLOCK_STATUSES = ['내륙운송중', '출고완료', 'CN창고도착', '출고대기', '부분출고대기', '작업대기'];
+
+// 빨간칠/맨아래 정렬 판정 (기존 재촉/출고 판정에는 영향 없음, 표시용 플래그만 추가)
+function computeBlockedFlags(rows) {
+  const bySku = {};
+  for (const row of rows) {
+    if (!bySku[row.sku]) bySku[row.sku] = [];
+    bySku[row.sku].push(row);
+  }
+  for (const group of Object.values(bySku)) {
+    for (const row of group) {
+      // 재촉필요: 동일 SKU의 다른 발주번호 중 I열에 지정 상태가 있으면
+      if (row._remind) {
+        const blocked = group.some(o =>
+          o.orderNo !== row.orderNo &&
+          REMIND_BLOCK_STATUSES.some(k => normSpace(o.cnStatus).includes(k))
+        );
+        if (blocked) row._remindBlocked = true;
+      }
+      // 출고필요: 동일 SKU의 다른 발주일 중 J열에 "CN 출고완료"가 있으면
+      if (row._shipNeeded) {
+        const blocked = group.some(o =>
+          o.orderDate !== row.orderDate &&
+          normSpace(o.shipStatus).includes('CN출고완료')
+        );
+        if (blocked) row._shipBlocked = true;
+      }
+      // 출고필요(내륙운송중): 출고필요와 동일 로직
+      if (row._shipInland) {
+        const blocked = group.some(o =>
+          o.orderDate !== row.orderDate &&
+          normSpace(o.shipStatus).includes('CN출고완료')
+        );
+        if (blocked) row._inlandBlocked = true;
+      }
+    }
+  }
+}
+
 // localStorage 미등록 특별관리 항목 로드
 function loadLocalSpecial() {
   try { return JSON.parse(localStorage.getItem('local_special_items') || '[]'); } catch { return []; }
@@ -555,6 +598,7 @@ export default function OrderBook() {
       computeRemindFlags(rows, stockMap);
       computeShipFlags(rows, stockMap);
       computeCheckFlags(rows, specialMap, localSpecialItems, improvementItems);
+      computeBlockedFlags(rows);
 
       // 입고예정일 도래 → 확인필요 + 존재하지 않는 답변 정리
       const today = todayStr();
@@ -626,6 +670,16 @@ export default function OrderBook() {
         if (!isNaN(na) && !isNaN(nb)) return sortDir === 'asc' ? na - nb : nb - na;
         return sortDir === 'asc' ? va.localeCompare(vb) : vb.localeCompare(va);
       });
+    }
+
+    // 블록 행(다른 발주에 진행상태 존재)은 해당 카드에서 맨 아래로
+    const blockKey = activeCard === 'remind' ? '_remindBlocked'
+      : activeCard === 'shipNeeded' ? '_shipBlocked'
+      : activeCard === 'shipInland' ? '_inlandBlocked' : null;
+    if (blockKey) {
+      const normal = rows.filter(r => !r[blockKey]);
+      const blocked = rows.filter(r => r[blockKey]);
+      rows = [...normal, ...blocked];
     }
 
     return rows;
@@ -848,8 +902,13 @@ export default function OrderBook() {
                   <tr><td colSpan={columns.length} style={{ textAlign: 'center', padding: 40, color: '#999' }}>
                     {activeCard ? '해당 조건에 맞는 발주건이 없습니다' : '데이터가 없습니다'}
                   </td></tr>
-                ) : filtered.map((r, i) => (
-                  <tr key={i}>
+                ) : filtered.map((r, i) => {
+                  const isBlocked =
+                    (activeCard === 'remind' && r._remindBlocked) ||
+                    (activeCard === 'shipNeeded' && r._shipBlocked) ||
+                    (activeCard === 'shipInland' && r._inlandBlocked);
+                  return (
+                  <tr key={i} style={isBlocked ? { background: '#ffd6d6' } : undefined}>
                     <td style={{ fontSize: 12 }}>{r.orderNo}</td>
                     <td style={{ maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.productName}</td>
                     <td style={{ fontSize: 11, color: '#666' }}>{r.sku}</td>
@@ -958,7 +1017,8 @@ export default function OrderBook() {
                       })() : <span style={{ color: '#ccc' }}>-</span>}
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
