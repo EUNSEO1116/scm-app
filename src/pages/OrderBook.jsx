@@ -35,6 +35,33 @@ function parseCsvRow(line) {
   return result;
 }
 
+// CSV 전체 텍스트를 파싱 (따옴표 안의 줄바꿈을 셀 내용으로 유지 → 유령 행 방지)
+function parseCsv(text) {
+  const rows = [];
+  let row = [];
+  let current = '';
+  let inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inQuotes) {
+      if (ch === '"' && text[i + 1] === '"') { current += '"'; i++; }
+      else if (ch === '"') inQuotes = false;
+      else current += ch;
+    } else {
+      if (ch === '"') inQuotes = true;
+      else if (ch === ',') { row.push(current); current = ''; }
+      else if (ch === '\n' || ch === '\r') {
+        if (ch === '\r' && text[i + 1] === '\n') i++;
+        row.push(current); current = '';
+        rows.push(row); row = [];
+      } else current += ch;
+    }
+  }
+  row.push(current);
+  rows.push(row);
+  return rows;
+}
+
 // 컬럼 매핑 (A=0, B=1, ...)
 const COL = {
   orderNo: 0,      // A: 발주번호
@@ -554,12 +581,12 @@ export default function OrderBook() {
         }
       }
 
-      // 발주장부 파싱
+      // 발주장부 파싱 (따옴표 안 줄바꿈까지 인식하는 파서 사용 → 메모 여러 줄이 유령 행으로 새지 않음)
       const csv = await orderRes.text();
-      const lines = csv.split('\n').filter(l => l.trim());
+      const allRows = parseCsv(csv);
       const rows = [];
-      for (let i = 1; i < lines.length; i++) {
-        const cols = parseCsvRow(lines[i]);
+      for (let i = 1; i < allRows.length; i++) {
+        const cols = allRows[i];
         const orderNo = (cols[COL.orderNo] || '').trim();
         if (!orderNo) continue;
         rows.push({
@@ -895,11 +922,12 @@ export default function OrderBook() {
                       )}
                     </th>
                   ))}
+                  <th aria-hidden style={{ width: '100%', padding: 0, cursor: 'default' }} />
                 </tr>
               </thead>
               <tbody>
                 {filtered.length === 0 ? (
-                  <tr><td colSpan={columns.length} style={{ textAlign: 'center', padding: 40, color: '#999' }}>
+                  <tr><td colSpan={columns.length + 1} style={{ textAlign: 'center', padding: 40, color: '#999' }}>
                     {activeCard ? '해당 조건에 맞는 발주건이 없습니다' : '데이터가 없습니다'}
                   </td></tr>
                 ) : filtered.map((r, i) => {
@@ -909,7 +937,7 @@ export default function OrderBook() {
                     (activeCard === 'shipInland' && r._inlandBlocked);
                   return (
                   <tr key={i} style={isBlocked ? { background: '#ffd6d6' } : undefined}>
-                    <td style={{ fontSize: 12 }}>{r.orderNo}</td>
+                    <td style={{ fontSize: 12, maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis' }} title={r.orderNo}>{r.orderNo}</td>
                     <td style={{ maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.productName}</td>
                     <td style={{ fontSize: 11, color: '#666' }}>{r.sku}</td>
                     <td className="num">{r.qty}</td>
@@ -957,7 +985,7 @@ export default function OrderBook() {
                             <span style={{ fontSize: 12, whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{r.memo}</span>
                           ) : (
                             <span style={{ fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'block' }}>
-                              💬 {r.memo.length > 8 ? r.memo.slice(0, 8) + '…' : r.memo}
+                              {(() => { const m = r.memo.replace(/\s*[\r\n]+\s*/g, ' ').trim(); return '💬 ' + (m.length > 8 ? m.slice(0, 8) + '…' : m); })()}
                             </span>
                           )}
                         </div>
@@ -1016,6 +1044,7 @@ export default function OrderBook() {
                         );
                       })() : <span style={{ color: '#ccc' }}>-</span>}
                     </td>
+                    <td style={{ padding: 0 }} />
                   </tr>
                   );
                 })}
