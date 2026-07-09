@@ -762,16 +762,23 @@ export default function OrderRecommend() {
                   <tbody>
                     {spikes.map(sp => {
                       const flaggedKeys = new Set(sp.flagged.map(f => f.key));
-                      const saved = corrections[`${sp.flagged[0].key}_${sp.optionId}`];
+                      // flagged 전 날짜의 저장 상태 — 대표값은 먼저 보정된 날 기준, 커버 판정은 전 날짜 기준
+                      const savedList = sp.flagged.map(f => corrections[`${f.key}_${sp.optionId}`]);
+                      const saved = savedList.find(Boolean);
+                      const allCovered = savedList.every(Boolean);
                       const draft = corrDraft[sp.id];
                       const isIgnored = draft ? !!draft.ignored : !!saved?.ignored;
                       const inputVal = draft && 'value' in draft ? draft.value
                         : (saved && typeof saved.corrected === 'number' ? String(saved.corrected) : '');
                       const isBulk = sp.type === 'bulk';
+                      // 현재 입력/저장 상태로 이 행이 해소됐는지 — flagged 전 날짜가 커버돼야 함
+                      const draftResolves = draft && (draft.ignored || (draft.value !== undefined && draft.value !== '' && !isNaN(Number(draft.value)) && Number(draft.value) >= 0));
+                      const needsAttention = draft ? (draft.reset ? true : !draftResolves) : !allCovered;
                       return (
-                        <tr key={sp.id} style={{ borderBottom: '1px solid #f0f0f0', background: isIgnored ? '#f5f5f5' : undefined, opacity: isIgnored ? 0.6 : 1 }}>
+                        <tr key={sp.id} style={{ borderBottom: '1px solid #f0f0f0', background: isIgnored ? '#f5f5f5' : (needsAttention ? '#fffbe6' : undefined), opacity: isIgnored ? 0.6 : 1, boxShadow: needsAttention && !isIgnored ? 'inset 3px 0 0 #f0b429' : undefined }}>
                           <td style={{ padding: '6px 10px', whiteSpace: 'nowrap' }}>
                             <span style={{ display: 'inline-block', padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 600, background: isBulk ? '#fce8e6' : '#fef7e0', color: isBulk ? '#c5221f' : '#b06000' }}>{isBulk ? '🔴 대량구매' : '🟠 주의품목0'}</span>
+                            {needsAttention && !isIgnored && <div style={{ marginTop: 4, display: 'inline-block', padding: '1px 6px', borderRadius: 8, fontSize: 10, fontWeight: 700, background: '#fef7e0', color: '#b06000', border: '1px solid #f0b429' }}>미처리</div>}
                           </td>
                           <td style={{ padding: '6px 10px', textAlign: 'center', fontFamily: 'monospace', fontSize: 12, color: '#5f6368', whiteSpace: 'nowrap' }}>{sp.optionId}</td>
                           <td style={{ padding: '6px 14px', textAlign: 'left', minWidth: 320 }}>
