@@ -463,7 +463,13 @@ export default function OrderRecommend() {
     const next = { ...corrections };
     for (const sp of spikes) {
       const draft = corrDraft[sp.id];
-      if (!draft) continue;
+      if (!draft) {
+        // 손 안 댄 행: 이미 저장된 값(corrected/ignored)이 flagged 날짜 중 하나라도 있으면
+        // 나머지 flagged 날짜에도 같은 값을 채워 부분저장으로 인한 모달 재오픈을 방지.
+        const saved = sp.flagged.map(f => next[`${f.key}_${sp.optionId}`]).find(Boolean);
+        if (saved) for (const f of sp.flagged) next[`${f.key}_${sp.optionId}`] = saved;
+        continue;
+      }
       if (draft.reset) { for (const f of sp.flagged) delete next[`${f.key}_${sp.optionId}`]; }
       else if (draft.ignored) { for (const f of sp.flagged) next[`${f.key}_${sp.optionId}`] = { ignored: true }; }
       else if (draft.value !== undefined && draft.value !== '') {
