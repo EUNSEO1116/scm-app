@@ -357,7 +357,7 @@ export default function OrderRecommend() {
               : mult === ENDING_MULT ? '·시즌 끝물 ×0.7'
               : mult === OFFSEASON_MULT ? '·시즌밖 입고 ×0.2' : '';
             if (q > 0) {
-              recQty = q;
+              recQty = Math.ceil(q / 10) * 10; // 추천 발주량은 10단위 올림(1의 자리 → 0)
               const fRound = Math.round(baseF);
               const methodTxt = method === 'Holt'
                 ? `우하향 추세 ${HORIZON_WEEKS}주예측 필요재고 ${fRound}개`
