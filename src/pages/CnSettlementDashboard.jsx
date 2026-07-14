@@ -138,7 +138,7 @@ export default function CnSettlementDashboard() {
   const brandMap = {};
   for (const b of brandMappings) brandMap[b.code.toUpperCase()] = b.name;
 
-  const { monthGroups, allBrands, currentMonthKey, lastSummary } = useMemo(() => {
+  const { monthGroups, allBrands, currentMonthKey, lastSummary, weekOverWeek } = useMemo(() => {
     const carryOver = {};
     const processed = uploads.map(record => {
       const agg = aggregateByBrand(record, brandMap);
@@ -171,7 +171,25 @@ export default function CnSettlementDashboard() {
 
     const brandSet = new Set();
     processed.forEach(({ agg }) => Object.keys(agg).forEach(b => brandSet.add(b)));
-    const allBrands = [...brandSet].sort();
+    const allBrands = [...brandSet].filter(b => !b.startsWith('미분류')).sort();
+
+    // 전주대비 발주 합계(기존+신규, 미분류 제외) 증감률 (record.id → pct 또는 null)
+    const weekOverWeek = {};
+    const chrono = processed
+      .map(({ record, agg }) => {
+        let total = 0;
+        allBrands.forEach(b => { if (agg[b]) total += agg[b].existing + agg[b].new; });
+        return { id: record.id, endDate: getEndDate(record), total };
+      })
+      .filter(x => x.endDate)
+      .sort((a, b) => a.endDate - b.endDate);
+    for (let i = 0; i < chrono.length; i++) {
+      if (i === 0) { weekOverWeek[chrono[i].id] = null; continue; }
+      const prev = chrono[i - 1].total;
+      if (prev === 0) { weekOverWeek[chrono[i].id] = null; continue; }
+      const diff = chrono[i].total - prev;
+      weekOverWeek[chrono[i].id] = { pct: (diff / Math.abs(prev)) * 100, diff };
+    }
 
     const groups = {};
     processed.forEach(item => {
@@ -195,6 +213,7 @@ export default function CnSettlementDashboard() {
       const { record, agg } = lastItem;
       let totalExisting = 0, totalNew = 0, totalExtra = 0, brandCount = 0;
       for (const b of Object.keys(agg)) {
+        if (b.startsWith('미분류')) continue;
         totalExisting += agg[b].existing;
         totalNew += agg[b].new;
         totalExtra += agg[b].extraCost;
@@ -209,10 +228,11 @@ export default function CnSettlementDashboard() {
         totalExtra,
         totalOrder: totalExisting + totalNew,
         brandCount,
+        wow: weekOverWeek[record.id] || null,
       };
     }
 
-    return { monthGroups: groups, allBrands, currentMonthKey: getMonthKey(now), lastSummary };
+    return { monthGroups: groups, allBrands, currentMonthKey: getMonthKey(now), lastSummary, weekOverWeek };
   }, [uploads, brandMappings]);
 
   const sortedMonthKeys = Object.keys(monthGroups).sort((a, b) => b.localeCompare(a));
@@ -275,6 +295,7 @@ export default function CnSettlementDashboard() {
                 <th key={b} colSpan={2} style={{ ...S.th, borderLeft: '1px solid #eee' }}>{b}</th>
               ))}
               <th colSpan={2} style={{ ...S.th, borderLeft: '2px solid #ccc', fontWeight: 700, color: '#333' }}>합계</th>
+              <th rowSpan={2} style={{ ...S.th, width: 70, borderLeft: '1px solid #eee', fontWeight: 700, color: '#333' }}>전주대비</th>
             </tr>
             <tr>
               <th style={S.thSub}></th>
@@ -295,6 +316,7 @@ export default function CnSettlementDashboard() {
               allBrands.forEach(b => {
                 if (agg[b]) { totalExisting += agg[b].existing; totalNew += agg[b].new; }
               });
+              const wow = weekOverWeek[record.id];
               return (
                 <tr key={record.id} style={{ transition: 'background 0.15s' }}
                   onMouseEnter={e => e.currentTarget.style.background = '#f8faff'}
@@ -331,6 +353,15 @@ export default function CnSettlementDashboard() {
                       <span style={totalNew < 0 ? S.red : S.blue}>{fmtKrw(totalNew)}</span>
                     ) : <span style={{ color: '#ddd' }}>—</span>}
                   </td>
+                  <td style={{
+                    ...S.td, textAlign: 'center', borderLeft: '1px solid #eee', fontWeight: 700,
+                    background: wow != null ? (wow.pct >= 0 ? '#e8f0fe' : '#fde8e8') : undefined,
+                    color: wow != null ? '#222' : '#ddd',
+                  }}>
+                    {wow != null
+                      ? `${wow.pct >= 0 ? '+' : ''}${wow.pct.toFixed(0)}%`
+                      : '—'}
+                  </td>
                 </tr>
               );
             })}
@@ -358,6 +389,7 @@ export default function CnSettlementDashboard() {
               <td style={{ ...S.td, background: '#fafbfc' }}>
                 <span style={grandNew < 0 ? S.red : S.blue}>{fmtKrw(grandNew)}</span>
               </td>
+              <td style={{ ...S.td, background: '#fafbfc', textAlign: 'center', borderLeft: '1px solid #eee' }}></td>
             </tr>
           </tbody>
         </table>
@@ -386,6 +418,18 @@ export default function CnSettlementDashboard() {
               { label: '총 발주금액', value: fmtKrw(lastSummary.totalOrder), sub: '기존 + 신규', bg: '#fff' },
               { label: '기존 발주', value: fmtKrw(lastSummary.totalExisting), sub: '기존 상품 발주 합계', color: '#0a8a4a', bg: '#fff' },
               { label: '신규 발주', value: fmtKrw(lastSummary.totalNew), sub: '신규 상품 발주 합계', color: '#1565c0', bg: '#fff' },
+              {
+                label: '전주대비',
+                value: lastSummary.wow != null
+                  ? `${lastSummary.wow.pct >= 0 ? '+' : ''}${lastSummary.wow.pct.toFixed(0)}%`
+                  : '—',
+                sub: lastSummary.wow != null
+                  ? `${lastSummary.wow.diff >= 0 ? '+' : '-'}₩${Math.abs(lastSummary.wow.diff).toLocaleString()}`
+                  : '전주 데이터 없음',
+                color: lastSummary.wow != null ? (lastSummary.wow.pct >= 0 ? '#1565c0' : '#d14') : undefined,
+                subColor: lastSummary.wow != null ? (lastSummary.wow.diff >= 0 ? '#1565c0' : '#d14') : undefined,
+                bg: '#fff8ec',
+              },
               { label: '적용 환율', value: `${lastSummary.exchangeRate}`, sub: 'CNY → KRW', bg: '#f5f8ff' },
             ].map((item, i) => (
               <div key={i} style={{
@@ -397,7 +441,7 @@ export default function CnSettlementDashboard() {
                 <div style={{ fontSize: 18, fontWeight: 700, color: item.color || '#222', letterSpacing: '-0.5px' }}>
                   {item.value}
                 </div>
-                <div style={{ fontSize: 10, color: '#aaa', marginTop: 8 }}>{item.sub}</div>
+                <div style={{ fontSize: 10, color: item.subColor || '#aaa', marginTop: 8, fontWeight: item.subColor ? 600 : 400 }}>{item.sub}</div>
               </div>
             ))}
           </div>

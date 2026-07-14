@@ -256,7 +256,7 @@ export default function CnSettlementHistory() {
         </div>
       ) : (
         [...processedData].reverse().map(({ record, agg, carried }) => {
-            const brands = Object.keys(agg).sort();
+            const brands = Object.keys(agg).filter(b => !b.startsWith('미분류')).sort();
             const totals = { existing: 0, new: 0, extraCost: 0 };
             brands.forEach(b => {
               totals.existing += agg[b].existing;
