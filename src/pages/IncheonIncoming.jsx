@@ -84,6 +84,7 @@ export default function IncheonIncoming() {
           // 전체 컬럼에서 키워드 검색 (상태값에 쉼표가 포함될 수 있으므로)
           const rowText = cols.join(' ');
           if (rowText.includes('덤핑')) { dumpingSet.add(barcode); continue; }
+          if (rowText.includes('반출')) { dumpingSet.add(barcode); continue; }
           if (rowText.includes('품질확인서')) newQualityCertMap[barcode] = true;
           centerMap[barcode] = center;
         }

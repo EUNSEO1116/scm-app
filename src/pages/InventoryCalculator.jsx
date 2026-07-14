@@ -17,7 +17,7 @@ const ALERT_CONFIG = {
   '판매없음': { emoji: '—',  cls: 'no-sales',  label: '판매없음' },
 };
 
-const EXCLUDE_KEYWORDS = ['최종마감', '품질확인서', '마감대상'];
+const EXCLUDE_KEYWORDS = ['최종마감', '품질확인서', '마감대상', '덤핑', '반출'];
 const EXCLUDE_ITEMS_KEY = 'soldout_exclude_items';
 
 function isExcluded(r) {

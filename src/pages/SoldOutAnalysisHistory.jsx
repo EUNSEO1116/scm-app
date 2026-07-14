@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { dbStoreGet } from '../utils/dbApi';
 
-const EXCLUDE_KEYWORDS = ['최종마감', '품질확인서', '마감대상', '덤핑'];
+const EXCLUDE_KEYWORDS = ['최종마감', '품질확인서', '마감대상', '덤핑', '반출'];
 function shouldExclude(s) { return s ? EXCLUDE_KEYWORDS.some(kw => s.includes(kw)) : false; }
 function todayStr() { return new Date().toISOString().slice(0, 10).replace(/-/g, ''); }
 function dateToKey(d) { return `${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}`; }

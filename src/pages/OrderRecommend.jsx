@@ -45,7 +45,7 @@ const TAG_COLORS = {
 };
 
 // 판매중이 아닌 제외 대상(발주추천 안 함) — 수요예측과 동일 기준
-const EXCLUDE_KEYWORDS = ['최종마감', '품질확인서', '마감대상', '덤핑'];
+const EXCLUDE_KEYWORDS = ['최종마감', '품질확인서', '마감대상', '덤핑', '반출'];
 function shouldExclude(s) { return s ? EXCLUDE_KEYWORDS.some(kw => s.includes(kw)) : false; }
 
 // ───────── helpers ─────────

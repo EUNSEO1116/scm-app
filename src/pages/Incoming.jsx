@@ -98,6 +98,7 @@ export default function Incoming() {
           if (!barcode) continue;
           const rowText = cols.join(' ');
           if (rowText.includes('덤핑')) { excludeSet.add(barcode); continue; }
+          if (rowText.includes('반출')) { excludeSet.add(barcode); continue; }
           if (rowText.includes('품질확인서')) { excludeSet.add(barcode); continue; }
           if (barcode) centerMap[barcode] = center;
         }

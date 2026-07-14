@@ -20,7 +20,7 @@ const IMPROVE_STORE = 'improvement_items';            // [{ status, barcode, pro
 const FORECAST_CACHE_STORE = 'sales_forecast_cache'; // { [range]: { date(YYYYMMDD|null), rows, top20, overstockRows, dataDays, coverage, nameMap, seasonMap, customTags, lastUpdated } }
 const SOLDOUT_RATE_STORE = 'soldout_analysis_rate_snapshots'; // 품절현황 갱신 시 { [YYYYMMDD]: snapshot } 저장 (오늘 키 존재 = 품절현황 업데이트 완료)
 
-const EXCLUDE_KEYWORDS = ['최종마감', '품질확인서', '마감대상', '덤핑'];
+const EXCLUDE_KEYWORDS = ['최종마감', '품질확인서', '마감대상', '덤핑', '반출'];
 
 // 정규 시즌 태그 (R열 텍스트를 이 태그로 정규화)
 const DEFAULT_SEASON_TAGS = ['여름', '장마', '캠핑', '간절기', '가을', '겨울/눈', '웨딩', '가정의달', '어린이날', '운동회/피크닉', '새학기/개학', '야구'];

@@ -5,7 +5,7 @@ const SHEET_ID = '1NXhW_gG0b-gXuVqrhbY9ErWi8uO_7pXIy-NTo4FbE1I';
 const TSV_CALC = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=tsv&gid=1349677364`;
 const TSV_DATA = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=tsv&gid=0`;
 const STORAGE_KEY = 'soldout_exclude_items';
-const EXCLUDE_KEYWORDS = ['최종마감', '품질확인서', '마감대상'];
+const EXCLUDE_KEYWORDS = ['최종마감', '품질확인서', '마감대상', '덤핑', '반출'];
 
 function safeNum(v) {
   if (v === '' || v === '-' || v === undefined || v === null) return 0;
