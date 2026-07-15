@@ -100,7 +100,7 @@ export default function SoldOutAnalysis() {
   const recalcConsecDaysForDate = async (dt, cached) => {
     if (!cached?.trackerSnapshot || Object.keys(cached.trackerSnapshot).length === 0) return cached;
     const dayKeys = [];
-    for (let i = 0; i < 14; i++) {
+    for (let i = 0; i < 30; i++) {
       const d = new Date(+dt.slice(0,4), +dt.slice(4,6)-1, +dt.slice(6,8)-i);
       dayKeys.push(dateToKey(d));
     }
@@ -293,10 +293,10 @@ export default function SoldOutAnalysis() {
       const orderCsv = await orderRes.text();
       const { skuMap: oSkus, skuArrival: oArr } = parseOrderBook(orderCsv);
 
-      // 신규 상품 재고 추적 (최근 14일 업로드 데이터 전체 스캔)
+      // 신규 상품 재고 추적 (최근 30일 업로드 데이터 전체 스캔)
       const stockTracker = {};
       const stKeys = [];
-      for (let i = 0; i < 14; i++) {
+      for (let i = 0; i < 30; i++) {
         const d = new Date(+today.slice(0,4), +today.slice(4,6)-1, +today.slice(6,8)-i);
         stKeys.push(dateToKey(d));
       }
