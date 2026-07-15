@@ -9,7 +9,7 @@ const CSV_ORDER = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tq
 
 const STORE_KEY_PREFIX = 'soldout_analysis_';
 const SOLDOUT_TRACKER_KEY = 'soldout_analysis_tracker';
-const EXCLUDE_KEYWORDS = ['최종마감', '품질확인서', '마감대상', '덤핑', '반출'];
+const EXCLUDE_KEYWORDS = ['최종마감', '품질확인서', '마감대상', '덤핑', '반출', '지재권'];
 const CRISIS_DAYS_THRESHOLD = 3;
 const HISTORY_SEARCH_DAYS = 92; // 품절 이력 검색 범위 (약 3개월)
 const WING_ON_STATUSES = ['CN 창고도착', '부분출고 대기', '출고 완료', '출고 대기', '출고완료'];
@@ -26,6 +26,7 @@ function parseCsvRow(line) {
 function safeNum(v) { if (v === '' || v === '-' || v == null) return 0; const n = Number(v); return isNaN(n) ? 0 : n; }
 function todayStr() { return new Date().toISOString().slice(0, 10).replace(/-/g, ''); }
 function dateToKey(d) { return `${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}`; }
+function keyToDate(k) { return new Date(+k.slice(0,4), +k.slice(4,6)-1, +k.slice(6,8)); }
 function keyToDisplay(k) { return `${k.slice(0,4)}-${k.slice(4,6)}-${k.slice(6,8)}`; }
 function fmt(n) { if (n == null) return '-'; return Number(n).toLocaleString('ko-KR'); }
 function fmtDec(n, d=1) { const num = Number(n); return isNaN(num) ? '-' : num.toFixed(d); }
@@ -73,6 +74,9 @@ export default function SoldOutAnalysis() {
   const [cachedResult, setCachedResult] = useState(null);
   const [lastUpdatedAt, setLastUpdatedAt] = useState(null);
   const [viewingDate, setViewingDate] = useState(todayStr());
+  const [rangeResult, setRangeResult] = useState(null); // 기간 선택 집계 결과 (null=단일 날짜 모드)
+  const [selStart, setSelStart] = useState(null); // 달력 기간 선택 시작일 key
+  const [selEnd, setSelEnd] = useState(null);     // 달력 기간 선택 종료일 key
   const [tracker, setTracker] = useState({});
   const [riskFilter, setRiskFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState('전체');
@@ -444,6 +448,7 @@ export default function SoldOutAnalysis() {
       weeks.forEach((wk, idx) => {
         // 같은 상품(optionId)은 1줄로 합치고, 그 주 가장 최근 날짜 값 사용
         const itemMap = new Map();
+        const weekDaysCount = new Map(); // optionId -> 그 주차 내 품절이던 날 수
         for (const dt of wk.days) {
           const dk = dateToKey(dt);
           const cache = cacheByKey[dk];
@@ -452,6 +457,7 @@ export default function SoldOutAnalysis() {
           const exSet = new Set(cache.excludeSnapshot || []);
           for (const it of cache.items) {
             if (it.riskLevel !== '품절') continue; // 품절위기 제외
+            weekDaysCount.set(it.optionId, (weekDaysCount.get(it.optionId) || 0) + 1); // 주차 내 품절일 누적
             const prev = itemMap.get(it.optionId);
             if (!prev || dk > prev.dateKey) {
               itemMap.set(it.optionId, {
@@ -460,7 +466,7 @@ export default function SoldOutAnalysis() {
                   '상품명': it.productName || '',
                   '옵션명': it.optionName || '',
                   '등급': it.status || '',
-                  '연속품절일': trk[it.optionId]?.days ?? 1,
+                  '주간품절일': 0, // 아래에서 주차 누적값으로 채움
                   '사유': trk[it.optionId]?.reason ?? '',
                   '품절율 제외여부': exSet.has(it.optionId) ? 'O' : 'X',
                 },
@@ -468,11 +474,13 @@ export default function SoldOutAnalysis() {
             }
           }
         }
+        // 주차 시작~종료 사이 품절이던 날 수로 채움 (주차 이전 연속분은 세지 않음)
+        for (const [oid, v] of itemMap) v.row['주간품절일'] = weekDaysCount.get(oid) || 1;
         const rows = [...itemMap.values()].map(v => v.row).sort((a, b) => {
           const ax = a['품절율 제외여부'] === 'X' ? 0 : 1;
           const bx = b['품절율 제외여부'] === 'X' ? 0 : 1;
           if (ax !== bx) return ax - bx; // 제외 아닌(X) 항목 먼저
-          return b['연속품절일'] - a['연속품절일']; // 그 다음 연속품절일 내림차순
+          return b['주간품절일'] - a['주간품절일']; // 그 다음 주간품절일 내림차순
         });
         totalRows += rows.length;
 
@@ -491,9 +499,9 @@ export default function SoldOutAnalysis() {
         const range = `${pad2(firstDay.getMonth()+1)}.${pad2(firstDay.getDate())}-${pad2(lastDay.getMonth()+1)}.${pad2(lastDay.getDate())}`;
         const sheetName = `${month+1}월 ${idx+1}주차 (${range})`;
 
-        const header = ['상품명', '옵션명', '등급', '연속품절일', '사유', '품절율 제외여부'];
+        const header = ['상품명', '옵션명', '등급', '주간품절일', '사유', '품절율 제외여부'];
         const dataRows = rows.length
-          ? rows.map(r => [r['상품명'], r['옵션명'], r['등급'], r['연속품절일'], r['사유'], r['품절율 제외여부']])
+          ? rows.map(r => [r['상품명'], r['옵션명'], r['등급'], r['주간품절일'], r['사유'], r['품절율 제외여부']])
           : [['해당 주 품절 없음', '', '', '', '', '']];
         const aoa = [[titleText, '', '', '', '', ''], header, ...dataRows];
         const ws = XLSX.utils.aoa_to_sheet(aoa);
@@ -653,6 +661,8 @@ export default function SoldOutAnalysis() {
 
   // === 분석 데이터: 캐시 + 사유 합침 ===
   const analysisData = useMemo(() => {
+    // 기간 모드: 이미 집계된 items 사용 (days=기간 내 누적 품절일)
+    if (rangeResult) return rangeResult.items.map(r => ({ ...r }));
     if (!cachedResult?.items) return [];
     // 오늘이면 현재 tracker, 과거 날짜면 캐시에 저장된 trackerSnapshot 사용
     const isToday = viewingDate === todayStr();
@@ -662,7 +672,7 @@ export default function SoldOutAnalysis() {
       days: trkSource[r.optionId]?.days || 1,
       reason: trkSource[r.optionId]?.reason || '',
     }));
-  }, [cachedResult, tracker, viewingDate]);
+  }, [cachedResult, tracker, viewingDate, rangeResult]);
 
   // 통계 (품절률 = 전체 유효상품 중 재고0 비율)
   // 오늘 → 현재 excludeSet 실시간 계산 / 과거 → rate_snapshots에 저장된 품절률 그대로 사용
@@ -670,6 +680,8 @@ export default function SoldOutAnalysis() {
     const soldout = analysisData.filter(r => r.riskLevel === '품절').length;
     const risk = analysisData.filter(r => r.riskLevel === '품절위기').length;
     const inOrder = analysisData.filter(r => r.orderStatus === 'wing_on' || r.orderStatus === 'check').length;
+    // 기간 모드: 데이터 있는 날만 평균낸 품절률 사용
+    if (rangeResult) return { total: analysisData.length, soldout, risk, inOrder, rate: rangeResult.avgRate };
     const isToday = viewingDate === todayStr();
     let rate;
     if (isToday) {
@@ -682,12 +694,13 @@ export default function SoldOutAnalysis() {
       rate = cachedResult?.rate ?? 0;
     }
     return { total: analysisData.length, soldout, risk, inOrder, rate };
-  }, [analysisData, cachedResult, excludeSet, viewingDate]);
+  }, [analysisData, cachedResult, excludeSet, viewingDate, rangeResult]);
 
   // 화면 표시용 제외 셋 (오늘=실시간, 과거=해당 날짜 스냅샷 그대로)
   const displayExcludeSet = useMemo(() => {
+    if (rangeResult) return new Set(rangeResult.excludeSet || []);
     return viewingDate === todayStr() ? excludeSet : new Set(cachedResult?.excludeSnapshot || []);
-  }, [viewingDate, excludeSet, cachedResult]);
+  }, [viewingDate, excludeSet, cachedResult, rangeResult]);
 
   const statusOptions = useMemo(() => { const s = new Set(analysisData.map(i => i.status).filter(Boolean)); return ['전체', ...Array.from(s).sort()]; }, [analysisData]);
 
@@ -729,9 +742,9 @@ export default function SoldOutAnalysis() {
   const daysInMonth = new Date(calYear, calMonth + 1, 0).getDate();
   const calendarDays = useMemo(() => { const d = []; for (let i = 0; i < firstDay; i++) d.push(null); for (let i = 1; i <= daysInMonth; i++) d.push(i); return d; }, [firstDay, daysInMonth]);
 
-  const handleCalendarDateClick = async (day) => {
-    if (!day) return;
-    const key = dateToKey(new Date(calYear, calMonth, day));
+  // 단일 날짜 로드 (기존 동작: 연속 품절일 표시)
+  const loadSingleDate = async (key) => {
+    setRangeResult(null);
     setViewingDate(key); setShowCalendar(false);
     const cached = await dbStoreGet(`soldout_analysis_cached_${key}`);
     if (cached) {
@@ -742,8 +755,61 @@ export default function SoldOutAnalysis() {
       setCachedResult(null); setLastUpdatedAt(null);
     }
   };
+
+  // 기간 집계 로드: [startKey, endKey] 내 품절이던 상품별 "기간 내 누적 품절일" 합산
+  const loadRange = async (startKey, endKey) => {
+    const dayKeys = [];
+    let d = keyToDate(startKey); const endD = keyToDate(endKey);
+    while (d <= endD) { dayKeys.push(dateToKey(d)); d = addDays(d, 1); }
+    const caches = await Promise.all(dayKeys.map(k => dbStoreGet(`soldout_analysis_cached_${k}`).catch(() => null)));
+    let daysWithData = 0, rateSum = 0;
+    const byOption = new Map();
+    caches.forEach((cache) => {
+      if (!cache?.items) return; // 캐시 없는 날 건너뜀 (평균 분모에서도 제외)
+      daysWithData++;
+      rateSum += (cache.rate ?? 0);
+      const trk = cache.trackerSnapshot || {};
+      const exSet = new Set(cache.excludeSnapshot || []); // 그날 제외 품목
+      for (const it of cache.items) {
+        if (it.riskLevel !== '품절') continue;
+        let agg = byOption.get(it.optionId);
+        if (!agg) { agg = { ...it, days: 0, excludedDays: 0, reason: '' }; byOption.set(it.optionId, agg); }
+        agg.days += 1; // 기간 내 품절이던 날 카운트 (시작일 이전은 세지 않음)
+        if (exSet.has(it.optionId)) agg.excludedDays += 1; // 그날 제외였던 날 카운트
+        // dayKeys 오름차순 → 최신 날짜 값으로 메타 갱신
+        agg.productName = it.productName; agg.optionName = it.optionName; agg.status = it.status;
+        agg.coupangStock = it.coupangStock; agg.bhStock = it.bhStock; agg.totalStock = it.totalStock;
+        agg.avg3d = it.avg3d; agg.arrivalEst = it.arrivalEst; agg.orderStatus = it.orderStatus;
+        agg.calcStock = it.calcStock; agg.mismatch = it.mismatch; agg.riskReason = it.riskReason;
+        if (trk[it.optionId]?.reason) agg.reason = trk[it.optionId].reason;
+      }
+    });
+    const avgRate = daysWithData > 0 ? Math.round(rateSum / daysWithData * 100) / 100 : 0;
+    // 기간 내 품절이던 모든 날에 제외였던 품목만 "제외"로 표시 (일부 날만 제외면 일반 표시)
+    const rangeExclude = [];
+    for (const agg of byOption.values()) { if (agg.days > 0 && agg.excludedDays === agg.days) rangeExclude.push(agg.optionId); }
+    setCachedResult(null); setLastUpdatedAt(null); setShowCalendar(false);
+    setRangeResult({ items: [...byOption.values()], avgRate, periodDays: dayKeys.length, daysWithData, startKey, endKey, excludeSet: rangeExclude });
+  };
+
+  const handleCalendarDateClick = async (day) => {
+    if (!day) return;
+    const key = dateToKey(new Date(calYear, calMonth, day));
+    // 첫 클릭(또는 이전 선택이 끝난 상태) → 시작일만 지정하고 대기
+    if (!selStart || (selStart && selEnd)) {
+      setSelStart(key); setSelEnd(null);
+      return;
+    }
+    // 두 번째 클릭 → 기간 확정 (역순 선택 시 스왑)
+    let s = selStart, e = key;
+    if (e < s) { const t = s; s = e; e = t; }
+    setSelStart(s); setSelEnd(e);
+    if (s === e) await loadSingleDate(s); // 같은 날 두 번 = 1일 = 단일 모드
+    else await loadRange(s, e);
+  };
   const goToToday = async () => {
     const t = todayStr(); setViewingDate(t);
+    setRangeResult(null); setSelStart(null); setSelEnd(null);
     const cached = await dbStoreGet(`soldout_analysis_cached_${t}`);
     if (cached) {
       const fixed = await recalcConsecDaysForDate(t, cached);
@@ -771,7 +837,7 @@ export default function SoldOutAnalysis() {
       )}
 
       {/* 데이터 없을 때 */}
-      {!searchResult && !cachedResult && (
+      {!searchResult && !cachedResult && !rangeResult && (
         <div className="card" style={{ marginBottom: 20, padding: 24, textAlign: 'center', color: 'var(--text-secondary)' }}>
           <div style={{ fontSize: 24, marginBottom: 8 }}>📊</div>
           <div style={{ fontSize: 14, fontWeight: 600 }}>{keyToDisplay(viewingDate)} 분석 데이터가 없습니다</div>
@@ -788,7 +854,7 @@ export default function SoldOutAnalysis() {
       <div className="card" style={{ marginBottom: 16, position: 'relative', overflow: 'visible' }}>
         <div className="card-body">
           <div className="filter-bar">
-            {cachedResult && <>
+            {(cachedResult || rangeResult) && <>
               <button className={`filter-btn${riskFilter === 'all' ? ' active' : ''}`} onClick={() => setRiskFilter('all')}>전체 ({stats.total})</button>
               <button className={`filter-btn${riskFilter === '품절' ? ' active' : ''}`} style={riskFilter === '품절' ? { background: '#c5221f', borderColor: '#c5221f' } : {}} onClick={() => setRiskFilter(riskFilter === '품절' ? 'all' : '품절')}>🔴 품절 ({stats.soldout})</button>
               <button className={`filter-btn${riskFilter === '품절위기' ? ' active' : ''}`} style={riskFilter === '품절위기' ? { background: '#e65100', borderColor: '#e65100' } : {}} onClick={() => setRiskFilter(riskFilter === '품절위기' ? 'all' : '품절위기')}>🟠 위기 ({stats.risk})</button>
@@ -817,10 +883,10 @@ export default function SoldOutAnalysis() {
                   {selected.size}개 사유 입력
                 </button>
               )}
-              <span style={{ fontSize: 13, fontWeight: 700, padding: '4px 10px', borderRadius: 8, background: stats.rate > 10 ? '#fef0ef' : stats.rate > 5 ? '#fff8f0' : '#f0faf0', color: stats.rate > 10 ? '#d93025' : stats.rate > 5 ? '#e65100' : '#2e7d32' }}>품절률 {stats.rate}%</span>
+              <span style={{ fontSize: 13, fontWeight: 700, padding: '4px 10px', borderRadius: 8, background: stats.rate > 10 ? '#fef0ef' : stats.rate > 5 ? '#fff8f0' : '#f0faf0', color: stats.rate > 10 ? '#d93025' : stats.rate > 5 ? '#e65100' : '#2e7d32' }}>{rangeResult ? '평균 ' : ''}품절률 {stats.rate}%</span>
               <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{fmt(filtered.length)}개</span>
             </>}
-            {viewingDate === todayStr() && !cachedResult && (
+            {viewingDate === todayStr() && !cachedResult && !rangeResult && (
               <button onClick={handleUpdate} disabled={updating} className="btn btn-primary btn-sm" style={{ whiteSpace: 'nowrap' }}>
                 {updating ? '갱신 중...' : '🔄 업데이트'}
               </button>
@@ -828,7 +894,7 @@ export default function SoldOutAnalysis() {
             <button onClick={handleExportMonth} disabled={exporting} className="btn btn-outline btn-sm" style={{ whiteSpace: 'nowrap' }}>
               {exporting ? '다운로드 중...' : `📥 ${calMonth + 1}월 엑셀`}
             </button>
-            <button onClick={() => setShowCalendar(!showCalendar)} style={{ width: 32, height: 32, borderRadius: 8, border: '1px solid var(--border)', background: showCalendar ? 'var(--primary)' : '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+            <button onClick={() => { if (!showCalendar && selStart && !selEnd) setSelStart(null); setShowCalendar(!showCalendar); }} style={{ width: 32, height: 32, borderRadius: 8, border: '1px solid var(--border)', background: showCalendar ? 'var(--primary)' : '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={showCalendar ? '#fff' : '#555'} strokeWidth="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
             </button>
           </div>
@@ -849,12 +915,21 @@ export default function SoldOutAnalysis() {
                 {calendarDays.map((day, idx) => {
                   if (!day) return <div key={`e${idx}`} />;
                   const key = dateToKey(new Date(calYear, calMonth, day));
-                  const isToday = key === todayKey, isSel = key === viewingDate;
-                  return <div key={key} onClick={() => handleCalendarDateClick(day)} style={{ padding: '8px 2px', borderRadius: 8, cursor: 'pointer', fontSize: 13, background: isSel ? 'var(--primary)' : isToday ? 'var(--primary-light)' : 'transparent', color: isSel ? '#fff' : isToday ? 'var(--primary)' : 'var(--text)', fontWeight: isToday || isSel ? 700 : 400, border: isToday && !isSel ? '2px solid var(--primary)' : '2px solid transparent' }}
-                    onMouseOver={e => { if (!isSel) e.currentTarget.style.background = '#f1f3f4'; }}
-                    onMouseOut={e => { if (!isSel) e.currentTarget.style.background = isToday ? 'var(--primary-light)' : 'transparent'; }}
+                  const isToday = key === todayKey;
+                  const isEdge = key === selStart || key === selEnd;       // 시작/종료일
+                  const isMid = selStart && selEnd && key > selStart && key < selEnd; // 기간 중간
+                  const isSingleSel = !selStart && !rangeResult && key === viewingDate; // 단일 모드 기존 선택
+                  const hi = isEdge || isSingleSel;
+                  return <div key={key} onClick={() => handleCalendarDateClick(day)} style={{ padding: '8px 2px', borderRadius: 8, cursor: 'pointer', fontSize: 13, background: hi ? 'var(--primary)' : isMid ? 'var(--primary-light)' : isToday ? 'var(--primary-light)' : 'transparent', color: hi ? '#fff' : isMid ? 'var(--primary)' : isToday ? 'var(--primary)' : 'var(--text)', fontWeight: isToday || hi || isMid ? 700 : 400, border: isToday && !hi ? '2px solid var(--primary)' : '2px solid transparent' }}
+                    onMouseOver={e => { if (!hi && !isMid) e.currentTarget.style.background = '#f1f3f4'; }}
+                    onMouseOut={e => { if (!hi && !isMid) e.currentTarget.style.background = isToday ? 'var(--primary-light)' : 'transparent'; }}
                   >{day}</div>;
                 })}
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 12, textAlign: 'center', lineHeight: 1.5 }}>
+                {selStart && !selEnd
+                  ? <><b style={{ color: 'var(--primary)' }}>{keyToDisplay(selStart)}</b> 시작 · 종료일을 선택하세요</>
+                  : '시작일·종료일 두 번 클릭 = 기간 조회 (같은 날 두 번 = 하루)'}
               </div>
             </div>
           </>
@@ -935,13 +1010,15 @@ export default function SoldOutAnalysis() {
       )}
 
       {/* 테이블 */}
-      {!searchResult && cachedResult && <>
+      {!searchResult && (cachedResult || rangeResult) && <>
         <div style={{ padding: '0 0 8px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <span style={{ fontSize: 14, fontWeight: 700 }}>
             품절 현황 ({filtered.length}개)
-            <span style={{ fontSize: 13, fontWeight: 400, color: 'var(--text-secondary)', marginLeft: 8 }}>{keyToDisplay(viewingDate)}</span>
+            <span style={{ fontSize: 13, fontWeight: 400, color: 'var(--text-secondary)', marginLeft: 8 }}>
+              {rangeResult ? `${keyToDisplay(rangeResult.startKey)} ~ ${keyToDisplay(rangeResult.endKey)} (${rangeResult.daysWithData}일 집계)` : keyToDisplay(viewingDate)}
+            </span>
           </span>
-          {viewingDate !== todayStr() && <button onClick={goToToday} style={{ padding: '5px 12px', borderRadius: 6, border: '1px solid var(--primary)', background: '#fff', color: 'var(--primary)', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>오늘로 돌아가기</button>}
+          {(rangeResult || viewingDate !== todayStr()) && <button onClick={goToToday} style={{ padding: '5px 12px', borderRadius: 6, border: '1px solid var(--primary)', background: '#fff', color: 'var(--primary)', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>오늘로 돌아가기</button>}
         </div>
         <div style={{ fontSize: 11, color: '#999', marginBottom: 4 }}>* 입고예상은 예상일일 뿐이오니, 정확한 입고 예정일은 SCM팀에 문의 바랍니다.</div>
         <div className="table-wrapper" style={{ maxHeight: 'calc(100vh - 340px)', overflowY: 'auto' }}>
@@ -1035,7 +1112,7 @@ export default function SoldOutAnalysis() {
         </div>
       </>}
 
-      {!searchResult && cachedResult && <div style={{ fontSize: 11, color: 'var(--text-secondary)', padding: '8px 4px 0' }}>최종마감·품질확인서·마감대상 제외 | 쿠팡재고=업로드 엑셀 | 그 외=스프레드시트 | 품절위기=1주 미만 또는 3일내 소진</div>}
+      {!searchResult && (cachedResult || rangeResult) && <div style={{ fontSize: 11, color: 'var(--text-secondary)', padding: '8px 4px 0' }}>{rangeResult ? '기간 모드: 품절일 = 선택 기간 내 누적 품절일 (시작일 이전 제외) · 평균 품절률 = 데이터 있는 날만 평균' : '최종마감·품질확인서·마감대상 제외 | 쿠팡재고=업로드 엑셀 | 그 외=스프레드시트 | 품절위기=1주 미만 또는 3일내 소진'}</div>}
 
       {/* 일괄 사유 입력 모달 */}
       {showBatchInput && (
