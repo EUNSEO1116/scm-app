@@ -51,6 +51,7 @@ export default function IncheonIncoming() {
   const [data, setData] = useState(null); // { items: [{barcode, productName, optionName, incomingQty, center}] }
   const [oneTimeMap, setOneTimeMap] = useState({}); // barcode → 기타(1회성) 존재 여부
   const [qualityCertMap, setQualityCertMap] = useState({}); // barcode → 품질확인서 존재 여부
+  const [ipRightMap, setIpRightMap] = useState({}); // barcode → 지재권 존재 여부
   const [vocNames, setVocNames] = useState([]); // VOC 상품명 키워드 목록
   const [orderFile, setOrderFile] = useState(null); // 주문목록 파일명
   const [orderMap, setOrderMap] = useState({}); // key: "상품명||옵션명" → 합산 주문수량
@@ -73,6 +74,7 @@ export default function IncheonIncoming() {
       const centerMap = {};
       const dumpingSet = new Set(); // 덤핑 상태 바코드
       const newQualityCertMap = {}; // 품질확인서 상태 바코드
+      const newIpRightMap = {}; // 지재권 상태 바코드
       if (barcodeRes.ok) {
         const csv = await barcodeRes.text();
         const rows = parseCSV(csv);
@@ -86,10 +88,12 @@ export default function IncheonIncoming() {
           if (rowText.includes('덤핑')) { dumpingSet.add(barcode); continue; }
           if (rowText.includes('반출')) { dumpingSet.add(barcode); continue; }
           if (rowText.includes('품질확인서')) newQualityCertMap[barcode] = true;
+          if (rowText.includes('지재권')) newIpRightMap[barcode] = true;
           centerMap[barcode] = center;
         }
       }
       setQualityCertMap(newQualityCertMap);
+      setIpRightMap(newIpRightMap);
 
       // 특별 관리 상품 시트: barcode(col0) → 기타(1회성)(col8)
       // 헤더 셀에 줄바꿈이 포함되어 parseCSV가 여러 행으로 분리하므로,
@@ -246,6 +250,10 @@ export default function IncheonIncoming() {
     // 품질확인서 체크
     if (qualityCertMap[item.barcode]) {
       remarks.push('품질확인서');
+    }
+    // 지재권 체크
+    if (ipRightMap[item.barcode]) {
+      remarks.push('지재권');
     }
     return remarks.join(', ');
   };
@@ -496,6 +504,7 @@ export default function IncheonIncoming() {
                       const hasOneTime = oneTimeMap[item.barcode];
                       const hasWait = waitBarcodes.has(item.barcode);
                       const hasQuality = qualityCertMap[item.barcode];
+                      const hasIpRight = ipRightMap[item.barcode];
                       return (
                         <tr key={i}>
                           <td style={{ color: '#999', fontSize: 11 }}>{i + 1}</td>
@@ -541,9 +550,17 @@ export default function IncheonIncoming() {
                             {hasQuality && (
                               <span style={{
                                 background: '#e0f2f1', color: '#00695c', padding: '2px 6px',
-                                borderRadius: 4, fontSize: 11, fontWeight: 600,
+                                borderRadius: 4, fontSize: 11, fontWeight: 600, marginRight: 4,
                               }}>
                                 품질확인서
+                              </span>
+                            )}
+                            {hasIpRight && (
+                              <span style={{
+                                background: '#ede7f6', color: '#4527a0', padding: '2px 6px',
+                                borderRadius: 4, fontSize: 11, fontWeight: 600,
+                              }}>
+                                지재권
                               </span>
                             )}
                             {!remark && '-'}
