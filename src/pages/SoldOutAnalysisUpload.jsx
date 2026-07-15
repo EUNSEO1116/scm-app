@@ -34,6 +34,7 @@ function keyToDateInput(k) {
 export default function SoldOutAnalysisUpload() {
   const [dragging, setDragging] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [resetting, setResetting] = useState(false);
   const [toast, setToast] = useState(null);
   const [lastResult, setLastResult] = useState(null);
   const [targetDate, setTargetDate] = useState(keyToDateInput(todayKey()));
@@ -145,6 +146,32 @@ export default function SoldOutAnalysisUpload() {
     setUploading(false);
   };
 
+  const handleReset = async () => {
+    const dateKey = dateInputToKey(targetDate);
+    const label = dateKey === todayKey() ? '오늘' : keyToDisplay(dateKey);
+    const ok = window.confirm(
+      `${label} (${keyToDisplay(dateKey)}) 품절현황 데이터를 초기화합니다.\n\n` +
+      `- 업로드한 엑셀 데이터 삭제\n` +
+      `- 분석 캐시 삭제 (품절현황 업데이트 버튼 다시 활성화)\n` +
+      `- 해당 날짜 품절률 스냅샷 제거\n\n` +
+      `계속하시겠습니까?`
+    );
+    if (!ok) return;
+    setResetting(true);
+    try {
+      await dbStoreSet(`soldout_analysis_${dateKey}`, null, { logDesc: `품절 데이터 초기화: ${label}` });
+      await dbStoreSet(`soldout_analysis_cached_${dateKey}`, null, { skipLog: true });
+      const snaps = await dbStoreGet('soldout_analysis_rate_snapshots') || {};
+      if (snaps[dateKey]) { delete snaps[dateKey]; await dbStoreSet('soldout_analysis_rate_snapshots', snaps, { skipLog: true }); }
+      setLastResult(null);
+      showToast('success', '초기화 완료', `${label} 데이터/캐시를 비웠습니다. 다시 업로드 → 업데이트 하세요.`);
+    } catch (e) {
+      console.error(e);
+      showToast('error', '초기화 실패', 'DB 초기화 중 오류가 발생했습니다.');
+    }
+    setResetting(false);
+  };
+
   const handleFile = (file) => {
     if (!file) return;
     if (!file.name.match(/\.xlsx?$/i)) {
@@ -221,6 +248,19 @@ export default function SoldOutAnalysisUpload() {
               ← {keyToDisplay(dateInputToKey(targetDate))} 데이터로 저장됩니다
             </span>
           )}
+          <div style={{ flex: 1 }} />
+          <button
+            onClick={handleReset}
+            disabled={resetting || uploading}
+            style={{
+              padding: '8px 14px', borderRadius: 8,
+              border: '1px solid #d93025', background: '#fff',
+              color: '#d93025', fontSize: 13, fontWeight: 600,
+              cursor: resetting ? 'default' : 'pointer', whiteSpace: 'nowrap',
+            }}
+          >
+            {resetting ? '초기화 중...' : '🗑 데이터/캐시 초기화'}
+          </button>
         </div>
 
         <div
