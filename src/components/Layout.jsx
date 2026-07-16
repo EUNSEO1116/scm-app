@@ -25,6 +25,7 @@ const navItems = [
   { id: 'issue', label: '이슈관리', icon: 'issue', children: [
     { label: '특별관리', path: '/issue' },
     { label: '상품개선', path: '/issue/improvement' },
+    { label: '인증관리', path: '/issue/certification' },
   ]},
   { id: 'supplies', label: '부자재관리', icon: 'supplies', children: [
     { label: '부자재 목록', path: '/supplies' },

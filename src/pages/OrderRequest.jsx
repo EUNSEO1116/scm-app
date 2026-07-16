@@ -151,6 +151,14 @@ export default function OrderRequest() {
         }
       }
 
+      // 인증관리: 설정(enabled) 상태인 쿠팡바코드는 AE-N 마킹
+      const certItems = await dbStoreGet('certification_items');
+      const certAeN = new Set(
+        (Array.isArray(certItems) ? certItems : [])
+          .filter(it => it && it.enabled && it.barcode)
+          .map(it => String(it.barcode).trim())
+      );
+
       // 재고 계산기: Q열(col16)에 수량이 있는 행만
       const rows = [];
       if (calcRes.ok) {
@@ -170,7 +178,7 @@ export default function OrderRequest() {
           const center = bcInfo.center || '';
           const totalWeeks = safeNum(c[22]); // W열(col22) = 총재고 예상 판매 주
           const note = formNoteMap[sku] || bcInfo.note || '';
-          const brandCode = getBrandCode(brand, center);
+          const brandCode = certAeN.has(sku) ? 'AE-N' : getBrandCode(brand, center);
           const suffix = totalWeeks < 3.5 ? '-JJ' : '';
           const orderNo = brandCode + '-' + getDateCode() + suffix;
 

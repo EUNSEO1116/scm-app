@@ -12,6 +12,7 @@ import SuppliesList from './pages/SuppliesList';
 import SuppliesOrder from './pages/SuppliesOrder';
 import IssueManagement from './pages/IssueManagement';
 import ProductImprovement from './pages/ProductImprovement';
+import CertificationManagement from './pages/CertificationManagement';
 import OrderBook from './pages/OrderBook';
 import OrderRequest from './pages/OrderRequest';
 import OrderRecommend from './pages/OrderRecommend';
@@ -63,6 +64,7 @@ function App() {
           <Route path="/soldout-analysis/upload" element={<SoldOutAnalysisUpload />} />
           <Route path="/issue" element={<IssueManagement />} />
           <Route path="/issue/improvement" element={<ProductImprovement />} />
+          <Route path="/issue/certification" element={<CertificationManagement />} />
           <Route path="/supplies" element={<SuppliesList />} />
           <Route path="/supplies/order" element={<SuppliesOrder />} />
           <Route path="/activity-log" element={<ActivityLog />} />
