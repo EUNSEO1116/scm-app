@@ -169,8 +169,6 @@ export default function CertificationManagement() {
     }
   };
 
-  const enabledCount = items.filter(it => it.enabled).length;
-
   const cell = { padding: '8px 10px', fontSize: 13, textAlign: 'center', borderBottom: '1px solid #eee' };
   const th = { ...cell, fontWeight: 600, color: '#555', background: '#fafafa', borderBottom: '1px solid #ddd' };
   const input = { padding: '8px 10px', fontSize: 13, border: '1px solid #ccc', borderRadius: 6, textAlign: 'center' };
@@ -188,18 +186,6 @@ export default function CertificationManagement() {
           </span>
         </div>
       )}
-
-      {/* 요약 */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10, marginBottom: 16 }}>
-        <div style={{ background: '#e8f0fe', borderRadius: 12, padding: 16, textAlign: 'center' }}>
-          <div style={{ fontSize: 12, color: '#1a73e8', marginBottom: 4 }}>전체 등록</div>
-          <div style={{ fontSize: 22, fontWeight: 700, color: '#1a73e8' }}>{items.length}</div>
-        </div>
-        <div style={{ background: '#fff3e0', borderRadius: 12, padding: 16, textAlign: 'center' }}>
-          <div style={{ fontSize: 12, color: '#e65100', marginBottom: 4 }}>AE-N 설정</div>
-          <div style={{ fontSize: 22, fontWeight: 700, color: '#e65100' }}>{enabledCount}</div>
-        </div>
-      </div>
 
       {/* 엑셀 일괄 업로드 */}
       <div style={{ background: '#fff', border: '1px solid #e0e0e0', borderRadius: 12, padding: 16, marginBottom: 16, textAlign: 'center' }}>
