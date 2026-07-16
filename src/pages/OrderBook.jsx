@@ -157,10 +157,10 @@ function computeRemindFlags(rows, stockMap) {
 }
 
 const SHIP_TARGET_WEEKS = 5;
-const SHIP_THRESHOLD_WEEKS = 2;
+const SHIP_THRESHOLD_WEEKS = 3.8;
 
 // 출고필요 판정: CN상태가 "CN 창고도착"/"작업 대기" → 출고필요, "내륙운송중" → 출고필요(내륙운송중)
-// 예상판매주 < 2주인 SKU 대상, 발주일순 누적하여 5주 될 때까지 표시
+// 예상판매주 < 3.8주인 SKU 대상, 발주일순 누적하여 5주 될 때까지 표시
 function computeShipFlags(rows, stockMap) {
   const skuAllOrders = {};
   for (const row of rows) {
@@ -193,7 +193,7 @@ function computeShipFlags(rows, stockMap) {
       continue;
     }
 
-    // 예상판매주 2주 이상이면 스킵
+    // 예상판매주 3.8주 이상이면 스킵
     if (weeks >= SHIP_THRESHOLD_WEEKS) continue;
 
     // 출고완료된 수량 합산 (곧 입고될 물량)
@@ -207,7 +207,7 @@ function computeShipFlags(rows, stockMap) {
     const baseStock = (info ? info.stock + info.incoming : 0) + shippedQty;
     const targetStock = SHIP_TARGET_WEEKS * weeklySales;
 
-    // 출고완료분 포함해서 이미 2주 이상이면 출고 안 급함
+    // 출고완료분 포함해서 이미 3.8주 이상이면 출고 안 급함
     const thresholdStock = SHIP_THRESHOLD_WEEKS * weeklySales;
     if (baseStock >= thresholdStock) continue;
 
