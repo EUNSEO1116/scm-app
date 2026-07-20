@@ -1,6 +1,7 @@
 import { useState, useRef } from 'react';
 import * as XLSX from 'xlsx';
 import { dbStoreSet, dbStoreGet } from '../utils/dbApi';
+import { ensureUploadSoldoutCache } from '../utils/soldoutCache';
 
 const todayKey = () => new Date().toISOString().slice(0, 10).replace(/-/g, '');
 
@@ -134,6 +135,9 @@ export default function SoldOutAnalysisUpload() {
       if (ok) {
         const isToday = dateKey === todayKey();
         const label = isToday ? '오늘' : keyToDisplay(dateKey);
+        // 업로드 직후 1회 품절 계산해 캐시 저장 (정식 분석 캐시가 있으면 보존)
+        // → 이후 기간 집계/엑셀은 저장된 캐시를 읽어 재계산하지 않음
+        await ensureUploadSoldoutCache(dateKey, { force: true }).catch(() => null);
         setLastResult({ date: label, count: items.length });
         showToast('success', '업로드 완료', `${label} - ${items.length.toLocaleString()}개 품목 저장`);
       } else {

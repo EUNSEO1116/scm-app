@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, Fragment } from 'react';
 import XLSX from 'xlsx-js-style';
 import { dbStoreGet, dbStoreSet } from '../utils/dbApi';
+import { ensureUploadSoldoutCache } from '../utils/soldoutCache';
 
 const SHEET_ID = '1NXhW_gG0b-gXuVqrhbY9ErWi8uO_7pXIy-NTo4FbE1I';
 const CSV_BARCODE = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent('쿠팡바코드')}`;
@@ -204,10 +205,13 @@ export default function SoldOutAnalysis() {
     }
     setTracker(updated);
     await dbStoreSet(SOLDOUT_TRACKER_KEY, updated);
-    if (viewingDate === todayStr() && cachedResult) {
-      const updatedCache = { ...cachedResult, trackerSnapshot: updated };
+    // 보고 있는 날짜(오늘·주말·과거 무관)의 캐시 trackerSnapshot 갱신
+    if (cachedResult && viewingDate) {
+      const snap = { ...(cachedResult.trackerSnapshot || {}) };
+      for (const id of selected) snap[id] = { ...(snap[id] || {}), reason: batchReason.trim() };
+      const updatedCache = { ...cachedResult, trackerSnapshot: snap };
       setCachedResult(updatedCache);
-      await dbStoreSet(`soldout_analysis_cached_${todayStr()}`, updatedCache);
+      await dbStoreSet(`soldout_analysis_cached_${viewingDate}`, updatedCache);
     }
     showToast('success', '저장', `${selected.size}개 품목 사유 저장 완료`);
     setSelected(new Set());
@@ -221,14 +225,16 @@ export default function SoldOutAnalysis() {
       updated[optionId].reason = reason;
       setTracker(updated);
       await dbStoreSet(SOLDOUT_TRACKER_KEY, updated);
-      // 오늘 캐시의 trackerSnapshot도 업데이트
-      if (viewingDate === todayStr() && cachedResult) {
-        const updatedCache = { ...cachedResult, trackerSnapshot: updated };
-        setCachedResult(updatedCache);
-        await dbStoreSet(`soldout_analysis_cached_${todayStr()}`, updatedCache);
-      }
-      showToast('success', '저장', '사유 저장 완료');
     }
+    // 보고 있는 날짜(오늘·주말·과거 무관)의 캐시 trackerSnapshot 갱신 → 화면 반영 + 영속
+    if (cachedResult && viewingDate) {
+      const snap = { ...(cachedResult.trackerSnapshot || {}) };
+      snap[optionId] = { ...(snap[optionId] || {}), reason };
+      const updatedCache = { ...cachedResult, trackerSnapshot: snap };
+      setCachedResult(updatedCache);
+      await dbStoreSet(`soldout_analysis_cached_${viewingDate}`, updatedCache);
+    }
+    showToast('success', '저장', '사유 저장 완료');
   };
 
   // === 초기 로드: DB 캐시 + 연속품절일수 재계산 ===
@@ -427,9 +433,25 @@ export default function SoldOutAnalysis() {
       // 그 달의 모든 날짜 캐시 병렬 로드
       const dayList = [];
       for (let d = 1; d <= daysInMon; d++) dayList.push(new Date(year, month, d));
-      const caches = await Promise.all(dayList.map(dt => dbStoreGet(`soldout_analysis_cached_${dateToKey(dt)}`).catch(() => null)));
+      const caches = await Promise.all(dayList.map(dt => ensureUploadSoldoutCache(dateToKey(dt)).catch(() => null)));
       const cacheByKey = {};
       dayList.forEach((dt, i) => { cacheByKey[dateToKey(dt)] = caches[i]; });
+
+      // 이전 품절기록 사유: 월 전체 캐시에서 optionId별 가장 최근 비어있지 않은 사유 수집
+      // (주말=원천 캐시는 사유가 비어있어, 평일 기록 사유를 이어받기 위함)
+      const reasonByOption = new Map();
+      for (const dk of Object.keys(cacheByKey)) {
+        const cache = cacheByKey[dk];
+        if (!cache?.items) continue;
+        const trk = cache.trackerSnapshot || {};
+        for (const it of cache.items) {
+          if (it.riskLevel !== '품절') continue;
+          const rsn = trk[it.optionId]?.reason;
+          if (!rsn) continue;
+          const prev = reasonByOption.get(it.optionId);
+          if (!prev || dk > prev.dateKey) reasonByOption.set(it.optionId, { dateKey: dk, reason: rsn });
+        }
+      }
 
       // 월~일 주차로 그룹핑 (월요일 키 기준)
       const weekMap = new Map();
@@ -462,6 +484,7 @@ export default function SoldOutAnalysis() {
             if (!prev || dk > prev.dateKey) {
               itemMap.set(it.optionId, {
                 dateKey: dk,
+                source: cache.source || null, // 'upload'=주말(업데이트 못 돌린 날) 원천 기반
                 row: {
                   '상품명': it.productName || '',
                   '옵션명': it.optionName || '',
@@ -475,7 +498,14 @@ export default function SoldOutAnalysis() {
           }
         }
         // 주차 시작~종료 사이 품절이던 날 수로 채움 (주차 이전 연속분은 세지 않음)
-        for (const [oid, v] of itemMap) v.row['주간품절일'] = weekDaysCount.get(oid) || 1;
+        for (const [oid, v] of itemMap) {
+          v.row['주간품절일'] = weekDaysCount.get(oid) || 1;
+          // 주말(원천 기반) 품절: 사유가 비면 이전 품절기록 사유를 이어받고 옆에 (주말) 표기
+          if (v.source === 'upload') {
+            const inherited = v.row['사유'] || reasonByOption.get(oid)?.reason || '';
+            v.row['사유'] = inherited ? `${inherited} (주말)` : '(주말)';
+          }
+        }
         const rows = [...itemMap.values()].map(v => v.row).sort((a, b) => {
           const ax = a['품절율 제외여부'] === 'X' ? 0 : 1;
           const bx = b['품절율 제외여부'] === 'X' ? 0 : 1;
@@ -746,7 +776,7 @@ export default function SoldOutAnalysis() {
   const loadSingleDate = async (key) => {
     setRangeResult(null);
     setViewingDate(key); setShowCalendar(false);
-    const cached = await dbStoreGet(`soldout_analysis_cached_${key}`);
+    const cached = await ensureUploadSoldoutCache(key).catch(() => null);
     if (cached) {
       const fixed = await recalcConsecDaysForDate(key, cached);
       setCachedResult(fixed);
@@ -761,7 +791,7 @@ export default function SoldOutAnalysis() {
     const dayKeys = [];
     let d = keyToDate(startKey); const endD = keyToDate(endKey);
     while (d <= endD) { dayKeys.push(dateToKey(d)); d = addDays(d, 1); }
-    const caches = await Promise.all(dayKeys.map(k => dbStoreGet(`soldout_analysis_cached_${k}`).catch(() => null)));
+    const caches = await Promise.all(dayKeys.map(k => ensureUploadSoldoutCache(k).catch(() => null)));
     let daysWithData = 0, rateSum = 0;
     const byOption = new Map();
     caches.forEach((cache) => {
