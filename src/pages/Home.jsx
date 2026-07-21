@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { dbSaveCalendar, dbGetCalendar, dbStoreGet, dbStoreSet } from '../utils/dbApi';
+import { computeSoldoutRateSnapshots } from '../utils/soldoutCache';
 
 const SHEET_ID = '1NXhW_gG0b-gXuVqrhbY9ErWi8uO_7pXIy-NTo4FbE1I';
 const CSV_ORDER = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent('발주장부')}`;
@@ -415,30 +416,13 @@ export default function Home() {
 
         let soldoutRate = null;
         try {
-          const [snapshots, exData] = await Promise.all([
-            dbStoreGet('soldout_analysis_rate_snapshots'),
-            dbStoreGet('soldout_analysis_exclude'),
-          ]);
-          const snapData = snapshots || {};
-          const exSet = new Set((exData || []).map(i => i.optionId));
+          // 이번 달 데이터 있는 날(평일 정식 + 주말 원천)의 "일별 품절률 평균"
+          // 분모 = 데이터 있는 날 수 / 제외 = 그 날짜 excludeSnapshot 그대로
           const prefix = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}`;
-          const monthDates = Object.keys(snapData).filter(d => d.startsWith(prefix));
-          const cachedResults = await Promise.all(
-            monthDates.map(d => dbStoreGet(`soldout_analysis_cached_${d}`).catch(() => null))
-          );
-          let totalSum = 0, soldoutSum = 0;
-          for (let i = 0; i < monthDates.length; i++) {
-            const cr = cachedResults[i];
-            if (cr?.validItems) {
-              totalSum += cr.validItems.length;
-              soldoutSum += cr.validItems.filter(it => !exSet.has(it.optionId) && it.coupangStock === 0).length;
-            } else {
-              const snap = snapData[monthDates[i]];
-              totalSum += snap.total || 0;
-              soldoutSum += snap.soldout || 0;
-            }
-          }
-          if (totalSum > 0) soldoutRate = Math.round(soldoutSum / totalSum * 10000) / 100;
+          const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+          const snaps = await computeSoldoutRateSnapshots(`${prefix}01`, `${prefix}${String(lastDay).padStart(2, '0')}`);
+          const rates = Object.values(snaps).map(s => s.rate);
+          if (rates.length > 0) soldoutRate = Math.round(rates.reduce((a, b) => a + b, 0) / rates.length * 100) / 100;
         } catch {}
 
         const newData = { availableCount, availableCost, longTermCount, longTermCost, soldoutRate };

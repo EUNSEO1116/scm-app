@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { dbStoreGet } from '../utils/dbApi';
+import { computeSoldoutRateSnapshots } from '../utils/soldoutCache';
 
 function keyToDisplay(k) {
   return `${k.slice(0, 4)}-${k.slice(4, 6)}-${k.slice(6, 8)}`;
@@ -10,40 +11,25 @@ export default function SoldOutAnalysisRate() {
   const [loading, setLoading] = useState(true);
   const [viewMode, setViewMode] = useState('monthly'); // monthly, quarterly, half
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
+  const [years, setYears] = useState([new Date().getFullYear()]);
 
+  // 연도 드롭다운: rate_snapshots 키에서 가볍게 추출
   useEffect(() => {
-    (async () => {
-      const [rateData, exData] = await Promise.all([
-        dbStoreGet('soldout_analysis_rate_snapshots'),
-        dbStoreGet('soldout_analysis_exclude'),
-      ]);
-      const snapData = rateData || {};
-      const exSet = new Set((exData || []).map(i => i.optionId));
-
-      // 각 날짜별 캐시 데이터 로드 → 현재 제외 목록으로 재계산
-      const dates = Object.keys(snapData);
-      const cachedResults = await Promise.all(
-        dates.map(d => dbStoreGet(`soldout_analysis_cached_${d}`).catch(() => null))
-      );
-
-      const recalculated = {};
-      for (let i = 0; i < dates.length; i++) {
-        const date = dates[i];
-        const cached = cachedResults[i];
-        if (cached?.validItems) {
-          const total = cached.validItems.length;
-          const soldout = cached.validItems.filter(it => !exSet.has(it.optionId) && it.coupangStock === 0).length;
-          const rate = total > 0 ? Math.round(soldout / total * 10000) / 100 : 0;
-          recalculated[date] = { date, total, soldout, rate };
-        } else {
-          recalculated[date] = snapData[date];
-        }
-      }
-
-      setSnapshots(recalculated);
-      setLoading(false);
-    })();
+    dbStoreGet('soldout_analysis_rate_snapshots').then(data => {
+      const set = new Set(Object.keys(data || {}).map(k => parseInt(k.slice(0, 4))));
+      set.add(new Date().getFullYear());
+      setYears([...set].sort());
+    }).catch(() => {});
   }, []);
+
+  // 선택 연도: 데이터 있는 모든 날(평일 정식 + 주말 원천)만 계산
+  // 분모 = 데이터 있는 날들의 validItems 합 / 제외 = 전역 ∪ 그 날짜 excludeSnapshot (Home과 동일 로직)
+  useEffect(() => {
+    setLoading(true);
+    computeSoldoutRateSnapshots(`${selectedYear}0101`, `${selectedYear}1231`)
+      .then(snaps => { setSnapshots(snaps); setLoading(false); })
+      .catch(() => { setSnapshots({}); setLoading(false); });
+  }, [selectedYear]);
 
   // 일별 데이터 → 정렬
   const dailyData = useMemo(() => {
@@ -57,10 +43,11 @@ export default function SoldOutAnalysisRate() {
     const months = {};
     for (const s of dailyData) {
       const m = s.date.slice(0, 6); // YYYYMM
-      if (!months[m]) months[m] = { days: 0, totalSum: 0, soldoutSum: 0 };
+      if (!months[m]) months[m] = { days: 0, totalSum: 0, soldoutSum: 0, rateSum: 0 };
       months[m].days++;
       months[m].totalSum += s.total;
       months[m].soldoutSum += s.soldout;
+      months[m].rateSum += s.rate;
     }
     return Object.entries(months).map(([key, v]) => ({
       key,
@@ -68,7 +55,7 @@ export default function SoldOutAnalysisRate() {
       days: v.days,
       avgTotal: Math.round(v.totalSum / v.days),
       avgSoldout: Math.round(v.soldoutSum / v.days),
-      rate: v.totalSum > 0 ? Math.round(v.soldoutSum / v.totalSum * 10000) / 100 : 0,
+      rate: v.days > 0 ? Math.round(v.rateSum / v.days * 100) / 100 : 0,
     })).sort((a, b) => a.key.localeCompare(b.key));
   }, [dailyData]);
 
@@ -79,10 +66,11 @@ export default function SoldOutAnalysisRate() {
       const month = parseInt(s.date.slice(4, 6));
       const q = Math.ceil(month / 3);
       const key = `${s.date.slice(0, 4)}Q${q}`;
-      if (!quarters[key]) quarters[key] = { days: 0, totalSum: 0, soldoutSum: 0, q };
+      if (!quarters[key]) quarters[key] = { days: 0, totalSum: 0, soldoutSum: 0, rateSum: 0, q };
       quarters[key].days++;
       quarters[key].totalSum += s.total;
       quarters[key].soldoutSum += s.soldout;
+      quarters[key].rateSum += s.rate;
     }
     return Object.entries(quarters).map(([key, v]) => ({
       key,
@@ -90,7 +78,7 @@ export default function SoldOutAnalysisRate() {
       days: v.days,
       avgTotal: Math.round(v.totalSum / v.days),
       avgSoldout: Math.round(v.soldoutSum / v.days),
-      rate: v.totalSum > 0 ? Math.round(v.soldoutSum / v.totalSum * 10000) / 100 : 0,
+      rate: v.days > 0 ? Math.round(v.rateSum / v.days * 100) / 100 : 0,
     })).sort((a, b) => a.key.localeCompare(b.key));
   }, [dailyData]);
 
@@ -101,10 +89,11 @@ export default function SoldOutAnalysisRate() {
       const month = parseInt(s.date.slice(4, 6));
       const h = month <= 6 ? 1 : 2;
       const key = `${s.date.slice(0, 4)}H${h}`;
-      if (!halves[key]) halves[key] = { days: 0, totalSum: 0, soldoutSum: 0, h };
+      if (!halves[key]) halves[key] = { days: 0, totalSum: 0, soldoutSum: 0, rateSum: 0, h };
       halves[key].days++;
       halves[key].totalSum += s.total;
       halves[key].soldoutSum += s.soldout;
+      halves[key].rateSum += s.rate;
     }
     return Object.entries(halves).map(([key, v]) => ({
       key,
@@ -112,18 +101,11 @@ export default function SoldOutAnalysisRate() {
       days: v.days,
       avgTotal: Math.round(v.totalSum / v.days),
       avgSoldout: Math.round(v.soldoutSum / v.days),
-      rate: v.totalSum > 0 ? Math.round(v.soldoutSum / v.totalSum * 10000) / 100 : 0,
+      rate: v.days > 0 ? Math.round(v.rateSum / v.days * 100) / 100 : 0,
     })).sort((a, b) => a.key.localeCompare(b.key));
   }, [dailyData]);
 
   const currentData = viewMode === 'monthly' ? monthlyData : viewMode === 'quarterly' ? quarterlyData : halfData;
-
-  // 연도 목록
-  const years = useMemo(() => {
-    const set = new Set(Object.keys(snapshots).map(k => parseInt(k.slice(0, 4))));
-    if (set.size === 0) set.add(new Date().getFullYear());
-    return [...set].sort();
-  }, [snapshots]);
 
   const rateColor = (rate) => rate > 10 ? '#d93025' : rate > 5 ? '#e65100' : '#2e7d32';
   const rateLabel = (rate) => rate > 10 ? '위험' : rate > 5 ? '주의' : '양호';

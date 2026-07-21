@@ -30,6 +30,7 @@ function parseCsvRow(line) {
   result.push(current); return result;
 }
 function dateToKey(d) { return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`; }
+function keyToDate(k) { return new Date(+k.slice(0, 4), +k.slice(4, 6) - 1, +k.slice(6, 8)); }
 
 // 시트(쿠팡바코드/재고계산기) 맵 — 여러 날짜를 한 번에 채울 때 60초간 메모이즈해 재요청 방지
 let _sheetsCache = null;
@@ -184,4 +185,42 @@ export async function ensureUploadSoldoutCache(dateKey, { force = false } = {}) 
   };
   await dbStoreSet(cacheKey, cache, { skipLog: true });
   return cache;
+}
+
+// 기간 [startKey, endKey] 동안 "데이터가 실제로 들어간 날짜만"의 일별 품절률을 계산한다.
+// - 달력을 훑는 건 어느 날에 데이터가 있는지 찾기 위함일 뿐, 데이터 없는 날은 완전히 스킵
+// - 일별 품절률 = (그 날 제외 아닌 품절수) / (그 날 판매중 유효품목수)
+// - 제외는 그 날짜 excludeSnapshot 그대로 사용 (전역/실시간 union 안 함 — 그날 제외였던 게 오늘은 아닐 수 있으므로)
+// - endKey는 오늘 이하로 clamp (미래 제외)
+// 반환: { [YYYYMMDD]: { date, total, soldout, rate } } — 데이터 있는 날만 키로 존재
+// 월/기간 집계는 이 일별 rate들의 "평균"으로 낸다 (분모 = 데이터 있는 날 수).
+export async function computeSoldoutRateSnapshots(startKey, endKey) {
+  const todayK = dateToKey(new Date());
+  const clampEnd = endKey > todayK ? todayK : endKey;
+  if (clampEnd < startKey) return {};
+
+  const dayKeys = [];
+  let d = keyToDate(startKey);
+  const end = keyToDate(clampEnd);
+  while (d <= end) {
+    dayKeys.push(dateToKey(d));
+    d = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1);
+  }
+
+  const result = {};
+  const CHUNK = 40; // 서버 부하 방지: 40일씩 병렬 처리
+  for (let i = 0; i < dayKeys.length; i += CHUNK) {
+    const batch = dayKeys.slice(i, i + CHUNK);
+    const caches = await Promise.all(batch.map(k => ensureUploadSoldoutCache(k).catch(() => null)));
+    batch.forEach((k, j) => {
+      const c = caches[j];
+      if (!c?.validItems) return; // 데이터 없는 날 스킵
+      const daySnap = new Set(c.excludeSnapshot || []); // 그 날짜 제외목록 그대로
+      const total = c.validItems.length;
+      const soldout = c.validItems.filter(it => !daySnap.has(it.optionId) && it.coupangStock === 0).length;
+      const rate = total > 0 ? Math.round(soldout / total * 10000) / 100 : 0;
+      result[k] = { date: k, total, soldout, rate };
+    });
+  }
+  return result;
 }
