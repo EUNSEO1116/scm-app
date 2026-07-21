@@ -86,6 +86,13 @@ export async function ensureUploadSoldoutCache(dateKey, { force = false } = {}) 
   const cacheKey = `soldout_analysis_cached_${dateKey}`;
   const existing = await dbStoreGet(cacheKey).catch(() => null);
 
+  // 당일(오늘·미래)은 자동 계산하지 않는다 — 정식 "업데이트" 버튼으로만 분석한다.
+  // (날짜가 지난 과거 업로드만 원천 기반 자동 계산 대상. 당일 원천 캐시는 무시.)
+  const todayK = dateToKey(new Date());
+  if (dateKey >= todayK) {
+    return (existing?.items && existing.source !== 'upload') ? existing : null;
+  }
+
   // 정식 분석 캐시는 원천 기반으로 절대 덮어쓰지 않는다
   if (existing?.items && existing.source !== 'upload') return existing;
   // 이미 원천 캐시가 있고 강제 재계산이 아니면 그대로 사용 (집계 속도 유지)

@@ -251,8 +251,10 @@ export default function SoldOutAnalysis() {
       setStockCorrections(corrections || {});
       const newExSet = new Set((exData || []).map(i => i.optionId));
       setExcludeSet(newExSet);
+      // 당일 원천(upload) 캐시는 무시 — 정식 업데이트 전까지는 데이터 없음으로 취급(업데이트 버튼 노출)
+      const realCached = cached && cached.source !== 'upload' ? cached : null;
       // 오늘 캐시의 연속품절일수도 일별 DB 기준으로 재계산
-      const fixedCached = cached ? await recalcConsecDaysForDate(today, cached) : null;
+      const fixedCached = realCached ? await recalcConsecDaysForDate(today, realCached) : null;
       // tracker state에도 재계산된 days 반영
       const updatedTrk = { ...(trk || {}) };
       if (fixedCached?.trackerSnapshot) {
@@ -840,7 +842,9 @@ export default function SoldOutAnalysis() {
   const goToToday = async () => {
     const t = todayStr(); setViewingDate(t);
     setRangeResult(null); setSelStart(null); setSelEnd(null);
-    const cached = await dbStoreGet(`soldout_analysis_cached_${t}`);
+    const cachedRaw = await dbStoreGet(`soldout_analysis_cached_${t}`);
+    // 당일 원천(upload) 캐시는 무시 — 정식 업데이트만 사용
+    const cached = cachedRaw && cachedRaw.source !== 'upload' ? cachedRaw : null;
     if (cached) {
       const fixed = await recalcConsecDaysForDate(t, cached);
       setCachedResult(fixed);
