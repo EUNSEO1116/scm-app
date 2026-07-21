@@ -142,22 +142,33 @@ export default function SoldOutAnalysis() {
     return cached;
   };
 
-  // 품절현황에서 제외 → 해당 날짜 rate_snapshots 즉시 재계산
+  // 품절현황에서 제외 → 보고 있는 날짜의 excludeSnapshot에 해당 품목만 추가 + 그 날짜 품절률 즉시 재계산
+  // 오늘 = 전역 제외목록(현재 제외 상태) 반영 / 과거 = 그 날짜 캐시 snapshot에만 반영(전역 목록은 건드리지 않음)
   const addExclude = async (r) => {
-    if (excludeSet.has(r.optionId)) return;
-    const data = await dbStoreGet('soldout_analysis_exclude') || [];
-    data.push({ optionId: r.optionId, productName: r.productName, optionName: r.optionName, status: r.status, barcode: r.barcode, excludedAt: new Date().toISOString() });
-    await dbStoreSet('soldout_analysis_exclude', data, { logDesc: `(NEW)품절 제외 추가: ${r.productName} - ${r.optionName}` });
-    const newExSet = new Set(data.map(i => i.optionId));
-    setExcludeSet(newExSet);
-    // 보고 있는 날짜의 캐시 + rate_snapshots 재계산
     const targetDate = viewingDate;
+    const isToday = targetDate === todayStr();
+    // 현재 보고 있는 날짜 기준으로 이미 제외면 무시 (오늘=excludeSet, 과거=그날 snapshot)
+    if (displayExcludeSet.has(r.optionId)) return;
+
+    // 오늘만 전역 제외목록에 추가 (과거 날짜는 그 날짜에만 제외)
+    if (isToday) {
+      const data = await dbStoreGet('soldout_analysis_exclude') || [];
+      if (!data.some(i => i.optionId === r.optionId)) {
+        data.push({ optionId: r.optionId, productName: r.productName, optionName: r.optionName, status: r.status, barcode: r.barcode, excludedAt: new Date().toISOString() });
+        await dbStoreSet('soldout_analysis_exclude', data, { logDesc: `(NEW)품절 제외 추가: ${r.productName} - ${r.optionName}` });
+      }
+      setExcludeSet(new Set(data.map(i => i.optionId)));
+    }
+
+    // 보고 있는 날짜의 캐시 excludeSnapshot에 해당 품목만 추가 + rate/rate_snapshots 재계산
     const cached = await dbStoreGet(`soldout_analysis_cached_${targetDate}`);
     if (cached) {
-      cached.excludeSnapshot = [...newExSet];
+      const snap = new Set(cached.excludeSnapshot || []);
+      snap.add(r.optionId);
+      cached.excludeSnapshot = [...snap];
       const valid = cached.validItems || [];
       const rTotal = valid.length;
-      const rSold = valid.filter(it => !newExSet.has(it.optionId) && it.coupangStock === 0).length;
+      const rSold = valid.filter(it => !snap.has(it.optionId) && it.coupangStock === 0).length;
       const rate = rTotal > 0 ? Math.round(rSold / rTotal * 10000) / 100 : 0;
       cached.rate = rate;
       await dbStoreSet(`soldout_analysis_cached_${targetDate}`, cached);
