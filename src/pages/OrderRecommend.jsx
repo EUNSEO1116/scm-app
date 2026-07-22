@@ -15,7 +15,9 @@ const FORECAST_DAYS = 90;     // 수요예측 일별 데이터 로딩 기간
 const HORIZON_WEEKS = 4;      // 발주 커버 기간 (4주)
 const HORIZON_DAYS = HORIZON_WEEKS * 7; // 28일 (예측 주간율 환산 기준)
 const REVIEW_DAYS = 4; // 발주 주기 (월·금 발주, 최대 간격 4일)
-const SAFETY_BUFFER_DAYS = 7; // 안전재고: 평균 7일치 여유분
+const SAFETY_BUFFER_DAYS = 15; // 안전재고: 기본 15일치 여유분
+const SAFETY_BUFFER_DAYS_HYOJA = 7; // '효자' 상태 상품은 기존 7일 유지
+const HYOJA_KEYWORD = '효자';
 const DEFAULT_LEAD_DAYS = 20; // AF열 리드타임 빈칸 시 기본값
 const HOLT_ALPHA = 0.3;       // 레벨 평활 계수
 const HOLT_BETA = 0.1;        // 트렌드 평활 계수
@@ -349,7 +351,9 @@ export default function OrderRecommend() {
             arrivalDate.setDate(arrivalDate.getDate() + leadDays);
             const mult = seasonMult(periodOf(optionId), arrivalDate);
             // 커버일수 = 리드타임 + 발주주기 + 안전. baseF(4주=28일 예측)를 커버일수로 비례 확대.
-            const coverDays = leadDays + REVIEW_DAYS + SAFETY_BUFFER_DAYS;
+            // '효자' 상태 상품은 기존 안전 7일, 그 외는 15일.
+            const safetyDays = status.includes(HYOJA_KEYWORD) ? SAFETY_BUFFER_DAYS_HYOJA : SAFETY_BUFFER_DAYS;
+            const coverDays = leadDays + REVIEW_DAYS + safetyDays;
             const demand = baseF * (coverDays / HORIZON_DAYS) * mult;
             const q = Math.ceil(demand - totalStock);
             const demandRound = Math.round(demand);
@@ -537,15 +541,14 @@ export default function OrderRecommend() {
             </summary>
             <div style={{ position: 'absolute', top: 'calc(100% + 6px)', left: 0, zIndex: 20, width: 560, maxWidth: '88vw', maxHeight: '70vh', overflowY: 'auto', background: '#fff', border: '1px solid #e8eaed', borderRadius: 10, boxShadow: '0 4px 16px rgba(0,0,0,0.12)', padding: '14px 16px', fontSize: 12.5, color: '#3c4043', lineHeight: 1.7 }}>
           <div style={{ marginBottom: 6 }}><b>① 데이터 매칭</b> — 재고계산기 시트의 각 상품을 <b>옵션ID</b>로 수요예측 일별 판매 데이터와 매칭합니다.</div>
-          <div style={{ marginBottom: 6 }}><b>② 4주 판매 예측 (F)</b> — <b>오늘 기준 최근 7일/8~14일/15~21일/22~28일</b>로 묶어(진행 중인 최근 며칠도 항상 포함),
-            우하향(감소) 추세 상품은 <b>Holt 선형추세 지수평활</b>로, 그 외는 <b>최근 4주 가중평균</b>(최근일수록 가중)으로 향후 4주 판매량을 예측합니다.
-            (우하향 상품의 Holt 예측은 과발주 방지를 위해 가중평균을 넘지 않도록 캡)
+          <div style={{ marginBottom: 6 }}><b>② 4주 판매 예측 (F)</b> — <b>오늘 기준 최근 7일/8~14일/15~21일/22~28일</b>로 묶어(진행 중인 최근 며칠도 항상 포함) 아래 <b>우선순위</b>로 향후 4주 판매량을 예측합니다.
             <div style={{ marginTop: 6, marginLeft: 14, padding: '8px 12px', background: '#fff', border: '1px solid #e8eaed', borderRadius: 8, color: '#5f6368', fontSize: 12 }}>
-              <div style={{ marginBottom: 4 }}>• <b>최근 4주 가중평균</b> : 4주전→1주전에 <u>가중치 1 / 1.5 / 2.5 / 4</u>를 줘서 평균냅니다(최근 1주가 4주전의 4배).
-                예) 4주 전부터 <code>10·20·30·40</code>개 팔렸으면 단순평균은 25지만, 이 가중이면 <b>약 31개</b> 쪽으로 계산 → 최근 흐름을 강하게 반영.</div>
-              <div>• <b>Holt 선형추세 지수평활</b> : 판매가 꾸준히 줄고 있는(우하향) 상품에 쓰는 방식으로,
+              <div style={{ marginBottom: 4 }}>• <b>① 긴급·주의품목 → 최근1주 민감가중</b> : <u>재고주수(W) 4주 미만</u>이거나 <u>주의품목</u>이면 최우선 적용. 4주전→1주전에 <u>가중치 0.5 / 1 / 2 / 6</u>을 줘 <b>최근 1주에 훨씬 민감</b>하게(최근≈63%) 예측 → 등락을 빠르게 반영해 결품/과발주를 줄입니다. (이 경우 Holt 미사용)</div>
+              <div style={{ marginBottom: 4 }}>• <b>② 우하향 추세 → Holt 선형추세 지수평활</b> : 위에 해당 안 되고 판매가 꾸준히 줄고 있는(우하향) 상품에 적용.
                 현재 <u>판매 수준(level)</u>과 <u>주마다 늘거나 줄어드는 변화량(trend)</u> 두 가지를 함께 추정해서
-                "<b>지금 추세대로 가면 4주 뒤엔 얼마나 팔릴까</b>"를 예측합니다. 감소세가 이어지면 예측치도 따라 낮아져 과발주를 막습니다.</div>
+                "<b>지금 추세대로 가면 4주 뒤엔 얼마나 팔릴까</b>"를 예측합니다. 감소세가 이어지면 예측치도 따라 낮아져 과발주를 막습니다. (완전한 7일 주 3주 이상일 때만, 예측치는 아래 가중평균을 넘지 않도록 캡)</div>
+              <div>• <b>③ 그 외 → 최근 4주 가중평균</b> : 4주전→1주전에 <u>가중치 1 / 1.5 / 2.5 / 4</u>를 줘서 평균냅니다(최근 1주가 4주전의 4배).
+                예) 4주 전부터 <code>10·20·30·40</code>개 팔렸으면 단순평균은 25지만, 이 가중이면 <b>약 31개</b> 쪽으로 계산 → 최근 흐름을 강하게 반영.</div>
             </div></div>
           <div style={{ marginBottom: 6 }}><b>③ 시즌 보정 — "물건이 도착하는 날" 기준</b>
             <div style={{ marginTop: 2 }}>오늘 발주분이 입고되는 날(<b>오늘 + 리드타임</b>)이 시즌의 어디에 떨어지는지로 계수를 정합니다.</div>
@@ -557,11 +560,12 @@ export default function OrderRecommend() {
             </div>
             <div style={{ marginTop: 4 }}>→ 리드타임이 길어 물건이 시즌 끝난 뒤 도착하면 발주가 자동으로 확 줄어 <b>끝물 과발주</b>를 막습니다.</div></div>
           <div style={{ marginBottom: 6 }}><b>④ 리드타임 · 커버기간</b> — 커버기간 = <b>리드타임(AF열) + 발주주기 {REVIEW_DAYS}일 + 안전 {SAFETY_BUFFER_DAYS}일</b>.
-            발주주기·안전은 고정값(월·금 주 2회 발주 기준)이고, AF열이 비면 리드타임 <b>{DEFAULT_LEAD_DAYS}일</b> 기본 적용. 4주예측 F를 이 커버일수에 맞춰 환산합니다.</div>
+            발주주기·안전은 고정값(월·금 주 2회 발주 기준)이고, AF열이 비면 리드타임 <b>{DEFAULT_LEAD_DAYS}일</b> 기본 적용. 4주예측 F를 이 커버일수에 맞춰 환산합니다.
+            <div style={{ marginTop: 4, color: '#5f6368' }}>※ 상태에 <b>'{HYOJA_KEYWORD}'</b>가 포함된 상품은 안전을 <b>{SAFETY_BUFFER_DAYS_HYOJA}일</b>로 적용합니다(그 외는 {SAFETY_BUFFER_DAYS}일).</div></div>
           <div style={{ marginBottom: 6 }}><b>⑤ 추천 발주량</b> = <b>올림( F × (커버일수 ÷ 28) × 시즌계수 − O열 총재고 )</b>.
             O열 총재고는 <u>그로스 + 박스히어로 + 미입고(오고있는) 구매분</u>을 모두 포함하므로 중복발주가 방지됩니다. 결과가 0 이하거나 예측 데이터가 없으면 공백.
             <div style={{ marginTop: 6, marginLeft: 14, padding: '8px 12px', background: '#f8faf9', border: '1px solid #e8eaed', borderRadius: 8, fontSize: 12 }}>
-              <b>예시</b> — 리드 30 · 4주예측 필요재고 84개 · 시즌피크 ×1.2 → 커버 41일, 수요 84×(41÷28)×1.2 ≈ <b>148</b>, 재고 132 → 추천 <b>16개</b>.</div></div>
+              <b>예시</b> — 리드 30 · 4주예측 필요재고 84개 · 시즌피크 ×1.2 → 커버 49일(리드 30 + 발주주기 {REVIEW_DAYS} + 안전 {SAFETY_BUFFER_DAYS}), 수요 84×(49÷28)×1.2 ≈ <b>176</b>, 재고 132 → 45 → 10단위 올림 추천 <b>50개</b>.</div></div>
           <div style={{ marginBottom: 6 }}><b>⑥ 태그(분류) — 엑셀에서 필터로 빠르게 거를 수 있습니다</b>
             <div style={{ marginTop: 6, marginLeft: 14, fontSize: 12, lineHeight: 1.9 }}>
               {[
@@ -580,7 +584,7 @@ export default function OrderRecommend() {
             </div></div>
           <div style={{ marginBottom: 6 }}><b>⑦ 사유 읽는 법</b> — 사유 칸은 아래 순서로 읽으면 됩니다(숫자는 정수 표기).
             <div style={{ marginTop: 6, marginLeft: 14, padding: '8px 12px', background: '#fff', border: '1px solid #e8eaed', borderRadius: 8, fontSize: 12, color: '#5f6368' }}>
-              <div style={{ fontFamily: 'monospace', color: '#3c4043' }}>우하향 추세 4주예측 필요재고 84개·시즌피크 ×1.2 → 커버 41일(리드 30) 수요 148 − 재고 132 = 16</div>
+              <div style={{ fontFamily: 'monospace', color: '#3c4043' }}>우하향 추세 4주예측 필요재고 84개·시즌피크 ×1.2 → 커버 49일(리드 30) 수요 176 − 재고 132 = 45</div>
               <div style={{ marginTop: 4 }}>= [예측방식] · 4주예측 <u>필요재고 F</u> · [시즌계수] → 커버 <u>총일수</u>(리드 <u>일</u>) · <u>환산수요</u> − <u>O열 총재고</u> = <b>추천량</b></div>
             </div></div>
           <div><b>⑧ 제외 대상 & 표 보기</b> — 최종마감 · 품질확인서 · 마감대상 · 덤핑 상태는 발주추천에서 제외됩니다.
