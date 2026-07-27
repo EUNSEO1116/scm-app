@@ -20,6 +20,7 @@ const navItems = [
     { label: '데이터 기록', path: '/soldout-analysis/history' },
     { label: '(NEW)제외품목관리', path: '/soldout-analysis/exclude' },
     { label: '(NEW)월 품절률', path: '/soldout-analysis/rate' },
+    { label: '보충 지연 원인 관리', path: '/soldout-analysis/delay-cause' },
     { label: '데이터 업로드', path: '/soldout-analysis/upload' },
   ]},
   { id: 'issue', label: '이슈관리', icon: 'issue', children: [
@@ -89,6 +90,7 @@ const pageTitles = {
   '/soldout-analysis/history': '데이터 기록',
   '/soldout-analysis/exclude': '(NEW)제외품목관리',
   '/soldout-analysis/rate': '(NEW)월 품절률',
+  '/soldout-analysis/delay-cause': '보충 지연 원인 관리',
   '/soldout-analysis/upload': '데이터 업로드',
   '/supplies': '부자재 목록',
   '/supplies/order': '부자재 발주',

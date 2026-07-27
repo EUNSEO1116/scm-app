@@ -28,6 +28,7 @@ import SoldOutAnalysis from './pages/SoldOutAnalysis';
 import SoldOutAnalysisHistory from './pages/SoldOutAnalysisHistory';
 import SoldOutAnalysisExclude from './pages/SoldOutAnalysisExclude';
 import SoldOutAnalysisRate from './pages/SoldOutAnalysisRate';
+import SoldOutAnalysisDelayCause from './pages/SoldOutAnalysisDelayCause';
 import SoldOutAnalysisUpload from './pages/SoldOutAnalysisUpload';
 import ActivityLog from './pages/ActivityLog';
 import CnSettlementUpload from './pages/CnSettlementUpload';
@@ -61,6 +62,7 @@ function App() {
           <Route path="/soldout-analysis/history" element={<SoldOutAnalysisHistory />} />
           <Route path="/soldout-analysis/exclude" element={<SoldOutAnalysisExclude />} />
           <Route path="/soldout-analysis/rate" element={<SoldOutAnalysisRate />} />
+          <Route path="/soldout-analysis/delay-cause" element={<SoldOutAnalysisDelayCause />} />
           <Route path="/soldout-analysis/upload" element={<SoldOutAnalysisUpload />} />
           <Route path="/issue" element={<IssueManagement />} />
           <Route path="/issue/improvement" element={<ProductImprovement />} />
