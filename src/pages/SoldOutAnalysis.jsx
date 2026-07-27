@@ -142,9 +142,44 @@ export default function SoldOutAnalysis() {
     return cached;
   };
 
+  // 기간 모드용: [startKey, endKey] 사이의 모든 날짜 key 배열
+  const rangeDayKeys = (startKey, endKey) => {
+    const keys = [];
+    let d = keyToDate(startKey); const endD = keyToDate(endKey);
+    while (d <= endD) { keys.push(dateToKey(d)); d = addDays(d, 1); }
+    return keys;
+  };
+
   // 품절현황에서 제외 → 보고 있는 날짜의 excludeSnapshot에 해당 품목만 추가 + 그 날짜 품절률 즉시 재계산
   // 오늘 = 전역 제외목록(현재 제외 상태) 반영 / 과거 = 그 날짜 캐시 snapshot에만 반영(전역 목록은 건드리지 않음)
   const addExclude = async (r) => {
+    // 기간 모드: 선택 기간 내 모든 날짜 캐시의 excludeSnapshot에 추가 + 각 날짜 품절률/스냅샷 재계산
+    if (rangeResult) {
+      if (displayExcludeSet.has(r.optionId)) return;
+      const dayKeys = rangeDayKeys(rangeResult.startKey, rangeResult.endKey);
+      const snaps = await dbStoreGet('soldout_analysis_rate_snapshots') || {};
+      let daysWithData = 0, rateSum = 0;
+      for (const k of dayKeys) {
+        const cached = await dbStoreGet(`soldout_analysis_cached_${k}`);
+        if (!cached?.items) continue;
+        const snap = new Set(cached.excludeSnapshot || []);
+        snap.add(r.optionId);
+        cached.excludeSnapshot = [...snap];
+        const valid = cached.validItems || [];
+        const rTotal = valid.length;
+        const rSold = valid.filter(it => !snap.has(it.optionId) && it.coupangStock === 0).length;
+        const rate = rTotal > 0 ? Math.round(rSold / rTotal * 10000) / 100 : 0;
+        cached.rate = rate;
+        await dbStoreSet(`soldout_analysis_cached_${k}`, cached);
+        snaps[k] = { date: k, total: rTotal, soldout: rSold, rate };
+        daysWithData++; rateSum += rate;
+      }
+      await dbStoreSet('soldout_analysis_rate_snapshots', snaps, { logDesc: `(NEW)품절 기간제외: ${r.productName} - ${r.optionName} (${rangeResult.startKey}~${rangeResult.endKey})` });
+      const avgRate = daysWithData > 0 ? Math.round(rateSum / daysWithData * 100) / 100 : 0;
+      setRangeResult(prev => prev ? { ...prev, avgRate, excludeSet: [...new Set([...(prev.excludeSet || []), r.optionId])] } : prev);
+      showToast('success', '제외 완료', `${r.productName} - ${r.optionName} 기간 품절률에서 제외`);
+      return;
+    }
     const targetDate = viewingDate;
     const isToday = targetDate === todayStr();
     // 현재 보고 있는 날짜 기준으로 이미 제외면 무시 (오늘=excludeSet, 과거=그날 snapshot)
@@ -183,6 +218,60 @@ export default function SoldOutAnalysis() {
     showToast('success', '제외 완료', `${r.productName} - ${r.optionName} 품절률에서 제외`);
   };
 
+  // 기간 모드 제외 해제: 선택 기간 내 날짜 캐시의 excludeSnapshot에서만 제거 (사유는 유지)
+  // 그 기간에 직접 제외했던 사유·기간을 알럿으로 보여주고 확인받은 뒤에만 해제
+  const removeExclude = async (r) => {
+    if (!rangeResult) return; // 기간 모드 전용
+    const dayKeys = rangeDayKeys(rangeResult.startKey, rangeResult.endKey);
+    const caches = {};
+    const excludedDays = []; // { key, reason }
+    for (const k of dayKeys) {
+      const cached = await dbStoreGet(`soldout_analysis_cached_${k}`);
+      caches[k] = cached;
+      if (!cached?.items) continue;
+      if ((cached.excludeSnapshot || []).includes(r.optionId)) {
+        excludedDays.push({ key: k, reason: cached.trackerSnapshot?.[r.optionId]?.reason || '' });
+      }
+    }
+    if (excludedDays.length === 0) return;
+    // 사유별로 묶어 "그 사유로 M월 D일 ~ M월 D일 제외" 문구 생성
+    const byReason = new Map();
+    for (const d of excludedDays) {
+      const rk = d.reason || '(사유 없음)';
+      if (!byReason.has(rk)) byReason.set(rk, []);
+      byReason.get(rk).push(d.key);
+    }
+    const fmtMD = k => { const dt = keyToDate(k); return `${dt.getMonth() + 1}월 ${dt.getDate()}일`; };
+    const lines = [...byReason.entries()].map(([rsn, keys]) => {
+      const sorted = [...keys].sort();
+      return `· '${rsn}' 사유로 ${fmtMD(sorted[0])} ~ ${fmtMD(sorted[sorted.length - 1])} 제외`;
+    });
+    const ok = window.confirm(`${r.productName} - ${r.optionName}\n\n${lines.join('\n')}\n\n정말 제외를 해제하시겠습니까?`);
+    if (!ok) return;
+    // 해제 실행: 기간 내 모든 날짜 캐시의 excludeSnapshot에서 제거 + 각 날짜 품절률/스냅샷 재계산
+    const snaps = await dbStoreGet('soldout_analysis_rate_snapshots') || {};
+    let daysWithData = 0, rateSum = 0;
+    for (const k of dayKeys) {
+      const cached = caches[k];
+      if (!cached?.items) continue;
+      const snap = new Set(cached.excludeSnapshot || []);
+      snap.delete(r.optionId);
+      cached.excludeSnapshot = [...snap];
+      const valid = cached.validItems || [];
+      const rTotal = valid.length;
+      const rSold = valid.filter(it => !snap.has(it.optionId) && it.coupangStock === 0).length;
+      const rate = rTotal > 0 ? Math.round(rSold / rTotal * 10000) / 100 : 0;
+      cached.rate = rate;
+      await dbStoreSet(`soldout_analysis_cached_${k}`, cached);
+      snaps[k] = { date: k, total: rTotal, soldout: rSold, rate };
+      daysWithData++; rateSum += rate;
+    }
+    await dbStoreSet('soldout_analysis_rate_snapshots', snaps, { logDesc: `(NEW)품절 기간제외 해제: ${r.productName} - ${r.optionName} (${rangeResult.startKey}~${rangeResult.endKey})` });
+    const avgRate = daysWithData > 0 ? Math.round(rateSum / daysWithData * 100) / 100 : 0;
+    setRangeResult(prev => prev ? { ...prev, avgRate, excludeSet: (prev.excludeSet || []).filter(id => id !== r.optionId) } : prev);
+    showToast('success', '해제 완료', `${r.productName} - ${r.optionName} 기간 제외 해제`);
+  };
+
   // 재고 수정: 엑셀 품절이지만 실제 재고 있는 항목 — 오늘만 반영
   const correctStock = async (r) => {
     const updated = { ...stockCorrections, [r.optionId]: { productName: r.productName, optionName: r.optionName, calcStock: r.calcStock, correctedAt: new Date().toISOString() } };
@@ -210,6 +299,25 @@ export default function SoldOutAnalysis() {
 
   const saveBatchReason = async () => {
     if (!batchReason.trim() || selected.size === 0) return;
+    const reason = batchReason.trim();
+    // 기간 모드: 선택 기간 내 모든 날짜 캐시의 trackerSnapshot 사유 일괄 갱신 + 화면 반영
+    if (rangeResult) {
+      const dayKeys = rangeDayKeys(rangeResult.startKey, rangeResult.endKey);
+      for (const k of dayKeys) {
+        const cached = await dbStoreGet(`soldout_analysis_cached_${k}`);
+        if (!cached) continue;
+        const snap = { ...(cached.trackerSnapshot || {}) };
+        for (const id of selected) snap[id] = { ...(snap[id] || {}), reason };
+        cached.trackerSnapshot = snap;
+        await dbStoreSet(`soldout_analysis_cached_${k}`, cached);
+      }
+      setRangeResult(prev => prev ? { ...prev, items: prev.items.map(it => selected.has(it.optionId) ? { ...it, reason } : it) } : prev);
+      showToast('success', '저장', `${selected.size}개 품목 기간 사유 저장 완료`);
+      setSelected(new Set());
+      setBatchReason('');
+      setShowBatchInput(false);
+      return;
+    }
     const updated = { ...tracker };
     for (const id of selected) {
       if (updated[id]) updated[id].reason = batchReason.trim();
@@ -231,6 +339,21 @@ export default function SoldOutAnalysis() {
   };
 
   const saveReason = async (optionId, reason) => {
+    // 기간 모드: 선택 기간 내 모든 날짜 캐시의 trackerSnapshot 사유 갱신 + 화면 반영
+    if (rangeResult) {
+      const dayKeys = rangeDayKeys(rangeResult.startKey, rangeResult.endKey);
+      for (const k of dayKeys) {
+        const cached = await dbStoreGet(`soldout_analysis_cached_${k}`);
+        if (!cached) continue;
+        const snap = { ...(cached.trackerSnapshot || {}) };
+        snap[optionId] = { ...(snap[optionId] || {}), reason };
+        cached.trackerSnapshot = snap;
+        await dbStoreSet(`soldout_analysis_cached_${k}`, cached);
+      }
+      setRangeResult(prev => prev ? { ...prev, items: prev.items.map(it => it.optionId === optionId ? { ...it, reason } : it) } : prev);
+      showToast('success', '저장', '기간 사유 저장 완료');
+      return;
+    }
     const updated = { ...tracker };
     if (updated[optionId]) {
       updated[optionId].reason = reason;
@@ -1146,8 +1269,11 @@ export default function SoldOutAnalysis() {
                       ) : <span style={{ color: '#666' }}>{r.riskReason}</span>}
                     </td>
                     <td className="center">
-                      {displayExcludeSet.has(r.optionId) ? <span style={{ fontSize: 11, color: '#1e8e3e', fontWeight: 600 }}>제외</span>
-                      : <button onClick={() => addExclude(r)} title="품절률 제외" style={{ width: 24, height: 24, borderRadius: 6, border: 'none', cursor: 'pointer', background: '#f1f3f4', color: '#999', fontSize: 12, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>✕</button>}
+                      {displayExcludeSet.has(r.optionId)
+                        ? (rangeResult
+                            ? <span onClick={() => removeExclude(r)} title="클릭하여 해제" style={{ fontSize: 11, color: '#1e8e3e', fontWeight: 600, cursor: 'pointer' }}>제외</span>
+                            : <span style={{ fontSize: 11, color: '#1e8e3e', fontWeight: 600 }}>제외</span>)
+                        : <button onClick={() => addExclude(r)} title="품절률 제외" style={{ width: 24, height: 24, borderRadius: 6, border: 'none', cursor: 'pointer', background: '#f1f3f4', color: '#999', fontSize: 12, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>✕</button>}
                     </td>
                   </tr>
                 );
