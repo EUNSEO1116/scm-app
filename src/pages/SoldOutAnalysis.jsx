@@ -737,10 +737,11 @@ export default function SoldOutAnalysis() {
         keys.push(dateToKey(d));
       }
       // 30개씩 배치로 캐시 로드 (DB 과부하 방지)
+      // 주말 등 정식 캐시가 없는 날도 원천 업로드(soldout_analysis_<날짜>)로 계산해 함께 읽는다
       const caches = [];
       for (let i = 0; i < keys.length; i += 30) {
         const batch = keys.slice(i, i + 30);
-        const r = await Promise.all(batch.map(k => dbStoreGet(`soldout_analysis_cached_${k}`).catch(() => null)));
+        const r = await Promise.all(batch.map(k => ensureUploadSoldoutCache(k).catch(() => null)));
         caches.push(...r);
       }
       const lower = term.toLowerCase();
@@ -777,27 +778,40 @@ export default function SoldOutAnalysis() {
           });
         }
       });
-      // 같은 startDate끼리 묶어 품절 건(spell) 생성
+      // 실제 연속 품절 구간(run)으로 묶어 품절 건(spell) 생성
+      // - startDate 저장값을 믿지 않고, 품절이던 날짜들을 이어붙여 연속 구간을 만든다
+      // - 두 품절일 사이에 "데이터가 있는데 품절이 아닌 날"이 끼면 구간을 끊는다
+      //   (데이터 없는 날은 연속으로 간주 → 주말 등 공백이 있어도 1건)
       const spells = [];
       for (const opt of byOption.values()) {
+        const recByDate = new Map(opt.records.map(r => [r.dateKey, r]));
         const soldoutSet = new Set(opt.records.map(r => r.dateKey)); // 이 옵션이 품절이던 날
-        const groups = new Map();
-        for (const rec of opt.records) {
-          const gk = rec.startDate;
-          if (!groups.has(gk)) groups.set(gk, []);
-          groups.get(gk).push(rec);
+        const sdates = [...soldoutSet].sort(); // 품절 날짜 오름차순
+        // 연속 구간으로 분할
+        const runs = [];
+        let cur = null;
+        for (const d of sdates) {
+          if (!cur) { cur = [d]; continue; }
+          const prev = cur[cur.length - 1];
+          // prev~d 사이에 데이터가 있으면서 품절이 아닌 날이 있으면 구간 분리
+          const brokenBetween = availableDates.some(ad => ad > prev && ad < d && !soldoutSet.has(ad));
+          if (brokenBetween) { runs.push(cur); cur = [d]; }
+          else cur.push(d);
         }
-        for (const [startDate, recs] of groups.entries()) {
-          recs.sort((a, b) => a.dateKey.localeCompare(b.dateKey)); // 오래된 날 → 최근 날
-          const endKey = recs[recs.length - 1].dateKey;
-          const days = Math.max(...recs.map(r => r.days));
+        if (cur) runs.push(cur);
+
+        for (const run of runs) {
+          const startDate = run[0];
+          const endKey = run[run.length - 1];
+          const recs = run.map(d => recByDate.get(d)); // 오래된 날 → 최근 날
+          // 연속 지속일수 = 시작~끝 달력 일수 (공백 포함)
+          const days = Math.max(1, Math.round((keyToDate(endKey) - keyToDate(startDate)) / 86400000) + 1);
           // 품절해제일 = endKey 이후 캐시 존재 날짜 중 더 이상 품절이 아닌 첫 날
           let releaseKey = null;
           for (const d of availableDates) {
             if (d > endKey && !soldoutSet.has(d)) { releaseKey = d; break; }
           }
-          // 품절 시작일 당시 값 (시작일 캐시 없으면 관측된 최초일 기준)
-          const startRec = recs.find(r => r.dateKey === startDate) || recs[0];
+          const startRec = recs[0]; // 구간 첫날 당시 값
           spells.push({
             key: `${opt.optionId}_${startDate}`,
             optionId: opt.optionId,
