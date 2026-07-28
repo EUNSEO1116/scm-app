@@ -372,6 +372,14 @@ export default function SoldOutAnalysisDelayCause() {
     setSelectedIds([]);
   };
 
+  // 선택 일괄 삭제
+  const handleBulkDelete = () => {
+    if (selectedIds.length === 0) return;
+    if (!confirm(`선택한 ${selectedIds.length}건을 삭제할까요? (되돌릴 수 없습니다)`)) return;
+    saveItems(items.filter(i => !selectedIds.includes(i.id)));
+    setSelectedIds([]);
+  };
+
   // 엑셀 다운로드 (현재 필터/검색 결과 기준)
   const handleExcelDownload = () => {
     if (filtered.length === 0) {
@@ -436,14 +444,21 @@ export default function SoldOutAnalysisDelayCause() {
       const pmap = {};
       for (const p of productList) { if (p.barcode) pmap[p.barcode] = p; }
       const today = kstToday();
+      // 발주번호 중복 판정용: 기존 테이블 + 파일 내 이미 처리한 발주번호
+      const existingOrderSet = new Set(items.map(i => normOrder(i.orderNo)).filter(Boolean));
+      const seenOrderSet = new Set();
       const newItems = [];
-      let skipped = 0;
+      let skippedNoBarcode = 0;
+      let skippedDup = 0;
       for (let i = 1; i < rows.length; i++) {
         const r = rows[i];
         const barcode = String(r[idxBarcode] ?? '').trim();
         const orderNo = String(r[idxOrderNo] ?? '').trim();
         const qty = String(r[idxQty] ?? '').trim();
-        if (!barcode) { if (orderNo || qty) skipped++; continue; }
+        if (!barcode) { if (orderNo || qty) skippedNoBarcode++; continue; }
+        const okey = normOrder(orderNo);
+        if (okey && (existingOrderSet.has(okey) || seenOrderSet.has(okey))) { skippedDup++; continue; }
+        if (okey) seenOrderSet.add(okey);
         const prod = pmap[barcode] || {};
         newItems.push({
           ...emptyForm,
@@ -460,9 +475,12 @@ export default function SoldOutAnalysisDelayCause() {
           createdAt: new Date().toISOString(),
         });
       }
-      if (!newItems.length) { alert('등록할 데이터가 없습니다. (바코드가 있는 행 없음)'); return; }
+      if (!newItems.length) { alert(`등록할 데이터가 없습니다. (바코드 없음 ${skippedNoBarcode}건, 발주번호 중복 ${skippedDup}건)`); return; }
       saveItems([...newItems, ...items]);
-      alert(`${newItems.length}건 일괄 등록 완료${skipped ? ` (바코드 없는 ${skipped}건 건너뜀)` : ''}`);
+      const skipParts = [];
+      if (skippedDup) skipParts.push(`발주번호 중복 ${skippedDup}건`);
+      if (skippedNoBarcode) skipParts.push(`바코드 없음 ${skippedNoBarcode}건`);
+      alert(`${newItems.length}건 일괄 등록 완료${skipParts.length ? ` (${skipParts.join(', ')} 건너뜀)` : ''}`);
     } catch (err) {
       console.error(err);
       alert('엑셀 처리 중 오류가 발생했습니다.');
@@ -723,6 +741,12 @@ export default function SoldOutAnalysisDelayCause() {
               <button className="btn" onClick={handleBulkClose}
                 style={{ background: viewingClosed ? '#fff' : '#1e8e3e', color: viewingClosed ? '#1e8e3e' : '#fff', border: viewingClosed ? '1.5px solid #1e8e3e' : 'none', fontWeight: 600 }}>
                 선택 {selectedIds.length}건 {viewingClosed ? '종결 해제' : '종결'}
+              </button>
+            )}
+            {selectedIds.length > 0 && (
+              <button className="btn" onClick={handleBulkDelete}
+                style={{ background: '#c62828', color: '#fff', border: 'none', fontWeight: 600 }}>
+                선택 {selectedIds.length}건 삭제
               </button>
             )}
             <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
