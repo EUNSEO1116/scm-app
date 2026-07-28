@@ -193,8 +193,12 @@ export default function SoldOutAnalysisDelayCause() {
   };
 
   const filtered = useMemo(() => {
-    let rows = items;
-    if (filterReason !== 'all') rows = rows.filter(r => r.reasonStatus === filterReason);
+    let rows;
+    if (filterReason === 'closed') rows = items.filter(r => r.closed);
+    else {
+      rows = items.filter(r => !r.closed);
+      if (filterReason === '확인중') rows = rows.filter(r => r.reasonStatus === '확인중');
+    }
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
       rows = rows.filter(r =>
@@ -237,6 +241,22 @@ export default function SoldOutAnalysisDelayCause() {
   // 체크박스 선택
   const toggleSelect = (id) => {
     setSelectedIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+  };
+
+  const changeFilter = (key) => { setFilterReason(key); setSelectedIds([]); };
+
+  // 일괄 종결 / 종결 해제
+  const handleBulkClose = () => {
+    if (selectedIds.length === 0) return;
+    const closing = filterReason !== 'closed';
+    const msg = closing
+      ? `선택한 ${selectedIds.length}건을 종결 처리할까요? (목록에서 숨겨집니다)`
+      : `선택한 ${selectedIds.length}건의 종결을 해제할까요?`;
+    if (!confirm(msg)) return;
+    saveItems(items.map(i => selectedIds.includes(i.id)
+      ? { ...i, closed: closing, closedAt: closing ? new Date().toISOString() : null }
+      : i));
+    setSelectedIds([]);
   };
 
   // 셀 인라인 수정
@@ -285,6 +305,11 @@ export default function SoldOutAnalysisDelayCause() {
       </div>
     );
   }
+
+  const countAll = items.filter(r => !r.closed).length;
+  const countPending = items.filter(r => !r.closed && r.reasonStatus === '확인중').length;
+  const countClosed = items.filter(r => r.closed).length;
+  const viewingClosed = filterReason === 'closed';
 
   const allSelected = filtered.length > 0 && filtered.every(i => selectedIds.includes(i.id));
   const toggleSelectAll = () => {
@@ -393,16 +418,30 @@ export default function SoldOutAnalysisDelayCause() {
       <div className="card" style={{ marginBottom: 16 }}>
         <div className="card-body" style={{ padding: 16 }}>
           <div className="filter-bar" style={{ flexWrap: 'wrap', gap: 10, alignItems: 'center', marginBottom: 0 }}>
-            <input className="search-input" placeholder="상품명, 옵션명, 바코드, 발주번호, 사유 검색..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} style={{ maxWidth: 300 }} />
-            <div className="dc-select-wrap">
-              <select value={filterReason} onChange={e => setFilterReason(e.target.value)}>
-                <option value="all">전체 사유</option>
-                {REASON_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
-              </select>
-              <span className="dc-arrow">▼</span>
+            <input className="search-input" placeholder="상품명, 옵션명, 바코드, 발주번호, 사유 검색..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} style={{ maxWidth: 260 }} />
+            {/* 상태 카드 필터 */}
+            <div style={{ display: 'flex', gap: 8 }}>
+              {[
+                { key: 'all', label: '전체', count: countAll, color: '#5f6368' },
+                { key: '확인중', label: '확인중', count: countPending, color: REASON_COLORS['확인중'] },
+                { key: 'closed', label: '종결', count: countClosed, color: '#1e8e3e' },
+              ].map(c => {
+                const active = filterReason === c.key;
+                return (
+                  <button key={c.key} onClick={() => changeFilter(c.key)}
+                    style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '7px 14px', border: `1.5px solid ${active ? c.color : '#e0e0e0'}`, borderRadius: 10, background: active ? c.color : '#fff', color: active ? '#fff' : '#5f6368', cursor: 'pointer', fontSize: 13, fontWeight: 600, transition: 'all 0.15s', boxShadow: active ? `0 2px 6px ${c.color}55` : '0 1px 2px rgba(0,0,0,0.04)' }}>
+                    {c.label}
+                    <span style={{ fontSize: 12, fontWeight: 700, minWidth: 18, textAlign: 'center', padding: '1px 6px', borderRadius: 8, background: active ? 'rgba(255,255,255,0.25)' : '#f1f3f4', color: active ? '#fff' : c.color }}>{c.count}</span>
+                  </button>
+                );
+              })}
             </div>
-            <button className="btn btn-outline" onClick={() => { setSearchQuery(''); setFilterReason('all'); }}>초기화</button>
-            <span style={{ fontSize: 12, color: '#9aa0a6' }}>총 {filtered.length}건</span>
+            {selectedIds.length > 0 && (
+              <button className="btn" onClick={handleBulkClose}
+                style={{ background: viewingClosed ? '#fff' : '#1e8e3e', color: viewingClosed ? '#1e8e3e' : '#fff', border: viewingClosed ? '1.5px solid #1e8e3e' : 'none', fontWeight: 600 }}>
+                선택 {selectedIds.length}건 {viewingClosed ? '종결 해제' : '종결'}
+              </button>
+            )}
             <div style={{ marginLeft: 'auto' }}>
               <button className="btn btn-primary" onClick={() => { if (showForm) { resetForm(); } else { setForm(emptyForm); setProductSearch(''); setShowForm(true); } }}>
                 {showForm ? '닫기' : '+ 새 항목'}
