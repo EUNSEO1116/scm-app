@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useCallback } from 'react';
+import { useState, useMemo, useEffect, useCallback, Fragment } from 'react';
 import { dbStoreGet, dbStoreSet } from '../utils/dbApi';
 
 const SHEET_ID = '1NXhW_gG0b-gXuVqrhbY9ErWi8uO_7pXIy-NTo4FbE1I';
@@ -15,10 +15,16 @@ const REASON_COLORS = {
   '조치지연(SCM귀책)': '#1565c0',
 };
 
-// 접힌 카드 한 줄 컬럼 정의 (헤더/각 행 공통 → 세로 정렬 유지)
-const COLS = '22px 92px minmax(130px,1.4fr) minmax(90px,1fr) 112px 116px 106px 106px 106px 74px minmax(130px,1.2fr) 46px';
-const HEADERS = ['', '사유상태', '상품명', '옵션명', '바코드', '발주번호', '발주일', '확인일', '품절일', '대기수량', '자세한 사유', ''];
-const ROW_MIN_WIDTH = 1160;
+// 날짜 컬럼별 포인트 색상
+const DATE_COLORS = {
+  orderDate: '#1565c0',    // 발주일 · 파랑
+  confirmDate: '#00897b',  // 확인일 · 청록
+  shipEtaDate: '#6a1b9a',  // 발송예정일 · 보라
+  releaseReqDate: '#ef6c00', // 출고요청일 · 주황
+  soldoutDate: '#c62828',  // 품절일 · 빨강
+};
+
+const ROW_MIN_WIDTH = 1300;
 
 function parseCSV(text) {
   const result = [];
@@ -119,6 +125,7 @@ export default function SoldOutAnalysisDelayCause() {
   const [searchQuery, setSearchQuery] = useState('');
   const [filterReason, setFilterReason] = useState('all');
   const [expandedId, setExpandedId] = useState(null);
+  const [selectedIds, setSelectedIds] = useState([]); // 체크박스 선택 (나중에 일괄 저장 기능 연결)
 
   const [timelineInput, setTimelineInput] = useState({});
   const [editingTL, setEditingTL] = useState(null); // { itemId, idx }
@@ -224,6 +231,12 @@ export default function SoldOutAnalysisDelayCause() {
   const handleDelete = (id) => {
     if (!confirm('삭제하시겠습니까?')) return;
     saveItems(items.filter(i => i.id !== id));
+    setSelectedIds(prev => prev.filter(x => x !== id));
+  };
+
+  // 체크박스 선택
+  const toggleSelect = (id) => {
+    setSelectedIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
   };
 
   // 셀 인라인 수정
@@ -273,12 +286,23 @@ export default function SoldOutAnalysisDelayCause() {
     );
   }
 
-  const labelStyle = { fontSize: 11, color: '#666', display: 'block', marginBottom: 4 };
-  const reqLabelStyle = { fontSize: 11, color: '#d93025', fontWeight: 700, display: 'block', marginBottom: 4 };
+  const allSelected = filtered.length > 0 && filtered.every(i => selectedIds.includes(i.id));
+  const toggleSelectAll = () => {
+    if (allSelected) setSelectedIds(prev => prev.filter(id => !filtered.some(f => f.id === id)));
+    else setSelectedIds(prev => [...new Set([...prev, ...filtered.map(f => f.id)])]);
+  };
+
+  // ---- 스타일 토큰 ----
+  const labelStyle = { fontSize: 11, color: '#5f6368', display: 'block', marginBottom: 5, fontWeight: 500 };
+  const reqLabelStyle = { ...labelStyle, color: '#d93025', fontWeight: 700 };
   const inputStyle = { width: '100%', minWidth: 'auto' };
-  const reqInputStyle = { ...inputStyle, border: '1.5px solid #e57373', background: '#fff7f7' };
-  const cellText = { fontSize: 12, color: '#333', cursor: 'pointer', borderBottom: '1px dashed #d5d5d5', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', display: 'block', paddingBottom: 1 };
-  const cellInput = { width: '100%', minWidth: 'auto', fontSize: 12, padding: '2px 4px', height: 26, boxSizing: 'border-box' };
+  const reqInputStyle = { ...inputStyle, border: '1.5px solid #f0b4b4', background: '#fffafa' };
+  const sectionTitle = { fontSize: 11.5, fontWeight: 700, color: '#1a73e8', marginBottom: 12, letterSpacing: '0.3px', textTransform: 'uppercase' };
+  const sectionWrap = { padding: '16px 0', borderTop: '1px solid #eef1f4' };
+
+  // 표 셀 표시/입력 스타일
+  const cellDisplay = { display: 'block', padding: '9px 10px', fontSize: 12, cursor: 'pointer', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', borderRadius: 4 };
+  const cellInputStyle = { width: '100%', minWidth: 'auto', fontSize: 12, padding: '6px 8px', height: 32, boxSizing: 'border-box', border: '1.5px solid #1a73e8', borderRadius: 6, outline: 'none' };
 
   // 클릭하여 수정되는 셀
   const renderCell = (item, field, type, big) => {
@@ -287,8 +311,8 @@ export default function SoldOutAnalysisDelayCause() {
       return (
         <select value={item.reasonStatus || '확인중'} onChange={e => updateField(item.id, 'reasonStatus', e.target.value)}
           onClick={e => e.stopPropagation()}
-          style={{ padding: '2px 4px', fontSize: 10, fontWeight: 600, border: `1.5px solid ${c}`, borderRadius: 5, color: c, background: '#fff', cursor: 'pointer', maxWidth: '100%' }}>
-          {REASON_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
+          style={{ width: '100%', padding: '5px 8px', fontSize: 11, fontWeight: 700, border: `1.5px solid ${c}`, borderRadius: 6, color: c, background: '#fff', cursor: 'pointer', appearance: 'none', WebkitAppearance: 'none', MozAppearance: 'none', textAlignLast: 'center' }}>
+          {REASON_STATUSES.map(s => <option key={s} value={s} style={{ color: '#333' }}>{s}</option>)}
         </select>
       );
     }
@@ -296,21 +320,33 @@ export default function SoldOutAnalysisDelayCause() {
     if (editing) {
       const inputType = type === 'date' ? 'date' : type === 'number' ? 'number' : 'text';
       return (
-        <input type={inputType} className="search-input" value={editValue}
+        <input type={inputType} value={editValue}
           onChange={e => setEditValue(e.target.value)}
           onBlur={commitEdit}
           onClick={e => e.stopPropagation()}
           onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); commitEdit(); } else if (e.key === 'Escape') { setEditingCell(null); } }}
           ref={el => { if (el) { el.focus(); if (type === 'date') { try { el.showPicker && el.showPicker(); } catch { /* ignore */ } } } }}
-          style={{ ...cellInput, fontSize: big ? 13 : 12 }} />
+          style={{ ...cellInputStyle, fontSize: big ? 13 : 12 }} />
       );
     }
     const raw = item[field];
     const empty = (raw ?? '') === '';
+    const dateColor = DATE_COLORS[field];
+    const wrap = field === 'productName' || field === 'reasonDetail';
     return (
-      <span onClick={e => { e.stopPropagation(); startEdit(item.id, field, raw); }}
+      <span className="dc-editable" onClick={e => { e.stopPropagation(); startEdit(item.id, field, raw); }}
         title="클릭하여 수정"
-        style={{ ...cellText, fontSize: big ? 13 : 12, color: empty ? '#bbb' : '#333' }}>
+        style={{
+          ...cellDisplay,
+          fontSize: big ? 13 : 12,
+          color: empty ? '#c4c7cc' : (dateColor || '#333'),
+          fontWeight: dateColor && !empty ? 600 : 400,
+          textAlign: type === 'number' ? 'center' : 'left',
+          whiteSpace: wrap ? 'normal' : 'nowrap',
+          overflow: wrap ? 'visible' : 'hidden',
+          textOverflow: wrap ? 'clip' : 'ellipsis',
+          wordBreak: wrap ? 'break-word' : 'normal',
+        }}>
         {empty ? '-' : raw}
       </span>
     );
@@ -318,8 +354,33 @@ export default function SoldOutAnalysisDelayCause() {
 
   return (
     <div>
+      <style>{`
+        .dc-table { width: 100%; border-collapse: collapse; background: #fff; }
+        .dc-table th {
+          padding: 11px 10px; font-size: 11.5px; font-weight: 700; color: #5f6368;
+          background: #f4f6f8; border: 1px solid #e3e7eb; text-align: left;
+          white-space: nowrap; letter-spacing: 0.2px;
+        }
+        .dc-table td { border: 1px solid #eceff1; vertical-align: middle; padding: 0; }
+        .dc-table td.dc-pad { padding: 5px 6px; }
+        .dc-table tbody tr.dc-row:hover { background: #f8fafd; }
+        .dc-editable { transition: background 0.12s, box-shadow 0.12s; }
+        .dc-editable:hover { background: #eef4ff; box-shadow: inset 0 0 0 1.5px #cfe0ff; }
+        .dc-del { color: #cfd3d6; cursor: pointer; font-size: 15px; transition: color 0.15s; }
+        .dc-del:hover { color: #d93025; }
+        .dc-select-wrap { position: relative; display: inline-block; }
+        .dc-select-wrap select {
+          appearance: none; -webkit-appearance: none; -moz-appearance: none;
+          padding: 9px 36px 9px 14px; font-size: 13px; font-weight: 500; color: #333;
+          border: 1px solid #d8dce0; border-radius: 10px; background: #fff; cursor: pointer;
+          outline: none; box-shadow: 0 1px 2px rgba(0,0,0,0.04); min-width: 140px; transition: border-color 0.15s;
+        }
+        .dc-select-wrap select:focus { border-color: #1a73e8; }
+        .dc-select-wrap .dc-arrow { position: absolute; right: 13px; top: 50%; transform: translateY(-50%); pointer-events: none; font-size: 9px; color: #888; }
+      `}</style>
+
       {dbSyncFailed && (
-        <div style={{ marginBottom: 16, background: '#ffebee', border: '1px solid #ef5350', borderRadius: 12, padding: 16, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div style={{ marginBottom: 16, background: '#fdedeb', border: '1px solid #ef5350', borderRadius: 12, padding: 16, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <span style={{ fontWeight: 600, fontSize: 14, color: '#c62828' }}>
             DB 저장 실패 — 현재 로컬에만 저장됨. 다른 컴퓨터에서 보이지 않을 수 있습니다.
           </span>
@@ -330,23 +391,18 @@ export default function SoldOutAnalysisDelayCause() {
 
       {/* 툴바 */}
       <div className="card" style={{ marginBottom: 16 }}>
-        <div className="card-body">
-          <div className="filter-bar" style={{ flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
-            <input className="search-input" placeholder="상품명, 옵션명, 바코드, 발주번호, 사유 검색..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} style={{ maxWidth: 280 }} />
-            <div style={{ position: 'relative', display: 'inline-block' }}>
-              <select value={filterReason} onChange={e => setFilterReason(e.target.value)}
-                style={{
-                  appearance: 'none', WebkitAppearance: 'none', MozAppearance: 'none',
-                  padding: '8px 34px 8px 14px', fontSize: 13, fontWeight: 500, color: '#333',
-                  border: '1px solid #d8dce0', borderRadius: 10, background: '#fff', cursor: 'pointer',
-                  outline: 'none', boxShadow: '0 1px 2px rgba(0,0,0,0.04)', minWidth: 130,
-                }}>
+        <div className="card-body" style={{ padding: 16 }}>
+          <div className="filter-bar" style={{ flexWrap: 'wrap', gap: 10, alignItems: 'center', marginBottom: 0 }}>
+            <input className="search-input" placeholder="상품명, 옵션명, 바코드, 발주번호, 사유 검색..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} style={{ maxWidth: 300 }} />
+            <div className="dc-select-wrap">
+              <select value={filterReason} onChange={e => setFilterReason(e.target.value)}>
                 <option value="all">전체 사유</option>
                 {REASON_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
               </select>
-              <span style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none', fontSize: 10, color: '#888' }}>▼</span>
+              <span className="dc-arrow">▼</span>
             </div>
             <button className="btn btn-outline" onClick={() => { setSearchQuery(''); setFilterReason('all'); }}>초기화</button>
+            <span style={{ fontSize: 12, color: '#9aa0a6' }}>총 {filtered.length}건</span>
             <div style={{ marginLeft: 'auto' }}>
               <button className="btn btn-primary" onClick={() => { if (showForm) { resetForm(); } else { setForm(emptyForm); setProductSearch(''); setShowForm(true); } }}>
                 {showForm ? '닫기' : '+ 새 항목'}
@@ -358,96 +414,111 @@ export default function SoldOutAnalysisDelayCause() {
 
       {/* 등록 폼 */}
       {showForm && (
-        <div className="card" style={{ marginBottom: 16, border: '2px solid #1a73e8' }}>
-          <div className="card-header">
-            <h2 style={{ fontSize: 14, fontWeight: 600 }}>새 보충 지연 항목 등록</h2>
+        <div className="card" style={{ marginBottom: 16, border: '1px solid #d2e3fc', boxShadow: '0 2px 10px rgba(26,115,232,0.10)' }}>
+          <div className="card-header" style={{ background: '#f7faff', borderBottom: '1px solid #e6eefc' }}>
+            <h2 style={{ fontSize: 15, fontWeight: 700, color: '#1a73e8' }}>새 보충 지연 항목 등록</h2>
+            <span style={{ fontSize: 11, color: '#d93025', fontWeight: 600 }}>* 필수 입력</span>
           </div>
-          <div className="card-body">
-            <div style={{ fontSize: 11, color: '#d93025', fontWeight: 600, marginBottom: 10 }}>* 표시는 필수 입력 항목입니다</div>
-            {/* 상품 검색 */}
-            <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr', gap: 12, marginBottom: 12 }}>
-              <div style={{ position: 'relative' }}>
-                <label style={reqLabelStyle}>상품 * (상품명·바코드 검색)</label>
-                <input className="search-input" placeholder="상품명 또는 바코드로 검색..." value={productSearch}
-                  onChange={e => { setProductSearch(e.target.value); setShowSuggestions(true); setForm(p => ({ ...p, productName: e.target.value, barcode: '', optionName: '' })); }}
-                  onFocus={() => setShowSuggestions(true)}
-                  onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
-                  style={reqInputStyle} />
-                {showSuggestions && suggestions.length > 0 && (
-                  <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, background: '#fff', border: '1px solid #ddd', borderRadius: 8, maxHeight: 200, overflow: 'auto', zIndex: 100, boxShadow: '0 4px 12px rgba(0,0,0,0.15)' }}>
-                    {suggestions.map((p, idx) => (
-                      <div key={idx} style={{ padding: '8px 12px', cursor: 'pointer', borderBottom: '1px solid #f0f0f0', fontSize: 12 }}
-                        onMouseDown={() => selectProduct(p)}>
-                        <div style={{ fontWeight: 500 }}>{p.productName}</div>
-                        <div style={{ color: '#999', fontSize: 11, fontFamily: 'monospace' }}>{p.barcode}{p.optionName ? ` · ${p.optionName}` : ''}</div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-              <div>
-                <label style={reqLabelStyle}>바코드 *</label>
-                <input className="search-input" value={form.barcode} onChange={e => setForm(p => ({ ...p, barcode: e.target.value }))} style={reqInputStyle} placeholder="자동/직접 입력" />
-              </div>
-              <div>
-                <label style={labelStyle}>옵션명</label>
-                <input className="search-input" value={form.optionName} onChange={e => setForm(p => ({ ...p, optionName: e.target.value }))} style={inputStyle} placeholder="자동/직접 입력" />
+          <div className="card-body" style={{ paddingTop: 4 }}>
+            {/* 상품 정보 */}
+            <div style={{ ...sectionWrap, borderTop: 'none' }}>
+              <div style={sectionTitle}>상품 정보</div>
+              <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr', gap: 14 }}>
+                <div style={{ position: 'relative' }}>
+                  <label style={reqLabelStyle}>상품 * (상품명·바코드 검색)</label>
+                  <input className="search-input" placeholder="상품명 또는 바코드로 검색..." value={productSearch}
+                    onChange={e => { setProductSearch(e.target.value); setShowSuggestions(true); setForm(p => ({ ...p, productName: e.target.value, barcode: '', optionName: '' })); }}
+                    onFocus={() => setShowSuggestions(true)}
+                    onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
+                    style={reqInputStyle} />
+                  {showSuggestions && suggestions.length > 0 && (
+                    <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, background: '#fff', border: '1px solid #ddd', borderRadius: 8, maxHeight: 200, overflow: 'auto', zIndex: 100, boxShadow: '0 4px 12px rgba(0,0,0,0.15)', marginTop: 4 }}>
+                      {suggestions.map((p, idx) => (
+                        <div key={idx} style={{ padding: '8px 12px', cursor: 'pointer', borderBottom: '1px solid #f0f0f0', fontSize: 12 }}
+                          onMouseDown={() => selectProduct(p)}>
+                          <div style={{ fontWeight: 500 }}>{p.productName}</div>
+                          <div style={{ color: '#999', fontSize: 11, fontFamily: 'monospace' }}>{p.barcode}{p.optionName ? ` · ${p.optionName}` : ''}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <div>
+                  <label style={reqLabelStyle}>바코드 *</label>
+                  <input className="search-input" value={form.barcode} onChange={e => setForm(p => ({ ...p, barcode: e.target.value }))} style={reqInputStyle} placeholder="자동/직접 입력" />
+                </div>
+                <div>
+                  <label style={labelStyle}>옵션명</label>
+                  <input className="search-input" value={form.optionName} onChange={e => setForm(p => ({ ...p, optionName: e.target.value }))} style={inputStyle} placeholder="자동/직접 입력" />
+                </div>
               </div>
             </div>
 
             {/* 발주 정보 */}
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12, marginBottom: 12 }}>
-              <div>
-                <label style={labelStyle}>발주번호</label>
-                <input className="search-input" value={form.orderNo}
-                  onChange={e => { const v = e.target.value; setForm(p => ({ ...p, orderNo: v, orderDate: parseOrderDate(v) || p.orderDate })); }}
-                  style={inputStyle} placeholder="예: AE-I-260529" />
-              </div>
-              <div>
-                <label style={labelStyle}>발주일 (발주번호 자동 인식)</label>
-                <input type="date" className="search-input" value={form.orderDate} onChange={e => setForm(p => ({ ...p, orderDate: e.target.value }))} style={inputStyle} />
-              </div>
-              <div>
-                <label style={reqLabelStyle}>확인일 *</label>
-                <input type="date" className="search-input" value={form.confirmDate} onChange={e => setForm(p => ({ ...p, confirmDate: e.target.value }))} style={reqInputStyle} />
-              </div>
-            </div>
-
-            {/* 일정/수량 */}
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 12, marginBottom: 12 }}>
-              <div>
-                <label style={labelStyle}>발송예정일</label>
-                <input type="date" className="search-input" value={form.shipEtaDate} onChange={e => setForm(p => ({ ...p, shipEtaDate: e.target.value }))} style={inputStyle} />
-              </div>
-              <div>
-                <label style={labelStyle}>출고요청일(예상일)</label>
-                <input type="date" className="search-input" value={form.releaseReqDate} onChange={e => setForm(p => ({ ...p, releaseReqDate: e.target.value }))} style={inputStyle} />
-              </div>
-              <div>
-                <label style={labelStyle}>품절일</label>
-                <input type="date" className="search-input" value={form.soldoutDate} onChange={e => setForm(p => ({ ...p, soldoutDate: e.target.value }))} style={inputStyle} />
-              </div>
-              <div>
-                <label style={reqLabelStyle}>대기수량(발주수량) *</label>
-                <input type="number" className="search-input" value={form.qty} onChange={e => setForm(p => ({ ...p, qty: e.target.value }))} style={reqInputStyle} placeholder="수량" />
+            <div style={sectionWrap}>
+              <div style={sectionTitle}>발주 정보</div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 14 }}>
+                <div>
+                  <label style={labelStyle}>발주번호</label>
+                  <input className="search-input" value={form.orderNo}
+                    onChange={e => { const v = e.target.value; setForm(p => ({ ...p, orderNo: v, orderDate: parseOrderDate(v) || p.orderDate })); }}
+                    style={inputStyle} placeholder="예: AE-I-260529" />
+                </div>
+                <div>
+                  <label style={labelStyle}>발주일 (발주번호 자동 인식)</label>
+                  <input type="date" className="search-input" value={form.orderDate} onChange={e => setForm(p => ({ ...p, orderDate: e.target.value }))} style={inputStyle} />
+                </div>
+                <div>
+                  <label style={reqLabelStyle}>확인일 *</label>
+                  <input type="date" className="search-input" value={form.confirmDate} onChange={e => setForm(p => ({ ...p, confirmDate: e.target.value }))} style={reqInputStyle} />
+                </div>
               </div>
             </div>
 
-            {/* 사유 */}
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 12, marginBottom: 12 }}>
-              <div>
-                <label style={labelStyle}>사유 상태</label>
-                <select className="filter-select" value={form.reasonStatus} onChange={e => setForm(p => ({ ...p, reasonStatus: e.target.value }))} style={{ width: '100%' }}>
-                  {REASON_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
-                </select>
-              </div>
-              <div>
-                <label style={labelStyle}>자세한 사유</label>
-                <input className="search-input" value={form.reasonDetail} onChange={e => setForm(p => ({ ...p, reasonDetail: e.target.value }))} style={inputStyle} placeholder="자세한 사유를 입력하세요..." />
+            {/* 일정 · 수량 */}
+            <div style={sectionWrap}>
+              <div style={sectionTitle}>일정 · 수량</div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 14 }}>
+                <div>
+                  <label style={labelStyle}>발송예정일</label>
+                  <input type="date" className="search-input" value={form.shipEtaDate} onChange={e => setForm(p => ({ ...p, shipEtaDate: e.target.value }))} style={inputStyle} />
+                </div>
+                <div>
+                  <label style={labelStyle}>출고요청일(예상일)</label>
+                  <input type="date" className="search-input" value={form.releaseReqDate} onChange={e => setForm(p => ({ ...p, releaseReqDate: e.target.value }))} style={inputStyle} />
+                </div>
+                <div>
+                  <label style={labelStyle}>품절일</label>
+                  <input type="date" className="search-input" value={form.soldoutDate} onChange={e => setForm(p => ({ ...p, soldoutDate: e.target.value }))} style={inputStyle} />
+                </div>
+                <div>
+                  <label style={reqLabelStyle}>대기수량(발주수량) *</label>
+                  <input type="number" className="search-input" value={form.qty} onChange={e => setForm(p => ({ ...p, qty: e.target.value }))} style={reqInputStyle} placeholder="수량" />
+                </div>
               </div>
             </div>
 
-            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+            {/* 지연 사유 */}
+            <div style={sectionWrap}>
+              <div style={sectionTitle}>지연 사유</div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 14 }}>
+                <div>
+                  <label style={labelStyle}>사유 상태</label>
+                  <div className="dc-select-wrap" style={{ display: 'block' }}>
+                    <select value={form.reasonStatus} onChange={e => setForm(p => ({ ...p, reasonStatus: e.target.value }))} style={{ width: '100%' }}>
+                      {REASON_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
+                    </select>
+                    <span className="dc-arrow">▼</span>
+                  </div>
+                </div>
+                <div>
+                  <label style={labelStyle}>자세한 사유</label>
+                  <input className="search-input" value={form.reasonDetail} onChange={e => setForm(p => ({ ...p, reasonDetail: e.target.value }))} style={inputStyle} placeholder="자세한 사유를 입력하세요..." />
+                </div>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16, paddingTop: 16, borderTop: '1px solid #eef1f4' }}>
               <button className="btn btn-outline" onClick={resetForm}>취소</button>
               <button className="btn btn-primary" onClick={handleAdd} disabled={!canSubmit}>등록</button>
             </div>
@@ -463,95 +534,132 @@ export default function SoldOutAnalysisDelayCause() {
           </div>
         </div>
       ) : (
-        <div style={{ overflowX: 'auto' }}>
-          <div style={{ minWidth: ROW_MIN_WIDTH }}>
-            {/* 컬럼 헤더 */}
-            <div style={{ display: 'grid', gridTemplateColumns: COLS, gap: 8, alignItems: 'center', padding: '8px 14px', fontSize: 11, fontWeight: 600, color: '#888', letterSpacing: '0.2px' }}>
-              {HEADERS.map((h, i) => <div key={i}>{h}</div>)}
-            </div>
-
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {filtered.map((item) => {
-                const isOpen = expandedId === item.id;
-                const color = REASON_COLORS[item.reasonStatus] || '#9e9e9e';
-                return (
-                  <div key={item.id} className="card" style={{ borderLeft: `4px solid ${color}` }}>
-                    {/* 한 줄 요약 */}
-                    <div style={{ display: 'grid', gridTemplateColumns: COLS, gap: 8, alignItems: 'center', padding: '10px 14px' }}>
-                      <span onClick={() => setExpandedId(prev => prev === item.id ? null : item.id)}
-                        title="조치 내용 열기/닫기"
-                        style={{ fontSize: 14, color: '#999', cursor: 'pointer', transition: 'transform 0.2s', transform: isOpen ? 'rotate(90deg)' : 'rotate(0deg)', display: 'inline-block' }}>&#9654;</span>
-                      {renderCell(item, 'reasonStatus')}
-                      {renderCell(item, 'productName', 'text')}
-                      {renderCell(item, 'optionName', 'text')}
-                      {renderCell(item, 'barcode', 'text')}
-                      {renderCell(item, 'orderNo', 'text')}
-                      {renderCell(item, 'orderDate', 'date')}
-                      {renderCell(item, 'confirmDate', 'date')}
-                      {renderCell(item, 'soldoutDate', 'date')}
-                      {renderCell(item, 'qty', 'number')}
-                      {renderCell(item, 'reasonDetail', 'text')}
-                      <span onClick={() => handleDelete(item.id)} title="삭제"
-                        style={{ fontSize: 12, color: '#d93025', cursor: 'pointer', textAlign: 'center' }}>삭제</span>
-                    </div>
-
-                    {/* 펼침: 발송예정일/출고요청일 + 조치 내용 */}
-                    {isOpen && (
-                      <div style={{ padding: '4px 16px 16px 40px', borderTop: '1px solid #f0f0f0' }}>
-                        <div style={{ display: 'flex', gap: 32, flexWrap: 'wrap', padding: '12px 0' }}>
-                          <div>
-                            <div style={{ fontSize: 11, color: '#999', marginBottom: 3 }}>발송예정일</div>
-                            <div style={{ maxWidth: 160 }}>{renderCell(item, 'shipEtaDate', 'date', true)}</div>
-                          </div>
-                          <div>
-                            <div style={{ fontSize: 11, color: '#999', marginBottom: 3 }}>출고요청일(예상일)</div>
-                            <div style={{ maxWidth: 160 }}>{renderCell(item, 'releaseReqDate', 'date', true)}</div>
-                          </div>
-                        </div>
-
-                        <div style={{ fontSize: 12, fontWeight: 600, color: '#555', margin: '4px 0 10px' }}>조치 내용</div>
-                        <div style={{ marginLeft: 8, borderLeft: '2px solid #e0e0e0', paddingLeft: 16 }}>
-                          {(item.timeline || []).map((entry, tIdx) => {
-                            const editing = editingTL && editingTL.itemId === item.id && editingTL.idx === tIdx;
-                            return (
-                              <div key={tIdx} style={{ position: 'relative', marginBottom: 10 }}>
-                                <div style={{ position: 'absolute', left: -22, top: 4, width: 10, height: 10, borderRadius: '50%', background: tIdx === (item.timeline.length - 1) ? '#1a73e8' : '#bdbdbd' }} />
-                                {editing ? (
-                                  <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
-                                    <span style={{ fontSize: 11, color: '#999', whiteSpace: 'nowrap', minWidth: 100, marginTop: 6 }}>{entry.date}</span>
-                                    <textarea className="search-input" value={editingTLText} onChange={e => setEditingTLText(e.target.value)}
-                                      onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); saveEditTimeline(); } }}
-                                      rows={1} style={{ flex: 1, minWidth: 'auto', resize: 'vertical', fontFamily: 'inherit', fontSize: 12, lineHeight: 1.5 }} />
-                                    <button className="btn btn-primary btn-sm" onClick={saveEditTimeline} style={{ fontSize: 11, padding: '4px 10px', whiteSpace: 'nowrap' }}>저장</button>
-                                    <button className="btn btn-outline btn-sm" onClick={() => setEditingTL(null)} style={{ fontSize: 11, padding: '4px 10px', whiteSpace: 'nowrap' }}>취소</button>
-                                  </div>
-                                ) : (
-                                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-                                    <span style={{ fontSize: 11, color: '#999', whiteSpace: 'nowrap', minWidth: 100 }}>{entry.date}</span>
-                                    <span style={{ fontSize: 13, color: '#333', lineHeight: 1.5, whiteSpace: 'pre-wrap', wordBreak: 'break-word', flex: 1 }}>{entry.text}</span>
-                                    <span style={{ fontSize: 11, color: '#1a73e8', cursor: 'pointer', whiteSpace: 'nowrap' }} onClick={() => startEditTimeline(item.id, tIdx, entry.text)}>수정</span>
-                                    <span style={{ fontSize: 11, color: '#ccc', cursor: 'pointer', whiteSpace: 'nowrap' }} onClick={() => handleDeleteTimeline(item.id, tIdx)}>삭제</span>
-                                  </div>
-                                )}
+        <div className="card" style={{ padding: 0 }}>
+          <div style={{ overflowX: 'auto' }}>
+            <table className="dc-table" style={{ minWidth: ROW_MIN_WIDTH }}>
+              <colgroup>
+                <col style={{ width: 40 }} />
+                <col style={{ width: 38 }} />
+                <col style={{ width: 130 }} />
+                <col style={{ width: 112 }} />
+                <col style={{ width: 190 }} />
+                <col style={{ width: 110 }} />
+                <col style={{ width: 120 }} />
+                <col style={{ width: 106 }} />
+                <col style={{ width: 118 }} />
+                <col style={{ width: 124 }} />
+                <col style={{ width: 118 }} />
+                <col style={{ width: 78 }} />
+                <col style={{ width: 106 }} />
+                <col style={{ width: 52 }} />
+              </colgroup>
+              <thead>
+                <tr>
+                  <th style={{ textAlign: 'center' }}>
+                    <input type="checkbox" checked={allSelected} onChange={toggleSelectAll} style={{ width: 15, height: 15, cursor: 'pointer', accentColor: '#1a73e8', verticalAlign: 'middle' }} title="전체 선택" />
+                  </th>
+                  <th></th>
+                  <th>사유상태</th>
+                  <th>발주번호</th>
+                  <th>상품명</th>
+                  <th>옵션명</th>
+                  <th>바코드</th>
+                  <th style={{ color: DATE_COLORS.orderDate, borderBottom: `2px solid ${DATE_COLORS.orderDate}` }}>발주일</th>
+                  <th style={{ color: DATE_COLORS.confirmDate, borderBottom: `2px solid ${DATE_COLORS.confirmDate}` }}>확인일(조치일)</th>
+                  <th style={{ color: DATE_COLORS.shipEtaDate, borderBottom: `2px solid ${DATE_COLORS.shipEtaDate}` }}>업체 발송예정일</th>
+                  <th style={{ color: DATE_COLORS.releaseReqDate, borderBottom: `2px solid ${DATE_COLORS.releaseReqDate}` }}>CN출고요청일</th>
+                  <th style={{ textAlign: 'center' }}>대기수량</th>
+                  <th style={{ color: DATE_COLORS.soldoutDate, borderBottom: `2px solid ${DATE_COLORS.soldoutDate}` }}>품절시작일</th>
+                  <th style={{ textAlign: 'center' }}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((item) => {
+                  const isOpen = expandedId === item.id;
+                  const isSelected = selectedIds.includes(item.id);
+                  const color = REASON_COLORS[item.reasonStatus] || '#9e9e9e';
+                  return (
+                    <Fragment key={item.id}>
+                      <tr className="dc-row" style={isSelected ? { background: '#eef4ff' } : (isOpen ? { background: '#f8fafd' } : undefined)}>
+                        <td style={{ textAlign: 'center', borderLeft: `3px solid ${color}` }}>
+                          <input type="checkbox" checked={isSelected} onChange={() => toggleSelect(item.id)}
+                            style={{ width: 15, height: 15, cursor: 'pointer', accentColor: '#1a73e8', verticalAlign: 'middle' }} />
+                        </td>
+                        <td style={{ textAlign: 'center' }}>
+                          <span onClick={() => setExpandedId(prev => prev === item.id ? null : item.id)}
+                            title="조치 내용 열기/닫기"
+                            style={{ fontSize: 13, color: '#9aa0a6', cursor: 'pointer', display: 'inline-block', transition: 'transform 0.2s', transform: isOpen ? 'rotate(90deg)' : 'none' }}>&#9654;</span>
+                        </td>
+                        <td className="dc-pad">{renderCell(item, 'reasonStatus')}</td>
+                        <td>{renderCell(item, 'orderNo', 'text')}</td>
+                        <td>{renderCell(item, 'productName', 'text')}</td>
+                        <td>{renderCell(item, 'optionName', 'text')}</td>
+                        <td>{renderCell(item, 'barcode', 'text')}</td>
+                        <td>{renderCell(item, 'orderDate', 'date')}</td>
+                        <td>{renderCell(item, 'confirmDate', 'date')}</td>
+                        <td>{renderCell(item, 'shipEtaDate', 'date')}</td>
+                        <td>{renderCell(item, 'releaseReqDate', 'date')}</td>
+                        <td>{renderCell(item, 'qty', 'number')}</td>
+                        <td>{renderCell(item, 'soldoutDate', 'date')}</td>
+                        <td style={{ textAlign: 'center' }}>
+                          <span className="dc-del" onClick={() => handleDelete(item.id)} title="삭제">&#10005;</span>
+                        </td>
+                      </tr>
+                      {isOpen && (
+                        <tr>
+                          <td colSpan={14} style={{ background: '#fafbfc', padding: 0 }}>
+                            <div style={{ padding: '16px 20px 20px 44px' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 12, paddingBottom: 14, marginBottom: 4, borderBottom: '1px solid #eef1f4' }}>
+                                <div style={{ fontSize: 11, color: '#999', fontWeight: 600, whiteSpace: 'nowrap' }}>자세한 사유</div>
+                                <div style={{ flex: 1, maxWidth: 800, border: '1px solid #e3e7eb', borderRadius: 6, background: '#fff' }}>{renderCell(item, 'reasonDetail', 'text', true)}</div>
                               </div>
-                            );
-                          })}
-                          <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', position: 'relative' }}>
-                            <div style={{ position: 'absolute', left: -22, top: 8, width: 10, height: 10, borderRadius: '50%', border: '2px solid #bdbdbd', background: '#fff' }} />
-                            <textarea className="search-input" placeholder="조치한 내용 추가..."
-                              value={timelineInput[item.id] || ''}
-                              onChange={e => setTimelineInput(prev => ({ ...prev, [item.id]: e.target.value }))}
-                              onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleAddTimeline(item.id); } }}
-                              rows={1} style={{ flex: 1, minWidth: 'auto', resize: 'vertical', fontFamily: 'inherit', fontSize: 12, lineHeight: 1.5 }} />
-                            <button className="btn btn-primary btn-sm" onClick={() => handleAddTimeline(item.id)} style={{ fontSize: 11, padding: '4px 12px', whiteSpace: 'nowrap', marginTop: 2 }}>추가</button>
-                          </div>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
+
+                              <div style={{ fontSize: 12, fontWeight: 700, color: '#555', margin: '14px 0 12px' }}>조치 내용</div>
+                              <div style={{ marginLeft: 8, borderLeft: '2px solid #e0e0e0', paddingLeft: 16 }}>
+                                {(item.timeline || []).map((entry, tIdx) => {
+                                  const editing = editingTL && editingTL.itemId === item.id && editingTL.idx === tIdx;
+                                  return (
+                                    <div key={tIdx} style={{ position: 'relative', marginBottom: 10 }}>
+                                      <div style={{ position: 'absolute', left: -22, top: 4, width: 10, height: 10, borderRadius: '50%', background: tIdx === (item.timeline.length - 1) ? '#1a73e8' : '#bdbdbd' }} />
+                                      {editing ? (
+                                        <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                                          <span style={{ fontSize: 11, color: '#999', whiteSpace: 'nowrap', minWidth: 100, marginTop: 6 }}>{entry.date}</span>
+                                          <textarea className="search-input" value={editingTLText} onChange={e => setEditingTLText(e.target.value)}
+                                            onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); saveEditTimeline(); } }}
+                                            rows={1} style={{ flex: 1, minWidth: 'auto', resize: 'vertical', fontFamily: 'inherit', fontSize: 12, lineHeight: 1.5 }} />
+                                          <button className="btn btn-primary btn-sm" onClick={saveEditTimeline} style={{ fontSize: 11, padding: '4px 10px', whiteSpace: 'nowrap' }}>저장</button>
+                                          <button className="btn btn-outline btn-sm" onClick={() => setEditingTL(null)} style={{ fontSize: 11, padding: '4px 10px', whiteSpace: 'nowrap' }}>취소</button>
+                                        </div>
+                                      ) : (
+                                        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+                                          <span style={{ fontSize: 11, color: '#999', whiteSpace: 'nowrap', minWidth: 100 }}>{entry.date}</span>
+                                          <span style={{ fontSize: 13, color: '#333', lineHeight: 1.5, whiteSpace: 'pre-wrap', wordBreak: 'break-word', flex: 1 }}>{entry.text}</span>
+                                          <span style={{ fontSize: 11, color: '#1a73e8', cursor: 'pointer', whiteSpace: 'nowrap' }} onClick={() => startEditTimeline(item.id, tIdx, entry.text)}>수정</span>
+                                          <span style={{ fontSize: 11, color: '#ccc', cursor: 'pointer', whiteSpace: 'nowrap' }} onClick={() => handleDeleteTimeline(item.id, tIdx)}>삭제</span>
+                                        </div>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                                <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', position: 'relative' }}>
+                                  <div style={{ position: 'absolute', left: -22, top: 8, width: 10, height: 10, borderRadius: '50%', border: '2px solid #bdbdbd', background: '#fff' }} />
+                                  <textarea className="search-input" placeholder="조치한 내용 추가..."
+                                    value={timelineInput[item.id] || ''}
+                                    onChange={e => setTimelineInput(prev => ({ ...prev, [item.id]: e.target.value }))}
+                                    onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleAddTimeline(item.id); } }}
+                                    rows={1} style={{ flex: 1, minWidth: 'auto', resize: 'vertical', fontFamily: 'inherit', fontSize: 12, lineHeight: 1.5 }} />
+                                  <button className="btn btn-primary btn-sm" onClick={() => handleAddTimeline(item.id)} style={{ fontSize: 11, padding: '4px 12px', whiteSpace: 'nowrap', marginTop: 2 }}>추가</button>
+                                </div>
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
         </div>
       )}
