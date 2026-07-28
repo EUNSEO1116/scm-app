@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect, useCallback, Fragment } from 'react';
+import * as XLSX from 'xlsx';
 import { dbStoreGet, dbStoreSet } from '../utils/dbApi';
 
 const SHEET_ID = '1NXhW_gG0b-gXuVqrhbY9ErWi8uO_7pXIy-NTo4FbE1I';
@@ -14,15 +15,16 @@ const REASON_COLORS = {
   '조치지연(SCM귀책)': '#1565c0',
 };
 
-// 진행상태 (필수) — 사유상태와 별개
-const PROGRESS_STATUSES = ['확인중', '지장없음', '종결'];
+// 진행상태 (필수) — 사유상태와 별개. 종결은 별도 체크박스로만 처리
+const PROGRESS_STATUSES = ['확인중', '지장없음', '품절됨'];
 const PROGRESS_COLORS = {
   '확인중': '#9e9e9e',
   '지장없음': '#1e8e3e',
-  '종결': '#303f9f',
+  '품절됨': '#c62828',
 };
-// 기존 데이터(progressStatus 없음) 호환: closed면 종결, 아니면 확인중
-const getProgress = (item) => item.progressStatus || (item.closed ? '종결' : '확인중');
+const CLOSED_COLOR = '#303f9f';
+// 기존 데이터 호환: 유효한 progressStatus면 사용, 아니면 확인중
+const getProgress = (item) => (PROGRESS_STATUSES.includes(item.progressStatus) ? item.progressStatus : '확인중');
 
 // 날짜 컬럼별 포인트 색상
 const DATE_COLORS = {
@@ -204,10 +206,10 @@ export default function SoldOutAnalysisDelayCause() {
 
   const filtered = useMemo(() => {
     let rows;
-    if (filterReason === '종결') rows = items.filter(r => getProgress(r) === '종결');
+    if (filterReason === '종결') rows = items.filter(r => r.closed);
     else {
-      rows = items.filter(r => getProgress(r) !== '종결');
-      if (filterReason === '확인중' || filterReason === '지장없음') rows = rows.filter(r => getProgress(r) === filterReason);
+      rows = items.filter(r => !r.closed);
+      if (filterReason === '확인중' || filterReason === '지장없음' || filterReason === '품절됨') rows = rows.filter(r => getProgress(r) === filterReason);
     }
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
@@ -261,12 +263,41 @@ export default function SoldOutAnalysisDelayCause() {
     const closing = filterReason !== '종결';
     const msg = closing
       ? `선택한 ${selectedIds.length}건을 종결 처리할까요? (목록에서 숨겨집니다)`
-      : `선택한 ${selectedIds.length}건의 종결을 해제할까요? (진행상태가 확인중으로 변경됩니다)`;
+      : `선택한 ${selectedIds.length}건의 종결을 해제할까요?`;
     if (!confirm(msg)) return;
     saveItems(items.map(i => selectedIds.includes(i.id)
-      ? { ...i, progressStatus: closing ? '종결' : '확인중', closed: closing, closedAt: closing ? new Date().toISOString() : null }
+      ? { ...i, closed: closing, closedAt: closing ? new Date().toISOString() : null }
       : i));
     setSelectedIds([]);
+  };
+
+  // 엑셀 다운로드 (현재 필터/검색 결과 기준)
+  const handleExcelDownload = () => {
+    if (filtered.length === 0) {
+      alert('다운로드할 데이터가 없습니다.');
+      return;
+    }
+    const rows = filtered.map(it => ({
+      '진행상태': it.closed ? '종결' : getProgress(it),
+      '발주번호': it.orderNo || '',
+      '상품명': it.productName || '',
+      '옵션명': it.optionName || '',
+      '바코드': it.barcode || '',
+      '대기수량': it.qty || '',
+      '발주일': it.orderDate || '',
+      '확인일': it.confirmDate || '',
+      '업체발송예정일': it.shipEtaDate || '',
+      'CN출고요청일': it.releaseReqDate || '',
+      '품절시작일': it.soldoutDate || '',
+      '사유상태': it.reasonStatus || '',
+      '자세한사유': it.reasonDetail || '',
+      '조치내용': (it.timeline || []).map(t => `[${t.date}] ${t.text}`).join('\n'),
+    }));
+    const header = ['진행상태', '발주번호', '상품명', '옵션명', '바코드', '대기수량', '발주일', '확인일', '업체발송예정일', 'CN출고요청일', '품절시작일', '사유상태', '자세한사유', '조치내용'];
+    const ws = XLSX.utils.json_to_sheet(rows, { header });
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, '보충지연원인');
+    XLSX.writeFile(wb, `보충지연원인_${new Date().toISOString().slice(0, 10)}.xlsx`);
   };
 
   // 셀 인라인 수정
@@ -316,10 +347,11 @@ export default function SoldOutAnalysisDelayCause() {
     );
   }
 
-  const countAll = items.filter(r => getProgress(r) !== '종결').length;
-  const countPending = items.filter(r => getProgress(r) === '확인중').length;
-  const countOk = items.filter(r => getProgress(r) === '지장없음').length;
-  const countClosed = items.filter(r => getProgress(r) === '종결').length;
+  const countAll = items.filter(r => !r.closed).length;
+  const countPending = items.filter(r => !r.closed && getProgress(r) === '확인중').length;
+  const countOk = items.filter(r => !r.closed && getProgress(r) === '지장없음').length;
+  const countSoldout = items.filter(r => !r.closed && getProgress(r) === '품절됨').length;
+  const countClosed = items.filter(r => r.closed).length;
   const viewingClosed = filterReason === '종결';
 
   const allSelected = filtered.length > 0 && filtered.every(i => selectedIds.includes(i.id));
@@ -416,6 +448,10 @@ export default function SoldOutAnalysisDelayCause() {
         }
         .dc-select-wrap select:focus { border-color: #1a73e8; }
         .dc-select-wrap .dc-arrow { position: absolute; right: 13px; top: 50%; transform: translateY(-50%); pointer-events: none; font-size: 9px; color: #888; }
+        .dc-help { position: relative; display: inline-flex; align-items: center; gap: 5px; padding: 0 12px; height: 36px; border: 1.5px solid #d2e3fc; border-radius: 8px; background: #f7faff; color: #1a73e8; font-size: 13px; font-weight: 600; cursor: help; white-space: nowrap; }
+        .dc-help .dc-help-tip { position: absolute; top: calc(100% + 8px); right: 0; z-index: 9999; width: 460px; padding: 16px 18px; background: #263238; color: #eceff1; border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,0.28); font-size: 12.5px; font-weight: 400; line-height: 1.7; white-space: pre-line; text-align: left; opacity: 0; visibility: hidden; transform: translateY(-4px); transition: opacity 0.15s, transform 0.15s; }
+        .dc-help:hover .dc-help-tip { opacity: 1; visibility: visible; transform: translateY(0); }
+        .dc-help-tip b { color: #ffd54f; font-weight: 700; }
       `}</style>
 
       {dbSyncFailed && (
@@ -429,7 +465,7 @@ export default function SoldOutAnalysisDelayCause() {
       )}
 
       {/* 툴바 */}
-      <div className="card" style={{ marginBottom: 16 }}>
+      <div className="card" style={{ marginBottom: 16, overflow: 'visible', position: 'relative', zIndex: 5 }}>
         <div className="card-body" style={{ padding: 16 }}>
           <div className="filter-bar" style={{ flexWrap: 'wrap', gap: 10, alignItems: 'center', marginBottom: 0 }}>
             <input className="search-input" placeholder="상품명, 옵션명, 바코드, 발주번호, 사유 검색..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} style={{ maxWidth: 260 }} />
@@ -439,7 +475,8 @@ export default function SoldOutAnalysisDelayCause() {
                 { key: 'all', label: '전체', count: countAll, color: '#5f6368' },
                 { key: '확인중', label: '확인중', count: countPending, color: PROGRESS_COLORS['확인중'] },
                 { key: '지장없음', label: '지장없음', count: countOk, color: PROGRESS_COLORS['지장없음'] },
-                { key: '종결', label: '종결', count: countClosed, color: PROGRESS_COLORS['종결'] },
+                { key: '품절됨', label: '품절됨', count: countSoldout, color: PROGRESS_COLORS['품절됨'] },
+                { key: '종결', label: '종결', count: countClosed, color: CLOSED_COLOR },
               ].map(c => {
                 const active = filterReason === c.key;
                 return (
@@ -457,7 +494,29 @@ export default function SoldOutAnalysisDelayCause() {
                 선택 {selectedIds.length}건 {viewingClosed ? '종결 해제' : '종결'}
               </button>
             )}
-            <div style={{ marginLeft: 'auto' }}>
+            <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span className="dc-help">
+                <span style={{ fontSize: 14 }}>ⓘ</span> 사유상태 도움말
+                <span className="dc-help-tip">
+                  <b>[CN 귀책]</b>{'\n'}
+                  1. 작업 지연 : 독촉O → 작업X{'\n'}
+                  ex) 봉제 등 작업량 많아서 출고가 누락된 경우{'\n'}
+                  2. 작업 지연 : 독촉O → 확인X{'\n'}
+                  ex) 사이즈실측 OR 출고 요청 했지만 답변 늦는 경우{'\n\n'}
+                  <b>[업체 귀책]</b>{'\n'}
+                  3. 업체 발송지연 : 독촉O → 발송X → 재수배O{'\n'}
+                  ex) 독촉 했지만 보내준다고 해놓고 발송부터가 늦어져서 재수배도 늦어진 경우(업체가 약속 안지킴){'\n\n'}
+                  <b>[SCM 귀책]</b>{'\n'}
+                  4. 재수배 지연 : 독촉O → 발송X → 재수배X{'\n'}
+                  ex) 독촉 했지만, 발송 안해준다고 답변 바로 들었지만, 빠른 조치 안해둔 경우{'\n'}
+                  5. 조치 지연 : 독촉X{'\n'}
+                  ex) 늦게 오는것 확인 안해서 독촉도 안되있는 경우
+                </span>
+              </span>
+              <button className="btn" onClick={handleExcelDownload}
+                style={{ background: '#1e8e3e', color: '#fff', border: 'none', fontWeight: 600 }}>
+                엑셀 다운로드
+              </button>
               <button className="btn btn-primary" onClick={() => { if (showForm) { resetForm(); } else { setForm(emptyForm); setProductSearch(''); setShowForm(true); } }}>
                 {showForm ? '닫기' : '+ 새 항목'}
               </button>
@@ -627,7 +686,7 @@ export default function SoldOutAnalysisDelayCause() {
                 {filtered.map((item) => {
                   const isOpen = expandedId === item.id;
                   const isSelected = selectedIds.includes(item.id);
-                  const color = PROGRESS_COLORS[getProgress(item)] || '#9e9e9e';
+                  const color = item.closed ? CLOSED_COLOR : (PROGRESS_COLORS[getProgress(item)] || '#9e9e9e');
                   return (
                     <Fragment key={item.id}>
                       <tr className="dc-row" style={isSelected ? { background: '#eef4ff' } : (isOpen ? { background: '#f8fafd' } : undefined)}>
