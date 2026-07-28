@@ -82,6 +82,13 @@ const kstToday = () => {
   const p = (n) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 };
+// KST 기준 내일 날짜 문자열 (YYYY-MM-DD)
+const kstTomorrow = () => {
+  const d = kstNow();
+  d.setDate(d.getDate() + 1);
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+};
 // 발주번호 정규화 (공백 제거 + 대문자)
 const normOrder = (s) => (s || '').replace(/\s+/g, '').toUpperCase();
 
@@ -170,6 +177,10 @@ export default function SoldOutAnalysisDelayCause() {
   const [urgeText, setUrgeText] = useState('');
   const [urgeResult, setUrgeResult] = useState(null); // { matched: [...], unmatched: [...] }
 
+  const [showShipReqPanel, setShowShipReqPanel] = useState(false);
+  const [shipReqText, setShipReqText] = useState('');
+  const [shipReqResult, setShipReqResult] = useState(null); // { matched, unmatched, updated, date }
+
   // 조치안됨 자동감지 (KST 11시 1회)
   const [autoDetectInfo, setAutoDetectInfo] = useState(() => {
     try {
@@ -181,6 +192,8 @@ export default function SoldOutAnalysisDelayCause() {
   const itemsRef = useRef([]);
   const autoRunningRef = useRef(false);
   useEffect(() => { itemsRef.current = items; }, [items]);
+
+  const fileInputRef = useRef(null);
 
   // localStorage + DB 이중 저장/로드
   useEffect(() => {
@@ -388,6 +401,74 @@ export default function SoldOutAnalysisDelayCause() {
     XLSX.writeFile(wb, `보충지연원인_${new Date().toISOString().slice(0, 10)}.xlsx`);
   };
 
+  // 업로드 양식(템플릿) 다운로드
+  const handleTemplateDownload = () => {
+    const rows = [
+      { '발주번호': 'AE-E-260720-JJ-002', '바코드': '8801234567890', '수량': 30 },
+      { '발주번호': '', '바코드': '', '수량': '' },
+    ];
+    const ws = XLSX.utils.json_to_sheet(rows, { header: ['발주번호', '바코드', '수량'] });
+    ws['!cols'] = [{ wch: 22 }, { wch: 16 }, { wch: 8 }];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, '업로드양식');
+    XLSX.writeFile(wb, '보충지연원인_업로드양식.xlsx');
+  };
+
+  // 엑셀 업로드 (발주번호·바코드·수량) → 일괄 신규 등록 (발주일/확인일 자동, 진행상태 확인중)
+  const handleExcelUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = ''; // 같은 파일 재선택 가능하도록 초기화
+    try {
+      const buf = await file.arrayBuffer();
+      const wb = XLSX.read(buf, { type: 'array' });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+      if (!rows.length) { alert('빈 파일입니다.'); return; }
+      const header = rows[0].map(h => String(h).replace(/\s+/g, ''));
+      const idxOrderNo = header.findIndex(h => h.includes('발주번호') || h.includes('발주'));
+      const idxBarcode = header.findIndex(h => h.includes('바코드'));
+      const idxQty = header.findIndex(h => h.includes('수량'));
+      if (idxOrderNo < 0 || idxBarcode < 0 || idxQty < 0) {
+        alert('첫 행 헤더에 발주번호 · 바코드 · 수량 열이 있어야 합니다.');
+        return;
+      }
+      const pmap = {};
+      for (const p of productList) { if (p.barcode) pmap[p.barcode] = p; }
+      const today = kstToday();
+      const newItems = [];
+      let skipped = 0;
+      for (let i = 1; i < rows.length; i++) {
+        const r = rows[i];
+        const barcode = String(r[idxBarcode] ?? '').trim();
+        const orderNo = String(r[idxOrderNo] ?? '').trim();
+        const qty = String(r[idxQty] ?? '').trim();
+        if (!barcode) { if (orderNo || qty) skipped++; continue; }
+        const prod = pmap[barcode] || {};
+        newItems.push({
+          ...emptyForm,
+          barcode,
+          productName: prod.productName || '',
+          optionName: prod.optionName || '',
+          orderNo,
+          orderDate: parseOrderDate(orderNo),
+          confirmDate: today,
+          qty,
+          progressStatus: '확인중',
+          id: `${Date.now()}_${i}`,
+          timeline: [],
+          createdAt: new Date().toISOString(),
+        });
+      }
+      if (!newItems.length) { alert('등록할 데이터가 없습니다. (바코드가 있는 행 없음)'); return; }
+      saveItems([...newItems, ...items]);
+      alert(`${newItems.length}건 일괄 등록 완료${skipped ? ` (바코드 없는 ${skipped}건 건너뜀)` : ''}`);
+    } catch (err) {
+      console.error(err);
+      alert('엑셀 처리 중 오류가 발생했습니다.');
+    }
+  };
+
   // 발주번호 텍스트 붙여넣기 → 매칭 카드 진행상태를 '독촉완료'로 변경 (확인일도 오늘로)
   const normOrderNo = (s) => (s || '').trim().toUpperCase();
   const handleApplyUrge = () => {
@@ -412,6 +493,31 @@ export default function SoldOutAnalysisDelayCause() {
     });
     if (updated > 0) saveItems(next);
     setUrgeResult({ matched, unmatched, updated });
+  };
+
+  // 발주번호 텍스트 붙여넣기 → 매칭 카드 CN출고요청일을 오늘+1일로 자동 입력
+  const handleApplyShipReq = () => {
+    const parsed = (shipReqText.match(/[A-Za-z]{1,4}(?:-[A-Za-z0-9]+){2,}/g) || []).map(normOrderNo);
+    const uniq = [...new Set(parsed)];
+    if (uniq.length === 0) {
+      setShipReqResult({ matched: [], unmatched: [], updated: 0, date: '' });
+      return;
+    }
+    const nextDay = kstTomorrow();
+    const activeSet = new Set(items.filter(i => !i.closed).map(i => normOrderNo(i.orderNo)));
+    const matched = uniq.filter(o => activeSet.has(o));
+    const unmatched = uniq.filter(o => !activeSet.has(o));
+    const matchedSet = new Set(matched);
+    let updated = 0;
+    const next = items.map(i => {
+      if (!i.closed && matchedSet.has(normOrderNo(i.orderNo))) {
+        updated++;
+        return { ...i, releaseReqDate: nextDay };
+      }
+      return i;
+    });
+    if (updated > 0) saveItems(next);
+    setShipReqResult({ matched, unmatched, updated, date: nextDay });
   };
 
   // 셀 인라인 수정
@@ -638,6 +744,10 @@ export default function SoldOutAnalysisDelayCause() {
                   ex) 늦게 오는것 확인 안해서 독촉도 안되있는 경우
                 </span>
               </span>
+              <button className="btn" onClick={() => setShowShipReqPanel(v => !v)}
+                style={{ background: showShipReqPanel ? '#fff' : '#6a1b9a', color: showShipReqPanel ? '#6a1b9a' : '#fff', border: showShipReqPanel ? '1.5px solid #6a1b9a' : 'none', fontWeight: 600 }}>
+                {showShipReqPanel ? '닫기' : '출고요청 업로드'}
+              </button>
               <button className="btn" onClick={() => setShowUrgePanel(v => !v)}
                 style={{ background: showUrgePanel ? '#fff' : '#0097a7', color: showUrgePanel ? '#0097a7' : '#fff', border: showUrgePanel ? '1.5px solid #0097a7' : 'none', fontWeight: 600 }}>
                 {showUrgePanel ? '닫기' : '독촉완료 업로드'}
@@ -646,6 +756,17 @@ export default function SoldOutAnalysisDelayCause() {
                 style={{ background: '#1e8e3e', color: '#fff', border: 'none', fontWeight: 600 }}>
                 엑셀 다운로드
               </button>
+              <input ref={fileInputRef} type="file" accept=".xlsx,.xls" onChange={handleExcelUpload} style={{ display: 'none' }} />
+              <button className="btn" onClick={() => fileInputRef.current?.click()}
+                style={{ background: '#fff', color: '#1e8e3e', border: '1.5px solid #1e8e3e', fontWeight: 600 }}
+                title="발주번호·바코드·수량 열이 있는 엑셀을 올리면 일괄 등록됩니다. 양식이 필요하면 '양식' 버튼을 받으세요.">
+                엑셀 업로드
+              </button>
+              <button className="btn" onClick={handleTemplateDownload}
+                style={{ background: 'transparent', color: '#5f6368', border: '1px dashed #bdbdbd', fontWeight: 600, fontSize: 12.5 }}
+                title="발주번호·바코드·수량 헤더가 든 빈 엑셀 양식 다운로드">
+                양식
+              </button>
               <button className="btn btn-primary" onClick={() => { if (showForm) { resetForm(); } else { setForm(emptyForm); setProductSearch(''); setShowForm(true); } }}>
                 {showForm ? '닫기' : '+ 새 항목'}
               </button>
@@ -653,6 +774,45 @@ export default function SoldOutAnalysisDelayCause() {
           </div>
         </div>
       </div>
+
+      {/* 출고요청 일괄 업로드 패널 */}
+      {showShipReqPanel && (
+        <div className="card" style={{ marginBottom: 16, border: '1px solid #e1bee7', boxShadow: '0 2px 10px rgba(106,27,154,0.10)' }}>
+          <div className="card-header" style={{ background: '#faf5fc', borderBottom: '1px solid #f0e2f5' }}>
+            <h2 style={{ fontSize: 15, fontWeight: 700, color: '#6a1b9a' }}>출고요청 일괄 업로드</h2>
+            <span style={{ fontSize: 11.5, color: '#5f6368' }}>발주번호를 붙여넣으면, 테이블에 있는 항목의 <b style={{ color: '#6a1b9a' }}>CN출고요청일</b>이 오늘의 다음 날(<b style={{ color: '#6a1b9a' }}>{kstTomorrow()}</b>)로 자동 입력됩니다.</span>
+          </div>
+          <div className="card-body" style={{ paddingTop: 12 }}>
+            <textarea className="search-input"
+              placeholder={'발주번호를 줄단위로 붙여넣으세요. (머리글 [ ... ] 줄은 자동 무시)\n예)\n[출고 요청]\nAE-E-260720-JJ-002\nAE-R-260720-JJ-003'}
+              value={shipReqText}
+              onChange={e => setShipReqText(e.target.value)}
+              style={{ width: '100%', minHeight: 130, resize: 'vertical', fontFamily: 'monospace', fontSize: 12.5, lineHeight: 1.6, boxSizing: 'border-box' }} />
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 10 }}>
+              <button className="btn" onClick={handleApplyShipReq}
+                style={{ background: '#6a1b9a', color: '#fff', border: 'none', fontWeight: 600 }}>
+                출고요청일 적용
+              </button>
+              <button className="btn" onClick={() => { setShipReqText(''); setShipReqResult(null); }}
+                style={{ background: '#fff', color: '#5f6368', border: '1.5px solid #e0e0e0', fontWeight: 600 }}>
+                초기화
+              </button>
+            </div>
+            {shipReqResult && (
+              <div style={{ marginTop: 12, padding: '12px 14px', borderRadius: 10, background: '#f7f9fa', border: '1px solid #e6eaed', fontSize: 13 }}>
+                <div style={{ fontWeight: 700, color: '#6a1b9a', marginBottom: shipReqResult.unmatched.length ? 6 : 0 }}>
+                  적용 완료 — {shipReqResult.updated}건 CN출고요청일 {shipReqResult.date} 입력 (인식 {shipReqResult.matched.length + shipReqResult.unmatched.length}건 중 매칭 {shipReqResult.matched.length}건)
+                </div>
+                {shipReqResult.unmatched.length > 0 && (
+                  <div style={{ color: '#c62828', lineHeight: 1.7 }}>
+                    <b>미매칭 {shipReqResult.unmatched.length}건</b> (테이블에 없음): <span style={{ fontFamily: 'monospace' }}>{shipReqResult.unmatched.join(', ')}</span>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* 독촉완료 일괄 업로드 패널 */}
       {showUrgePanel && (
