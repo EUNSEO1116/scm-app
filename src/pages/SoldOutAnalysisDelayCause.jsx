@@ -1,11 +1,16 @@
-import { useState, useMemo, useEffect, useCallback, Fragment } from 'react';
+import { useState, useMemo, useEffect, useCallback, useRef, Fragment } from 'react';
 import * as XLSX from 'xlsx';
 import { dbStoreGet, dbStoreSet } from '../utils/dbApi';
 
 const SHEET_ID = '1NXhW_gG0b-gXuVqrhbY9ErWi8uO_7pXIy-NTo4FbE1I';
 const TSV_URL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent('특별 관리 상품')}`;
+const ORDERBOOK_URL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent('발주장부')}`;
+// 발주장부: 발주번호 = T열(19), 출고현황 = J열(9)
+const OB_ORDERNO_COL = 19;
+const OB_SHIPSTATUS_COL = 9;
 
 const STORE_KEY = 'delay_cause_items';
+const AUTORUN_KEY = 'delay_cause_autorun'; // { date: 'YYYY-MM-DD', count: N } (KST 11시 1회 자동감지)
 
 const REASON_STATUSES = ['작업지연', '업체발송지연', '재수배지연(SCM귀책)', '조치지연(SCM귀책)'];
 const REASON_COLORS = {
@@ -16,11 +21,12 @@ const REASON_COLORS = {
 };
 
 // 진행상태 (필수) — 사유상태와 별개. 종결은 별도 체크박스로만 처리
-const PROGRESS_STATUSES = ['확인중', '지장없음', '독촉완료', '품절됨'];
+const PROGRESS_STATUSES = ['확인중', '지장없음', '독촉완료', '조치안됨', '품절됨'];
 const PROGRESS_COLORS = {
   '확인중': '#9e9e9e',
   '지장없음': '#1e8e3e',
   '독촉완료': '#0097a7',
+  '조치안됨': '#e65100',
   '품절됨': '#c62828',
 };
 const CLOSED_COLOR = '#303f9f';
@@ -67,6 +73,17 @@ function parseCSV(text) {
   if (row.some(c => c)) result.push(row);
   return result;
 }
+
+// KST(한국시간) 현재 Date
+const kstNow = () => new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Seoul' }));
+// KST 기준 오늘 날짜 문자열 (YYYY-MM-DD)
+const kstToday = () => {
+  const d = kstNow();
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+};
+// 발주번호 정규화 (공백 제거 + 대문자)
+const normOrder = (s) => (s || '').replace(/\s+/g, '').toUpperCase();
 
 // 발주번호에서 날짜 형식(YYMMDD) 추출 → 'YYYY-MM-DD'
 // 예) 'AE-I-260529' / 'AE-I-2605292' → '2026-05-29'
@@ -153,6 +170,18 @@ export default function SoldOutAnalysisDelayCause() {
   const [urgeText, setUrgeText] = useState('');
   const [urgeResult, setUrgeResult] = useState(null); // { matched: [...], unmatched: [...] }
 
+  // 조치안됨 자동감지 (KST 11시 1회)
+  const [autoDetectInfo, setAutoDetectInfo] = useState(() => {
+    try {
+      const raw = JSON.parse(localStorage.getItem(AUTORUN_KEY) || 'null');
+      if (raw && raw.date === kstToday() && raw.count > 0) return raw;
+    } catch { /* ignore */ }
+    return null;
+  });
+  const itemsRef = useRef([]);
+  const autoRunningRef = useRef(false);
+  useEffect(() => { itemsRef.current = items; }, [items]);
+
   // localStorage + DB 이중 저장/로드
   useEffect(() => {
     let localItems = null;
@@ -195,6 +224,60 @@ export default function SoldOutAnalysisDelayCause() {
     dbSaveWithRetry(updated);
   }, [dbSaveWithRetry]);
 
+  // 발주장부를 읽어 '조치안됨' 자동 감지 (항목당 1회) — KST today 문자열을 인자로 받음
+  const runAutoUnactioned = useCallback(async (todayStr) => {
+    if (autoRunningRef.current) return;
+    autoRunningRef.current = true;
+    try {
+      const res = await fetch(ORDERBOOK_URL);
+      if (!res.ok) throw new Error('발주장부 로드 실패');
+      const rows = parseCSV(await res.text());
+      // 발주번호(T열) → 출고완료/인천도착 여부
+      const shippedSet = new Set(); // 출고완료 또는 인천도착인 발주번호
+      const ledgerSet = new Set();  // 발주장부에 존재하는 발주번호
+      for (let i = 1; i < rows.length; i++) {
+        const key = normOrder(rows[i][OB_ORDERNO_COL]);
+        if (!key) continue;
+        ledgerSet.add(key);
+        const ship = (rows[i][OB_SHIPSTATUS_COL] || '').replace(/\s+/g, '');
+        if (ship.includes('출고완료') || ship.includes('인천도착')) shippedSet.add(key);
+      }
+      const cur = itemsRef.current;
+      let count = 0;
+      const next = cur.map(it => {
+        if (it.closed || it.autoUnactionedApplied) return it;
+        if (!it.releaseReqDate) return it;
+        if (todayStr <= it.releaseReqDate) return it; // 아직 기한 안 지남
+        const key = normOrder(it.orderNo);
+        if (!ledgerSet.has(key)) return it;          // 발주장부에 없으면 판단 보류
+        if (shippedSet.has(key)) return it;          // 출고완료/인천도착이면 제외
+        count++;
+        return { ...it, progressStatus: '조치안됨', autoUnactionedApplied: true };
+      });
+      if (count > 0) saveItems(next);
+      const info = { date: todayStr, count };
+      localStorage.setItem(AUTORUN_KEY, JSON.stringify(info));
+      if (count > 0) setAutoDetectInfo(info);
+    } catch { /* 실패 시 다음 접속에서 재시도 (lastRun 미기록) */ }
+    finally { autoRunningRef.current = false; }
+  }, [saveItems]);
+
+  // KST 11시 이후 첫 접속 시 하루 1회 자동감지 실행
+  useEffect(() => {
+    if (!loaded) return;
+    const check = () => {
+      const today = kstToday();
+      if (kstNow().getHours() < 11) return;      // 아직 11시 이전
+      let last = null;
+      try { last = JSON.parse(localStorage.getItem(AUTORUN_KEY) || 'null'); } catch { /* ignore */ }
+      if (last && last.date === today) return;    // 오늘 이미 실행함
+      runAutoUnactioned(today);
+    };
+    check();
+    const timer = setInterval(check, 5 * 60 * 1000); // 5분마다 재확인 (11시 전 접속 대비)
+    return () => clearInterval(timer);
+  }, [loaded, runAutoUnactioned]);
+
   const suggestions = useMemo(() => {
     if (!productSearch || productSearch.length < 1) return [];
     const q = productSearch.toLowerCase();
@@ -214,7 +297,7 @@ export default function SoldOutAnalysisDelayCause() {
     if (filterReason === '종결') rows = items.filter(r => r.closed);
     else {
       rows = items.filter(r => !r.closed);
-      if (filterReason === '확인중' || filterReason === '지장없음' || filterReason === '독촉완료' || filterReason === '품절됨') rows = rows.filter(r => getProgress(r) === filterReason);
+      if (filterReason === '확인중' || filterReason === '지장없음' || filterReason === '독촉완료' || filterReason === '조치안됨' || filterReason === '품절됨') rows = rows.filter(r => getProgress(r) === filterReason);
     }
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
@@ -382,6 +465,7 @@ export default function SoldOutAnalysisDelayCause() {
   const countPending = items.filter(r => !r.closed && getProgress(r) === '확인중').length;
   const countOk = items.filter(r => !r.closed && getProgress(r) === '지장없음').length;
   const countUrged = items.filter(r => !r.closed && getProgress(r) === '독촉완료').length;
+  const countUnactioned = items.filter(r => !r.closed && getProgress(r) === '조치안됨').length;
   const countSoldout = items.filter(r => !r.closed && getProgress(r) === '품절됨').length;
   const countClosed = items.filter(r => r.closed).length;
   const viewingClosed = filterReason === '종결';
@@ -508,6 +592,7 @@ export default function SoldOutAnalysisDelayCause() {
                 { key: '확인중', label: '확인중', count: countPending, color: PROGRESS_COLORS['확인중'] },
                 { key: '지장없음', label: '지장없음', count: countOk, color: PROGRESS_COLORS['지장없음'] },
                 { key: '독촉완료', label: '독촉완료', count: countUrged, color: PROGRESS_COLORS['독촉완료'] },
+                { key: '조치안됨', label: '조치안됨', count: countUnactioned, color: PROGRESS_COLORS['조치안됨'] },
                 { key: '품절됨', label: '품절됨', count: countSoldout, color: PROGRESS_COLORS['품절됨'] },
                 { key: '종결', label: '종결', count: countClosed, color: CLOSED_COLOR },
               ].map(c => {
@@ -521,6 +606,13 @@ export default function SoldOutAnalysisDelayCause() {
                 );
               })}
             </div>
+            {autoDetectInfo && autoDetectInfo.count > 0 && (
+              <button onClick={() => changeFilter('조치안됨')}
+                title="오늘 자동 감지된 조치안됨 건 보기"
+                style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '7px 14px', border: `1.5px solid ${PROGRESS_COLORS['조치안됨']}`, borderRadius: 10, background: '#fff3e0', color: '#e65100', cursor: 'pointer', fontSize: 13, fontWeight: 700, boxShadow: '0 1px 3px rgba(230,81,0,0.15)' }}>
+                🔔 조치안됨 감지 {autoDetectInfo.count}건
+              </button>
+            )}
             {selectedIds.length > 0 && (
               <button className="btn" onClick={handleBulkClose}
                 style={{ background: viewingClosed ? '#fff' : '#1e8e3e', color: viewingClosed ? '#1e8e3e' : '#fff', border: viewingClosed ? '1.5px solid #1e8e3e' : 'none', fontWeight: 600 }}>
