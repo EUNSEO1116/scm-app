@@ -16,10 +16,11 @@ const REASON_COLORS = {
 };
 
 // 진행상태 (필수) — 사유상태와 별개. 종결은 별도 체크박스로만 처리
-const PROGRESS_STATUSES = ['확인중', '지장없음', '품절됨'];
+const PROGRESS_STATUSES = ['확인중', '지장없음', '독촉완료', '품절됨'];
 const PROGRESS_COLORS = {
   '확인중': '#9e9e9e',
   '지장없음': '#1e8e3e',
+  '독촉완료': '#0097a7',
   '품절됨': '#c62828',
 };
 const CLOSED_COLOR = '#303f9f';
@@ -148,6 +149,10 @@ export default function SoldOutAnalysisDelayCause() {
 
   const [dbSyncFailed, setDbSyncFailed] = useState(false);
 
+  const [showUrgePanel, setShowUrgePanel] = useState(false);
+  const [urgeText, setUrgeText] = useState('');
+  const [urgeResult, setUrgeResult] = useState(null); // { matched: [...], unmatched: [...] }
+
   // localStorage + DB 이중 저장/로드
   useEffect(() => {
     let localItems = null;
@@ -209,7 +214,7 @@ export default function SoldOutAnalysisDelayCause() {
     if (filterReason === '종결') rows = items.filter(r => r.closed);
     else {
       rows = items.filter(r => !r.closed);
-      if (filterReason === '확인중' || filterReason === '지장없음' || filterReason === '품절됨') rows = rows.filter(r => getProgress(r) === filterReason);
+      if (filterReason === '확인중' || filterReason === '지장없음' || filterReason === '독촉완료' || filterReason === '품절됨') rows = rows.filter(r => getProgress(r) === filterReason);
     }
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
@@ -300,6 +305,32 @@ export default function SoldOutAnalysisDelayCause() {
     XLSX.writeFile(wb, `보충지연원인_${new Date().toISOString().slice(0, 10)}.xlsx`);
   };
 
+  // 발주번호 텍스트 붙여넣기 → 매칭 카드 진행상태를 '독촉완료'로 변경 (확인일도 오늘로)
+  const normOrderNo = (s) => (s || '').trim().toUpperCase();
+  const handleApplyUrge = () => {
+    const parsed = (urgeText.match(/[A-Za-z]{1,4}(?:-[A-Za-z0-9]+){2,}/g) || []).map(normOrderNo);
+    const uniq = [...new Set(parsed)];
+    if (uniq.length === 0) {
+      setUrgeResult({ matched: [], unmatched: [], updated: 0 });
+      return;
+    }
+    const today = new Date().toISOString().slice(0, 10);
+    const activeSet = new Set(items.filter(i => !i.closed).map(i => normOrderNo(i.orderNo)));
+    const matched = uniq.filter(o => activeSet.has(o));
+    const unmatched = uniq.filter(o => !activeSet.has(o));
+    const matchedSet = new Set(matched);
+    let updated = 0;
+    const next = items.map(i => {
+      if (!i.closed && matchedSet.has(normOrderNo(i.orderNo))) {
+        updated++;
+        return { ...i, progressStatus: '독촉완료', confirmDate: today };
+      }
+      return i;
+    });
+    if (updated > 0) saveItems(next);
+    setUrgeResult({ matched, unmatched, updated });
+  };
+
   // 셀 인라인 수정
   const updateField = (id, field, value) => {
     saveItems(items.map(i => i.id === id ? { ...i, [field]: value } : i));
@@ -350,6 +381,7 @@ export default function SoldOutAnalysisDelayCause() {
   const countAll = items.filter(r => !r.closed).length;
   const countPending = items.filter(r => !r.closed && getProgress(r) === '확인중').length;
   const countOk = items.filter(r => !r.closed && getProgress(r) === '지장없음').length;
+  const countUrged = items.filter(r => !r.closed && getProgress(r) === '독촉완료').length;
   const countSoldout = items.filter(r => !r.closed && getProgress(r) === '품절됨').length;
   const countClosed = items.filter(r => r.closed).length;
   const viewingClosed = filterReason === '종결';
@@ -475,6 +507,7 @@ export default function SoldOutAnalysisDelayCause() {
                 { key: 'all', label: '전체', count: countAll, color: '#5f6368' },
                 { key: '확인중', label: '확인중', count: countPending, color: PROGRESS_COLORS['확인중'] },
                 { key: '지장없음', label: '지장없음', count: countOk, color: PROGRESS_COLORS['지장없음'] },
+                { key: '독촉완료', label: '독촉완료', count: countUrged, color: PROGRESS_COLORS['독촉완료'] },
                 { key: '품절됨', label: '품절됨', count: countSoldout, color: PROGRESS_COLORS['품절됨'] },
                 { key: '종결', label: '종결', count: countClosed, color: CLOSED_COLOR },
               ].map(c => {
@@ -513,6 +546,10 @@ export default function SoldOutAnalysisDelayCause() {
                   ex) 늦게 오는것 확인 안해서 독촉도 안되있는 경우
                 </span>
               </span>
+              <button className="btn" onClick={() => setShowUrgePanel(v => !v)}
+                style={{ background: showUrgePanel ? '#fff' : '#0097a7', color: showUrgePanel ? '#0097a7' : '#fff', border: showUrgePanel ? '1.5px solid #0097a7' : 'none', fontWeight: 600 }}>
+                {showUrgePanel ? '닫기' : '독촉완료 업로드'}
+              </button>
               <button className="btn" onClick={handleExcelDownload}
                 style={{ background: '#1e8e3e', color: '#fff', border: 'none', fontWeight: 600 }}>
                 엑셀 다운로드
@@ -524,6 +561,45 @@ export default function SoldOutAnalysisDelayCause() {
           </div>
         </div>
       </div>
+
+      {/* 독촉완료 일괄 업로드 패널 */}
+      {showUrgePanel && (
+        <div className="card" style={{ marginBottom: 16, border: '1px solid #b2ebf2', boxShadow: '0 2px 10px rgba(0,151,167,0.10)' }}>
+          <div className="card-header" style={{ background: '#f0fbfc', borderBottom: '1px solid #d5f2f5' }}>
+            <h2 style={{ fontSize: 15, fontWeight: 700, color: '#00838f' }}>독촉완료 일괄 업로드</h2>
+            <span style={{ fontSize: 11.5, color: '#5f6368' }}>발주번호를 붙여넣으면, 테이블에 있는 항목의 진행상태가 <b style={{ color: '#00838f' }}>독촉완료</b>로 변경되고 확인일(조치일)이 오늘로 갱신됩니다.</span>
+          </div>
+          <div className="card-body" style={{ paddingTop: 12 }}>
+            <textarea className="search-input"
+              placeholder={'발주번호를 줄단위로 붙여넣으세요. (머리글 [ ... ] 줄은 자동 무시)\n예)\n[발송 독촉 요청]\nAE-E-260720-JJ-002\nAE-R-260720-JJ-003'}
+              value={urgeText}
+              onChange={e => setUrgeText(e.target.value)}
+              style={{ width: '100%', minHeight: 130, resize: 'vertical', fontFamily: 'monospace', fontSize: 12.5, lineHeight: 1.6, boxSizing: 'border-box' }} />
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 10 }}>
+              <button className="btn" onClick={handleApplyUrge}
+                style={{ background: '#0097a7', color: '#fff', border: 'none', fontWeight: 600 }}>
+                독촉완료 적용
+              </button>
+              <button className="btn" onClick={() => { setUrgeText(''); setUrgeResult(null); }}
+                style={{ background: '#fff', color: '#5f6368', border: '1.5px solid #e0e0e0', fontWeight: 600 }}>
+                초기화
+              </button>
+            </div>
+            {urgeResult && (
+              <div style={{ marginTop: 12, padding: '12px 14px', borderRadius: 10, background: '#f7f9fa', border: '1px solid #e6eaed', fontSize: 13 }}>
+                <div style={{ fontWeight: 700, color: '#00838f', marginBottom: urgeResult.unmatched.length ? 6 : 0 }}>
+                  적용 완료 — {urgeResult.updated}건 독촉완료 처리 (인식 {urgeResult.matched.length + urgeResult.unmatched.length}건 중 매칭 {urgeResult.matched.length}건)
+                </div>
+                {urgeResult.unmatched.length > 0 && (
+                  <div style={{ color: '#c62828', lineHeight: 1.7 }}>
+                    <b>미매칭 {urgeResult.unmatched.length}건</b> (테이블에 없음): <span style={{ fontFamily: 'monospace' }}>{urgeResult.unmatched.join(', ')}</span>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* 등록 폼 */}
       {showForm && (
