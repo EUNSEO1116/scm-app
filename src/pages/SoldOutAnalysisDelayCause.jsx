@@ -5,9 +5,10 @@ import { dbStoreGet, dbStoreSet } from '../utils/dbApi';
 const SHEET_ID = '1NXhW_gG0b-gXuVqrhbY9ErWi8uO_7pXIy-NTo4FbE1I';
 const TSV_URL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent('특별 관리 상품')}`;
 const ORDERBOOK_URL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent('발주장부')}`;
-// 발주장부: 발주번호 = T열(19), 출고현황 = J열(9)
+// 발주장부: 발주번호 = T열(19), 출고현황 = J열(9), 실제 출고일 = K열(10)
 const OB_ORDERNO_COL = 19;
 const OB_SHIPSTATUS_COL = 9;
+const OB_ACTUALSHIP_COL = 10;
 
 const STORE_KEY = 'delay_cause_items';
 const AUTORUN_KEY = 'delay_cause_autorun'; // { date: 'YYYY-MM-DD', count: N } (KST 11시 1회 자동감지)
@@ -39,10 +40,39 @@ const DATE_COLORS = {
   confirmDate: '#00897b',  // 확인일 · 청록
   shipEtaDate: '#6a1b9a',  // 발송예정일 · 보라
   releaseReqDate: '#ef6c00', // 출고요청일 · 주황
+  actualShipDate: '#2e7d32', // 실제 출고일 · 초록
   soldoutDate: '#c62828',  // 품절일 · 빨강
 };
 
-const ROW_MIN_WIDTH = 1420;
+// 발주장부 K열 셀 값 → 'YYYY-MM-DD' 정규화 (여러 표기 대응)
+// refDate(발주일 'YYYY-MM-DD') = 연도 없는 '월/일' 표기의 연도 추정 기준
+function normalizeShipDate(s, refDate) {
+  if (!s) return '';
+  const t = String(s).trim();
+  const pad = (n) => String(n).padStart(2, '0');
+  // YYYY-M-D / YYYY.M.D / YYYY/M/D / 'YYYY. M. D'
+  let m = t.match(/(\d{4})[.\-/\s]+(\d{1,2})[.\-/\s]+(\d{1,2})/);
+  if (m) return `${m[1]}-${pad(m[2])}-${pad(m[3])}`;
+  // M/D/YYYY
+  m = t.match(/(\d{1,2})[/](\d{1,2})[/](\d{4})/);
+  if (m) return `${m[3]}-${pad(m[1])}-${pad(m[2])}`;
+  // 연도 없는 '월/일' : '7/30', '7.30', '7-30', '7월 30일'
+  m = t.match(/^(\d{1,2})\s*[./\-월]\s*(\d{1,2})/);
+  if (m) {
+    const mo = +m[1], d = +m[2];
+    if (mo < 1 || mo > 12 || d < 1 || d > 31) return '';
+    const year = (refDate && /^\d{4}/.test(refDate))
+      ? +refDate.slice(0, 4)
+      : new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Seoul' })).getFullYear();
+    const cand = `${year}-${pad(mo)}-${pad(d)}`;
+    // 출고일이 발주일보다 앞서면(연말→연초 넘어감) 다음 해로 보정
+    if (refDate && cand < refDate) return `${year + 1}-${pad(mo)}-${pad(d)}`;
+    return cand;
+  }
+  return '';
+}
+
+const ROW_MIN_WIDTH = 1454;
 
 function parseCSV(text) {
   const result = [];
@@ -118,7 +148,6 @@ const emptyForm = {
   confirmDate: new Date().toISOString().slice(0, 10),
   shipEtaDate: '',
   releaseReqDate: '',
-  qty: '',
   soldoutDate: '',
   reasonStatus: '',
   progressStatus: '확인중',
@@ -275,6 +304,40 @@ export default function SoldOutAnalysisDelayCause() {
     finally { autoRunningRef.current = false; }
   }, [saveItems]);
 
+  // 발주장부 K열(실제 출고일)을 읽어 비어있는 항목에만 1회 채움
+  // (한번 채워지면 유지 — 스프레드시트에서 지워지거나 바뀌어도 자동 변경 안 함. 수동 수정은 가능)
+  const runFillActualShipDate = useCallback(async () => {
+    try {
+      const res = await fetch(ORDERBOOK_URL);
+      if (!res.ok) return;
+      const rows = parseCSV(await res.text());
+      const dateMap = new Map(); // 발주번호 → 실제 출고일(YYYY-MM-DD)
+      for (let i = 1; i < rows.length; i++) {
+        const rawOrder = rows[i][OB_ORDERNO_COL];
+        const key = normOrder(rawOrder);
+        if (!key) continue;
+        const d = normalizeShipDate(rows[i][OB_ACTUALSHIP_COL], parseOrderDate(rawOrder));
+        if (d && !dateMap.has(key)) dateMap.set(key, d);
+      }
+      const cur = itemsRef.current;
+      let count = 0;
+      const next = cur.map(it => {
+        if (it.actualShipDate) return it;        // 이미 채워짐 → 유지
+        const d = dateMap.get(normOrder(it.orderNo));
+        if (!d) return it;                        // 발주장부에 날짜 없음 → 보류(나중에 생기면 채움)
+        count++;
+        return { ...it, actualShipDate: d };
+      });
+      if (count > 0) saveItems(next);
+    } catch { /* 실패 시 다음 접속에서 재시도 */ }
+  }, [saveItems]);
+
+  // 접속 시 1회 발주장부 조회하여 비어있는 실제 출고일 채움
+  useEffect(() => {
+    if (!loaded) return;
+    runFillActualShipDate();
+  }, [loaded, runFillActualShipDate]);
+
   // KST 11시 이후 첫 접속 시 하루 1회 자동감지 실행
   useEffect(() => {
     if (!loaded) return;
@@ -325,7 +388,7 @@ export default function SoldOutAnalysisDelayCause() {
     return rows;
   }, [items, filterReason, searchQuery]);
 
-  const canSubmit = form.barcode.trim() && form.confirmDate && String(form.qty).trim();
+  const canSubmit = form.barcode.trim() && form.confirmDate;
 
   const resetForm = () => {
     setForm(emptyForm);
@@ -392,17 +455,17 @@ export default function SoldOutAnalysisDelayCause() {
       '상품명': it.productName || '',
       '옵션명': it.optionName || '',
       '바코드': it.barcode || '',
-      '대기수량': it.qty || '',
       '발주일': it.orderDate || '',
       '확인일': it.confirmDate || '',
       '업체발송예정일': it.shipEtaDate || '',
       'CN출고요청일': it.releaseReqDate || '',
+      '실제출고일': it.actualShipDate || '',
       '품절시작일': it.soldoutDate || '',
       '사유상태': it.reasonStatus || '',
       '자세한사유': it.reasonDetail || '',
       '조치내용': (it.timeline || []).map(t => `[${t.date}] ${t.text}`).join('\n'),
     }));
-    const header = ['진행상태', '발주번호', '상품명', '옵션명', '바코드', '대기수량', '발주일', '확인일', '업체발송예정일', 'CN출고요청일', '품절시작일', '사유상태', '자세한사유', '조치내용'];
+    const header = ['진행상태', '발주번호', '상품명', '옵션명', '바코드', '발주일', '확인일', '업체발송예정일', 'CN출고요청일', '실제출고일', '품절시작일', '사유상태', '자세한사유', '조치내용'];
     const ws = XLSX.utils.json_to_sheet(rows, { header });
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, '보충지연원인');
@@ -412,17 +475,17 @@ export default function SoldOutAnalysisDelayCause() {
   // 업로드 양식(템플릿) 다운로드
   const handleTemplateDownload = () => {
     const rows = [
-      { '발주번호': 'AE-E-260720-JJ-002', '바코드': '8801234567890', '수량': 30 },
-      { '발주번호': '', '바코드': '', '수량': '' },
+      { '발주번호': 'AE-E-260720-JJ-002', '바코드': '8801234567890' },
+      { '발주번호': '', '바코드': '' },
     ];
-    const ws = XLSX.utils.json_to_sheet(rows, { header: ['발주번호', '바코드', '수량'] });
+    const ws = XLSX.utils.json_to_sheet(rows, { header: ['발주번호', '바코드'] });
     ws['!cols'] = [{ wch: 22 }, { wch: 16 }, { wch: 8 }];
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, '업로드양식');
     XLSX.writeFile(wb, '보충지연원인_업로드양식.xlsx');
   };
 
-  // 엑셀 업로드 (발주번호·바코드·수량) → 일괄 신규 등록 (발주일/확인일 자동, 진행상태 확인중)
+  // 엑셀 업로드 (발주번호·바코드) → 일괄 신규 등록 (발주일/확인일 자동, 진행상태 확인중)
   const handleExcelUpload = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -436,9 +499,8 @@ export default function SoldOutAnalysisDelayCause() {
       const header = rows[0].map(h => String(h).replace(/\s+/g, ''));
       const idxOrderNo = header.findIndex(h => h.includes('발주번호') || h.includes('발주'));
       const idxBarcode = header.findIndex(h => h.includes('바코드'));
-      const idxQty = header.findIndex(h => h.includes('수량'));
-      if (idxOrderNo < 0 || idxBarcode < 0 || idxQty < 0) {
-        alert('첫 행 헤더에 발주번호 · 바코드 · 수량 열이 있어야 합니다.');
+      if (idxOrderNo < 0 || idxBarcode < 0) {
+        alert('첫 행 헤더에 발주번호 · 바코드 열이 있어야 합니다.');
         return;
       }
       const pmap = {};
@@ -454,8 +516,7 @@ export default function SoldOutAnalysisDelayCause() {
         const r = rows[i];
         const barcode = String(r[idxBarcode] ?? '').trim();
         const orderNo = String(r[idxOrderNo] ?? '').trim();
-        const qty = String(r[idxQty] ?? '').trim();
-        if (!barcode) { if (orderNo || qty) skippedNoBarcode++; continue; }
+        if (!barcode) { if (orderNo) skippedNoBarcode++; continue; }
         const okey = normOrder(orderNo);
         if (okey && (existingOrderSet.has(okey) || seenOrderSet.has(okey))) { skippedDup++; continue; }
         if (okey) seenOrderSet.add(okey);
@@ -468,7 +529,6 @@ export default function SoldOutAnalysisDelayCause() {
           orderNo,
           orderDate: parseOrderDate(orderNo),
           confirmDate: today,
-          qty,
           progressStatus: '확인중',
           id: `${Date.now()}_${i}`,
           timeline: [],
@@ -783,12 +843,12 @@ export default function SoldOutAnalysisDelayCause() {
               <input ref={fileInputRef} type="file" accept=".xlsx,.xls" onChange={handleExcelUpload} style={{ display: 'none' }} />
               <button className="btn" onClick={() => fileInputRef.current?.click()}
                 style={{ background: '#fff', color: '#1e8e3e', border: '1.5px solid #1e8e3e', fontWeight: 600 }}
-                title="발주번호·바코드·수량 열이 있는 엑셀을 올리면 일괄 등록됩니다. 양식이 필요하면 '양식' 버튼을 받으세요.">
+                title="발주번호·바코드 열이 있는 엑셀을 올리면 일괄 등록됩니다. 양식이 필요하면 '양식' 버튼을 받으세요.">
                 엑셀 업로드
               </button>
               <button className="btn" onClick={handleTemplateDownload}
                 style={{ background: 'transparent', color: '#5f6368', border: '1px dashed #bdbdbd', fontWeight: 600, fontSize: 12.5 }}
-                title="발주번호·바코드·수량 헤더가 든 빈 엑셀 양식 다운로드">
+                title="발주번호·바코드 헤더가 든 빈 엑셀 양식 다운로드">
                 양식
               </button>
               <button className="btn btn-primary" onClick={() => { if (showForm) { resetForm(); } else { setForm(emptyForm); setProductSearch(''); setShowForm(true); } }}>
@@ -885,8 +945,8 @@ export default function SoldOutAnalysisDelayCause() {
             <span style={{ fontSize: 11, color: '#d93025', fontWeight: 600 }}>* 필수 입력</span>
           </div>
           <div className="card-body" style={{ paddingTop: 12 }}>
-            {/* 1줄: 상품명 · 바코드 · 옵션명 · 발주번호 · 수량 */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(170px,1.7fr) 1fr 0.85fr 1fr 0.7fr', gap: 10, marginBottom: 10 }}>
+            {/* 1줄: 상품명 · 바코드 · 옵션명 · 발주번호 */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(170px,1.7fr) 1fr 0.85fr 1fr', gap: 10, marginBottom: 10 }}>
               <div style={{ position: 'relative' }}>
                 <label style={reqLabelStyle}>상품 * (상품명·바코드 검색)</label>
                 <input className="search-input" placeholder="상품명·바코드 검색..." value={productSearch}
@@ -919,10 +979,6 @@ export default function SoldOutAnalysisDelayCause() {
                 <input className="search-input" value={form.orderNo}
                   onChange={e => { const v = e.target.value; setForm(p => ({ ...p, orderNo: v, orderDate: parseOrderDate(v) || p.orderDate })); }}
                   style={inputStyle} placeholder="AE-I-260529" />
-              </div>
-              <div>
-                <label style={reqLabelStyle}>대기수량 *</label>
-                <input type="number" className="search-input" value={form.qty} onChange={e => setForm(p => ({ ...p, qty: e.target.value }))} style={reqInputStyle} placeholder="수량" />
               </div>
             </div>
 
@@ -1009,7 +1065,7 @@ export default function SoldOutAnalysisDelayCause() {
                 <col style={{ width: 118 }} />
                 <col style={{ width: 124 }} />
                 <col style={{ width: 118 }} />
-                <col style={{ width: 78 }} />
+                <col style={{ width: 112 }} />
                 <col style={{ width: 106 }} />
                 <col style={{ width: 52 }} />
               </colgroup>
@@ -1029,7 +1085,7 @@ export default function SoldOutAnalysisDelayCause() {
                   <th style={{ color: DATE_COLORS.confirmDate, borderBottom: `2px solid ${DATE_COLORS.confirmDate}` }}>확인일(조치일)</th>
                   <th style={{ color: DATE_COLORS.shipEtaDate, borderBottom: `2px solid ${DATE_COLORS.shipEtaDate}` }}>업체 발송예정일</th>
                   <th style={{ color: DATE_COLORS.releaseReqDate, borderBottom: `2px solid ${DATE_COLORS.releaseReqDate}` }}>CN출고요청일</th>
-                  <th style={{ textAlign: 'center' }}>대기수량</th>
+                  <th style={{ color: DATE_COLORS.actualShipDate, borderBottom: `2px solid ${DATE_COLORS.actualShipDate}` }}>실제 출고일</th>
                   <th style={{ color: DATE_COLORS.soldoutDate, borderBottom: `2px solid ${DATE_COLORS.soldoutDate}` }}>품절시작일</th>
                   <th style={{ textAlign: 'center' }}></th>
                 </tr>
@@ -1061,7 +1117,7 @@ export default function SoldOutAnalysisDelayCause() {
                         <td>{renderCell(item, 'confirmDate', 'date')}</td>
                         <td>{renderCell(item, 'shipEtaDate', 'date')}</td>
                         <td>{renderCell(item, 'releaseReqDate', 'date')}</td>
-                        <td>{renderCell(item, 'qty', 'number')}</td>
+                        <td>{renderCell(item, 'actualShipDate', 'date')}</td>
                         <td>{renderCell(item, 'soldoutDate', 'date')}</td>
                         <td style={{ textAlign: 'center' }}>
                           <span className="dc-del" onClick={() => handleDelete(item.id)} title="삭제">&#10005;</span>
