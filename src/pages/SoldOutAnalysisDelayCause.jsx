@@ -13,10 +13,11 @@ const OB_ACTUALSHIP_COL = 10;
 const STORE_KEY = 'delay_cause_items';
 const AUTORUN_KEY = 'delay_cause_autorun'; // { date: 'YYYY-MM-DD', count: N } (KST 11시 1회 자동감지)
 
-const REASON_STATUSES = ['작업지연', '업체발송지연', '재수배지연(SCM귀책)', '조치지연(SCM귀책)'];
+const REASON_STATUSES = ['작업지연', '업체발송지연', '운송지연', '재수배지연(SCM귀책)', '조치지연(SCM귀책)'];
 const REASON_COLORS = {
   '작업지연': '#fb8c00',
   '업체발송지연': '#c62828',
+  '운송지연': '#00838f',
   '재수배지연(SCM귀책)': '#6a1b9a',
   '조치지연(SCM귀책)': '#1565c0',
 };
