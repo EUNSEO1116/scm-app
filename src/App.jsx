@@ -23,7 +23,6 @@ import Sales from './pages/Sales';
 import SalesForecast from './pages/SalesForecast';
 import Placeholder from './pages/Placeholder';
 import IncheonIncoming from './pages/IncheonIncoming';
-import ClosedProducts from './pages/ClosedProducts';
 import SoldOutAnalysis from './pages/SoldOutAnalysis';
 import SoldOutAnalysisHistory from './pages/SoldOutAnalysisHistory';
 import SoldOutAnalysisExclude from './pages/SoldOutAnalysisExclude';
@@ -47,7 +46,6 @@ function App() {
           <Route path="/inventory/order" element={<OrderRequest />} />
           <Route path="/inventory/orderbook" element={<OrderBook />} />
           <Route path="/inventory/incheon" element={<IncheonIncoming />} />
-          <Route path="/inventory/closed" element={<ClosedProducts />} />
           <Route path="/fbc" element={<FbcCalculator />} />
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/fbc/items" element={<FbcItems />} />

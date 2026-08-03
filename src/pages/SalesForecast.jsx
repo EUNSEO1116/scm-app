@@ -750,10 +750,23 @@ export default function SalesForecast() {
   };
 
   // ───────── 분석 엑셀 (급상승 · 급하락 · 과재고 3시트) ─────────
-  const exportAnalysisExcel = () => {
+  const exportAnalysisExcel = async () => {
     const { surge, drop } = analysis;
     const dec = n => Math.round(n * 10) / 10;
     const seasonTxt = r => (r.season.tags || []).join(', ');
+
+    // 원가: 쿠팡바코드 시트에서 즉석 조회 (캐시 의존 제거) — 바코드 → 원가(G열)
+    const costByBarcode = {};
+    try {
+      const bcCsv = await (await fetch(CSV_BARCODE)).text();
+      const bcLines = bcCsv.split('\n').filter(l => l.trim());
+      for (let i = 1; i < bcLines.length; i++) {
+        const c = parseCsvRow(bcLines[i]);
+        const bc = (c[5] || '').trim();
+        if (bc) costByBarcode[bc] = Number(String(c[6] || '').replace(/[₩,\s]/g, '')) || 0;
+      }
+    } catch {}
+
     const wb = XLSX.utils.book_new();
     const addSheet = (aoa, name, cols) => {
       const ws = XLSX.utils.aoa_to_sheet(aoa);
@@ -767,12 +780,12 @@ export default function SalesForecast() {
     const dropAoa = [['바코드', '옵션ID', '상품명', '옵션명', '브랜드', '시즌', '기존평균', '최근평균', '품절', '품절사유', '상품개선']];
     for (const r of drop) dropAoa.push([r.barcode, r.optionId, r.productName, r.optionName, r.brand, seasonTxt(r), dec(r.mag.baseAvg), dec(r.mag.recentAvg), r.soldOut ? '품절됨' : '', r.soldOutReason || '', r.improving || '']);
 
-    const overAoa = [['바코드', '옵션ID', '상품명', '옵션명', '브랜드', '시즌', '시즌기간', '상태', '총재고', '그로스재고', '박스히어로', '일평균판매', '소진예상일수', '소진예상주차', '추세']];
-    for (const r of overstockRows) overAoa.push([r.barcode, r.optionId, r.productName, r.optionName, r.brand, seasonTxt(r), r.season.period || '', r.fStatus, r.totalStock, r.grossStock, r.boxhero, dec(r.dailyAvg), !Number.isFinite(r.daysOfStock) ? '판매없음' : Math.round(r.daysOfStock), !Number.isFinite(r.daysOfStock) ? '판매없음' : dec(r.daysOfStock / 7), TREND_LABEL[r.trendDir]]);
+    const overAoa = [['바코드', '옵션ID', '상품명', '옵션명', '브랜드', '시즌', '시즌기간', '상태', '총재고', '그로스재고', '박스히어로', '일평균판매', '소진예상일수', '소진예상주차', '추세', '원가']];
+    for (const r of overstockRows) overAoa.push([r.barcode, r.optionId, r.productName, r.optionName, r.brand, seasonTxt(r), r.season.period || '', r.fStatus, r.totalStock, r.grossStock, r.boxhero, dec(r.dailyAvg), !Number.isFinite(r.daysOfStock) ? '판매없음' : Math.round(r.daysOfStock), !Number.isFinite(r.daysOfStock) ? '판매없음' : dec(r.daysOfStock / 7), TREND_LABEL[r.trendDir], r.fStatus === '신규' ? '' : r.totalStock * (costByBarcode[r.barcode] || 0)]);
 
     addSheet(surgeAoa, '급상승', [{ wch: 16 }, { wch: 16 }, { wch: 40 }, { wch: 24 }, { wch: 14 }, { wch: 18 }, { wch: 10 }, { wch: 10 }, { wch: 8 }, { wch: 10 }]);
     addSheet(dropAoa, '급하락', [{ wch: 16 }, { wch: 16 }, { wch: 40 }, { wch: 24 }, { wch: 14 }, { wch: 18 }, { wch: 10 }, { wch: 10 }, { wch: 8 }, { wch: 24 }, { wch: 10 }]);
-    addSheet(overAoa, '과재고', [{ wch: 16 }, { wch: 16 }, { wch: 40 }, { wch: 24 }, { wch: 14 }, { wch: 18 }, { wch: 16 }, { wch: 12 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 8 }]);
+    addSheet(overAoa, '과재고', [{ wch: 16 }, { wch: 16 }, { wch: 40 }, { wch: 24 }, { wch: 14 }, { wch: 18 }, { wch: 16 }, { wch: 12 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 8 }, { wch: 12 }]);
 
     XLSX.writeFile(wb, `수요예측_분석_${dateToKey(new Date())}.xlsx`);
     showToast('success', `분석 다운로드 (급상승 ${surge.length} · 급하락 ${drop.length} · 과재고 ${overstockRows.length})`);

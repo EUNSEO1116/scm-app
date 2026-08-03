@@ -389,26 +389,46 @@ export default function Home() {
           if (bc) costMap[bc] = cost;
         }
 
-        let closedProducts = [];
-        try {
-          const kwData = await dbStoreGet('closed_products');
-          if (Array.isArray(kwData)) closedProducts = kwData;
-        } catch {}
-
+        // 재고계산기 전체 합 + 옵션별 정보 수집 (장기재고 판정용)
         let totalCount = 0, totalCost = 0;
+        const calcRows = []; // { oid, status, totalStock, unitCost }
         for (let i = 1; i < tsvLines.length; i++) {
           const cols = tsvLines[i].split('\t');
           const totalStock = Number(cols[14]) || 0;
           const barcode = (cols[2] || '').trim();
           const unitCost = costMap[barcode] || 0;
           totalCount += totalStock; totalCost += totalStock * unitCost;
+          const oid = (cols[1] || '').trim();
+          if (oid) calcRows.push({ oid, status: (cols[5] || '').trim(), totalStock, unitCost });
         }
 
+        // 최근 30일 판매 데이터 로드 → 옵션별 판매합 (수요예측 과재고 '판매없음' 재현)
+        const OVERSTOCK_MIN_STOCK = 10;
+        const salesSum = {}; // oid -> 30일 판매합(음수 0처리)
+        let availDays = 0;
+        try {
+          const dayKeys = [];
+          for (let d = 29; d >= 0; d--) {
+            const dt = new Date(); dt.setHours(0, 0, 0, 0); dt.setDate(dt.getDate() - d);
+            dayKeys.push(`${dt.getFullYear()}${String(dt.getMonth() + 1).padStart(2, '0')}${String(dt.getDate()).padStart(2, '0')}`);
+          }
+          const stores = await Promise.all(dayKeys.map(k => dbStoreGet(`soldout_analysis_${k}`).catch(() => null)));
+          for (const st of stores) {
+            if (!st?.items) continue;
+            availDays++;
+            for (const it of st.items) salesSum[it.optionId] = (salesSum[it.optionId] || 0) + Math.max(0, it.salesQty || 0);
+          }
+        } catch {}
+
+        // 장기재고 = 과재고 '판매없음'(30일 판매 0) & 총재고≥10 & 상태 '신규' 제외
         let longTermCount = 0, longTermCost = 0;
-        for (const item of closedProducts) {
-          for (const p of item.products) {
-            longTermCount += p.stock;
-            longTermCost += p.stock * (costMap[p.barcode] || 0);
+        if (availDays > 0) {
+          for (const r of calcRows) {
+            if (r.totalStock < OVERSTOCK_MIN_STOCK) continue;
+            if (r.status === '신규') continue;
+            if ((salesSum[r.oid] || 0) > 0) continue; // 판매 있음 → 제외
+            longTermCount += r.totalStock;
+            longTermCost += r.totalStock * r.unitCost;
           }
         }
         const availableCount = totalCount - longTermCount;
