@@ -194,7 +194,8 @@ export async function ensureUploadSoldoutCache(dateKey, { force = false } = {}) 
 // - endKey는 오늘 이하로 clamp (미래 제외)
 // 반환: { [YYYYMMDD]: { date, total, soldout, rate } } — 데이터 있는 날만 키로 존재
 // 월/기간 집계는 이 일별 rate들의 "평균"으로 낸다 (분모 = 데이터 있는 날 수).
-export async function computeSoldoutRateSnapshots(startKey, endKey) {
+// withItems=true면 각 날짜에 items:[{productName,optionName}] (품절수에 실제 집계된 상품)을 함께 담는다.
+export async function computeSoldoutRateSnapshots(startKey, endKey, { withItems = false } = {}) {
   const todayK = dateToKey(new Date());
   const clampEnd = endKey > todayK ? todayK : endKey;
   if (clampEnd < startKey) return {};
@@ -219,7 +220,18 @@ export async function computeSoldoutRateSnapshots(startKey, endKey) {
       const total = c.validItems.length;
       const soldout = c.validItems.filter(it => !daySnap.has(it.optionId) && it.coupangStock === 0).length;
       const rate = total > 0 ? Math.round(soldout / total * 10000) / 100 : 0;
-      result[k] = { date: k, total, soldout, rate };
+      const snap = { date: k, total, soldout, rate };
+      if (withItems) {
+        // 품절수에 실제 집계된 상품 = validItems 중 (수동 제외 아님 & 쿠팡재고 0)인 optionId 집합.
+        // c.items(전체 분석 목록)를 이 집합으로 교차 필터해 개수를 품절수와 정확히 일치시킨다.
+        const soldoutIds = new Set(
+          c.validItems.filter(it => !daySnap.has(it.optionId) && it.coupangStock === 0).map(it => it.optionId)
+        );
+        snap.items = (c.items || [])
+          .filter(it => soldoutIds.has(it.optionId))
+          .map(it => ({ productName: it.productName || '', optionName: it.optionName || '' }));
+      }
+      result[k] = snap;
     });
   }
   return result;

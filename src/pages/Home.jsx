@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useCallback } from 'react';
+import { useState, useMemo, useEffect, useCallback, Fragment } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { dbSaveCalendar, dbGetCalendar, dbStoreGet, dbStoreSet } from '../utils/dbApi';
 import { computeSoldoutRateSnapshots } from '../utils/soldoutCache';
@@ -130,6 +130,9 @@ export default function Home() {
   const [dragData, setDragData] = useState(null);
   const [dragOverKey, setDragOverKey] = useState(null);
   const [dashboardData, setDashboardData] = useState({ availableCount: 0, availableCost: 0, longTermCount: 0, longTermCost: 0, soldoutRate: null });
+  const [panelData, setPanelData] = useState({ availableView: null, longtermList: [], rateView: null });
+  const [panelView, setPanelView] = useState('menu'); // menu | calendar | rate | available | longterm
+  const [expandedDate, setExpandedDate] = useState(null); // 월 품절률: 펼쳐진 날짜 키
   const [addingDay, setAddingDay] = useState(null); // 메모 추가할 날짜 키
   const [memoText, setMemoText] = useState('');
 
@@ -360,17 +363,24 @@ export default function Home() {
         const now = new Date();
         const todayNoon = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 12, 0, 0).getTime();
 
+        // 캐시 버전: 새 패널(가용/장기/품절률 요약) 데이터 포함 버전.
+        // 구버전 캐시면 시각과 무관하게 딱 1회 강제 재계산 → 이후 정상(내일 12시) 스케줄 복귀.
+        const CACHE_VERSION = 4;
+
         // DB 캐시 확인
         const cached = await dbStoreGet('dashboard_cache').catch(() => null);
-        if (cached && cached.calculatedAt >= todayNoon) {
+        const forceRecalc = !cached || cached.version !== CACHE_VERSION;
+        if (cached && !forceRecalc && cached.calculatedAt >= todayNoon) {
           setDashboardData(cached.data);
+          if (cached.panelData) setPanelData(cached.panelData);
           return;
         }
         // 12시 이전이면 어제 캐시라도 먼저 표시
         if (cached && cached.data) setDashboardData(cached.data);
+        if (cached && cached.panelData) setPanelData(cached.panelData);
 
-        // 12시 이전이면 새로 계산하지 않음
-        if (now.getTime() < todayNoon) return;
+        // 12시 이전이면 새로 계산하지 않음 (단, 구버전 강제 재계산은 예외)
+        if (!forceRecalc && now.getTime() < todayNoon) return;
 
         // 새로 계산
         const calcRes = await fetch(TSV_CALC);
@@ -387,6 +397,13 @@ export default function Home() {
           const bc = (cols[5] || '').trim();
           const cost = Number(String(cols[6] || '').replace(/[₩,\s]/g, '')) || 0;
           if (bc) costMap[bc] = cost;
+        }
+        // 옵션ID → 상품명/옵션명 (쿠팡바코드: B=optionId, D=상품명, E=옵션명)
+        const nameMap = {};
+        for (let i = 1; i < barcodeLines.length; i++) {
+          const cols = barcodeLines[i].split('\t');
+          const oid = (cols[1] || '').trim();
+          if (oid) nameMap[oid] = { productName: (cols[3] || '').trim(), optionName: (cols[4] || '').trim() };
         }
 
         // 재고계산기 전체 합 + 옵션별 정보 수집 (장기재고 판정용)
@@ -435,19 +452,52 @@ export default function Home() {
         const availableCost = totalCost - longTermCost;
 
         let soldoutRate = null;
+        let rateView = { avg: null, dayCount: 0, daily: [] };
         try {
           // 이번 달 데이터 있는 날(평일 정식 + 주말 원천)의 "일별 품절률 평균"
           // 분모 = 데이터 있는 날 수 / 제외 = 그 날짜 excludeSnapshot 그대로
           const prefix = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}`;
           const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-          const snaps = await computeSoldoutRateSnapshots(`${prefix}01`, `${prefix}${String(lastDay).padStart(2, '0')}`);
+          const snaps = await computeSoldoutRateSnapshots(`${prefix}01`, `${prefix}${String(lastDay).padStart(2, '0')}`, { withItems: true });
           const rates = Object.values(snaps).map(s => s.rate);
           if (rates.length > 0) soldoutRate = Math.round(rates.reduce((a, b) => a + b, 0) / rates.length * 100) / 100;
+          const daily = Object.values(snaps).sort((a, b) => String(b.date).localeCompare(String(a.date)));
+          rateView = { avg: soldoutRate, dayCount: daily.length, daily };
         } catch {}
 
+        // 가용재고 요약: 일평균판매(30일합/데이터일수) 기준 그룹
+        const dailyAvgOf = (oid) => (availDays > 0 ? (salesSum[oid] || 0) / availDays : 0);
+        const highGroup = [], lowGroup = [];
+        let highStock = 0, highCost = 0;
+        for (const r of calcRows) {
+          const avg = dailyAvgOf(r.oid);
+          const nm = nameMap[r.oid] || {};
+          const entry = { productName: nm.productName || r.oid, optionName: nm.optionName || '', avg: Math.round(avg * 10) / 10, stock: r.totalStock };
+          if (avg >= 10) { highGroup.push(entry); highStock += r.totalStock; highCost += r.totalStock * r.unitCost; }
+          else lowGroup.push(entry);
+        }
+        highGroup.sort((a, b) => b.avg - a.avg);
+        lowGroup.sort((a, b) => b.avg - a.avg);
+        const availableView = { highStock, highCost, highCount: highGroup.length, highTop10: highGroup.slice(0, 10), lowTop10: lowGroup.slice(0, 10) };
+
+        // 장기재고(판매없음) 목록: 30일 판매 0 & 총재고≥10 & 상태 '신규' 제외
+        const longtermList = [];
+        if (availDays > 0) {
+          for (const r of calcRows) {
+            if (r.totalStock < OVERSTOCK_MIN_STOCK) continue;
+            if (r.status === '신규') continue;
+            if ((salesSum[r.oid] || 0) > 0) continue;
+            const nm = nameMap[r.oid] || {};
+            longtermList.push({ productName: nm.productName || r.oid, optionName: nm.optionName || '', status: r.status || '', stock: r.totalStock, cost: r.totalStock * r.unitCost });
+          }
+          longtermList.sort((a, b) => b.cost - a.cost);
+        }
+
         const newData = { availableCount, availableCost, longTermCount, longTermCost, soldoutRate };
+        const newPanel = { availableView, longtermList, rateView };
         setDashboardData(newData);
-        await dbStoreSet('dashboard_cache', { data: newData, calculatedAt: Date.now() }).catch(() => {});
+        setPanelData(newPanel);
+        await dbStoreSet('dashboard_cache', { data: newData, panelData: newPanel, calculatedAt: Date.now(), version: CACHE_VERSION }).catch(() => {});
       } catch (e) { console.error('Dashboard data load error:', e); }
     })();
   }, []);
@@ -580,150 +630,264 @@ export default function Home() {
 
   return (
     <div>
-      {/* 활동 로그 버튼 */}
-      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8 }}>
-        <button
-          onClick={() => navigate('/activity-log')}
-          style={{
-            background: '#fff', border: '1px solid #ddd', borderRadius: 8,
-            padding: '6px 14px', fontSize: 12, color: '#555', cursor: 'pointer',
-            display: 'flex', alignItems: 'center', gap: 6,
-            boxShadow: '0 1px 4px rgba(0,0,0,0.06)',
-          }}
-          onMouseEnter={e => { e.currentTarget.style.background = '#f5f5f5'; }}
-          onMouseLeave={e => { e.currentTarget.style.background = '#fff'; }}
-        >
-          <span style={{ fontSize: 14 }}>&#128221;</span>
-          활동 로그
-        </button>
-      </div>
-      {/* 자주 이용하는 메뉴 (중앙) */}
-      <div style={{
-        display: 'flex', justifyContent: 'center', marginBottom: 20, flexWrap: 'wrap',
-      }}>
-        {/* 자주 이용하는 메뉴 */}
-        <div style={{
-          background: 'linear-gradient(135deg, #f6f4ff 0%, #eef1ff 100%)',
-          borderRadius: 14, padding: '12px 18px',
-          border: '1px solid #ddd6fe', boxShadow: '0 4px 16px rgba(108,92,231,0.14)',
-          display: 'flex', alignItems: 'center', gap: 16,
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 7, whiteSpace: 'nowrap' }}>
-            <span style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              width: 30, height: 30, borderRadius: 9, fontSize: 16,
-              background: '#6c5ce7', boxShadow: '0 2px 6px rgba(108,92,231,0.4)',
-            }}>&#11088;</span>
-            <span style={{ fontSize: 13.5, fontWeight: 800, color: '#5b4bd6' }}>자주 이용하는 메뉴</span>
+      <style>{`
+        .home-menu-btn { display:flex; align-items:center; gap:14px; padding:24px 22px; border-radius:14px; background:#f8fafc; border:1.5px solid #e2e8f0; cursor:pointer; transition:all .14s; text-align:left; }
+        .home-menu-btn:hover { transform:translateY(-2px); box-shadow:0 8px 18px rgba(42,50,89,.35); filter:brightness(1.08); }
+        .home-menu-btn .mnum { font-size:24px; font-weight:800; color:#344179; min-width:26px; }
+        .home-menu-btn .mlbl { font-size:17px; font-weight:700; color:#334155; }
+        .home-dash-btn { cursor:pointer; border-radius:12px; padding:16px 12px; text-align:center; transition:all .14s; background:#fff; border:2px solid #e2e8f0; box-shadow:0 1px 4px rgba(0,0,0,.06); }
+        .home-dash-btn:hover { transform:translateY(-2px); box-shadow:0 6px 16px rgba(0,0,0,.12); }
+        .home-sum-table { width:100%; border-collapse:collapse; font-size:13px; }
+        .home-sum-table th { background:#f4f6f8; color:#5f6368; font-weight:700; padding:9px 10px; border:1px solid #e3e7eb; text-align:center; white-space:nowrap; }
+        .home-sum-table td { padding:8px 10px; border:1px solid #eceff1; color:#333; }
+      `}</style>
+
+      <div style={{ maxWidth: 1180, margin: '0 auto' }}>
+      {/* 총재고원가 대시보드 (버튼형) */}
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontSize: 14, fontWeight: 600, color: '#333' }}>총재고원가 대시보드</span>
+            <span style={{ fontSize: 11, color: '#bbb' }}>매일 12시 업데이트 · 눌러서 상세 보기</span>
           </div>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            {[
-              { label: '일일 매출 순위', path: '/soldout-analysis/history' },
-              { label: '품절 현황', path: '/soldout-analysis' },
-              { label: '상품개선', path: '/issue/improvement' },
-              { label: 'FBC 사전계산기', path: '/fbc/pallet' },
-              { label: 'CN 결산', path: '/cn-settlement/dashboard' },
-            ].map((m, i) => (
+          <button
+            onClick={downloadDashboardExcel}
+            style={{
+              background: '#f5f5f5', border: '1px solid #ddd', borderRadius: 6,
+              padding: '4px 10px', fontSize: 11, color: '#555', cursor: 'pointer',
+            }}
+            onMouseEnter={e => { e.currentTarget.style.background = '#e8e8e8'; }}
+            onMouseLeave={e => { e.currentTarget.style.background = '#f5f5f5'; }}
+          >CSV</button>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
+          {[
+            { key: 'rate', title: '월 품절률', desc: '판매중 품절률 · 일별 추이', accent: '#64748b', bg: '#f1f5f9',
+              lines: [dashboardData.soldoutRate !== null ? `${dashboardData.soldoutRate}%` : '—%'] },
+            { key: 'available', title: '가용 재고', desc: '전체 재고 - 장기재고 · 총 원가', accent: '#2563eb', bg: '#e0edff',
+              lines: [`${dashboardData.availableCount.toLocaleString()}개`, `${dashboardData.availableCost.toLocaleString()}원`] },
+            { key: 'longterm', title: '장기 재고', desc: '30일간 판매없음 · 총 원가', accent: '#ea580c', bg: '#ffe9dc',
+              lines: [`${dashboardData.longTermCount.toLocaleString()}개`, `${dashboardData.longTermCost.toLocaleString()}원`] },
+          ].map(card => {
+            const active = panelView === card.key;
+            return (
+              <button key={card.key} className="home-dash-btn" onClick={() => setPanelView(card.key)}
+                style={{ border: 'none', background: active ? card.bg : `${card.bg}88`, boxShadow: active ? `0 4px 14px ${card.accent}44` : '0 1px 4px rgba(0,0,0,.06)' }}>
+                <div style={{ fontSize: 13, fontWeight: 800, color: '#334155', marginBottom: 8 }}>{card.title}</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                  {card.lines.map((l, i) => (
+                    <div key={i} style={{ fontSize: i === 0 ? 22 : 15, fontWeight: 800, color: i === 0 ? card.accent : '#475569' }}>{l}</div>
+                  ))}
+                </div>
+                <div style={{ fontSize: 10, color: '#94a3b8', marginTop: 8 }}>{card.desc}</div>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* 메인 전환 패널 */}
+      <div className="card" style={{ minHeight: 460 }}>
+        {/* 패널 헤더 */}
+        <div className="card-header" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            {(panelView === 'rate' || panelView === 'available' || panelView === 'longterm') ? (
               <button
-                key={m.path}
-                onClick={() => navigate(m.path)}
-                style={{
-                  background: '#fff', border: '1px solid #c9c2f5', borderRadius: 20,
-                  padding: '6px 15px', fontSize: 12.5, fontWeight: 600, color: '#6c5ce7',
-                  cursor: 'pointer', whiteSpace: 'nowrap', transition: 'all 0.12s',
-                  boxShadow: '0 1px 3px rgba(108,92,231,0.15)',
-                }}
-                onMouseEnter={e => { e.currentTarget.style.background = '#6c5ce7'; e.currentTarget.style.borderColor = '#6c5ce7'; e.currentTarget.style.color = '#fff'; e.currentTarget.style.transform = 'translateY(-1px)'; e.currentTarget.style.boxShadow = '0 4px 10px rgba(108,92,231,0.35)'; }}
-                onMouseLeave={e => { e.currentTarget.style.background = '#fff'; e.currentTarget.style.borderColor = '#c9c2f5'; e.currentTarget.style.color = '#6c5ce7'; e.currentTarget.style.transform = ''; e.currentTarget.style.boxShadow = '0 1px 3px rgba(108,92,231,0.15)'; }}
-              >{`${i + 1}. ${m.label}`}</button>
-            ))}
+                onClick={() => setPanelView('menu')}
+                style={{ background: '#f1f5f9', border: '1px solid #e2e8f0', borderRadius: 8, padding: '7px 14px', fontSize: 13, fontWeight: 700, color: '#475569', cursor: 'pointer' }}
+              >← 돌아가기</button>
+            ) : (
+              <>
+                <button
+                  onClick={() => setPanelView('menu')}
+                  style={{ background: panelView === 'menu' ? '#344179' : '#fff', color: panelView === 'menu' ? '#fff' : '#475569', border: `1.5px solid ${panelView === 'menu' ? '#344179' : '#e2e8f0'}`, borderRadius: 8, padding: '7px 14px', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}
+                >⭐ 자주 이용하는 메뉴</button>
+                <button
+                  onClick={() => setPanelView('calendar')}
+                  style={{ background: panelView === 'calendar' ? '#344179' : '#fff', color: panelView === 'calendar' ? '#fff' : '#475569', border: `1.5px solid ${panelView === 'calendar' ? '#344179' : '#e2e8f0'}`, borderRadius: 8, padding: '7px 14px', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}
+                >📅 달력</button>
+              </>
+            )}
+            {panelView === 'rate' && <span style={{ fontSize: 15, fontWeight: 800, color: '#334155' }}>월 품절률 요약</span>}
+            {panelView === 'available' && <span style={{ fontSize: 15, fontWeight: 800, color: '#334155' }}>가용 재고 요약</span>}
+            {panelView === 'longterm' && <span style={{ fontSize: 15, fontWeight: 800, color: '#334155' }}>장기 재고 (판매없음) 목록</span>}
           </div>
-        </div>
-      </div>
 
-      {/* 헤더: 대시보드 */}
-      <div style={{ display: 'flex', gap: 24, marginBottom: 24, alignItems: 'flex-start' }}>
-        {/* 총재고원가 대시보드 */}
-        <div style={{ flex: 1 }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <span style={{ fontSize: 14, fontWeight: 600, color: '#333' }}>총재고원가 대시보드</span>
-              <span style={{ fontSize: 11, color: '#bbb' }}>매일 12시 업데이트</span>
-            </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            {panelView === 'calendar' && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                <button className="btn btn-outline btn-sm" onClick={prevMonth}>◀</button>
+                <span style={{ fontSize: 16, fontWeight: 700, minWidth: 110, textAlign: 'center' }}>{year}년 {month + 1}월</span>
+                <button className="btn btn-outline btn-sm" onClick={nextMonth}>▶</button>
+              </div>
+            )}
             <button
-              onClick={downloadDashboardExcel}
-              style={{
-                background: '#f5f5f5', border: '1px solid #ddd', borderRadius: 6,
-                padding: '4px 10px', fontSize: 11, color: '#555', cursor: 'pointer',
-                display: 'flex', alignItems: 'center', gap: 4,
-              }}
-              onMouseEnter={e => { e.currentTarget.style.background = '#e8e8e8'; }}
-              onMouseLeave={e => { e.currentTarget.style.background = '#f5f5f5'; }}
-            >CSV</button>
-          </div>
-          <div style={{
-            background: '#fff', borderRadius: 10, boxShadow: '0 1px 4px rgba(0,0,0,0.08)',
-            overflow: 'hidden', border: '1px solid #e0e0e0',
-          }}>
-            {/* 헤더 */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', borderBottom: '1px solid #e0e0e0' }}>
-              {['월 품절률', '가용 재고', '가용 재고 총 원가', '장기 재고', '장기 재고 총 원가'].map((title, i) => {
-                const bg = i === 0 ? '#f0f0f0' : i <= 2 ? '#dceefb' : '#fdf5e8';
-                return (
-                  <div key={title} style={{
-                    background: bg, padding: '13px 8px', textAlign: 'center',
-                    fontSize: 13, fontWeight: 800, color: '#222', letterSpacing: '0.5px',
-                    borderRight: i < 4 ? '1px solid #e0e0e0' : 'none',
-                  }}>{title}</div>
-                );
-              })}
-            </div>
-            {/* 값 */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', borderBottom: '1px solid #e0e0e0' }}>
-              {[
-                dashboardData.soldoutRate !== null ? `${dashboardData.soldoutRate}%` : '—%',
-                `${dashboardData.availableCount.toLocaleString()}개`,
-                `${dashboardData.availableCost.toLocaleString()}원`,
-                `${dashboardData.longTermCount.toLocaleString()}개`,
-                `${dashboardData.longTermCost.toLocaleString()}원`,
-              ].map((val, i) => {
-                const bg = i === 0 ? '#fff' : i <= 2 ? '#f0f7ff' : '#fff8f0';
-                return (
-                  <div key={i} style={{
-                    background: bg, padding: '22px 8px', textAlign: 'center',
-                    fontSize: 18, fontWeight: 700, color: '#222',
-                    borderRight: i < 4 ? '1px solid #e0e0e0' : 'none',
-                  }}>{val}</div>
-                );
-              })}
-            </div>
-            {/* 설명 */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)' }}>
-              {['판매중 품절률', '전체 재고 - 장기재고', '가용 재고의 총 원가', '30일간 판매저조 상품 수', '30일간 판매저조 상품의 총 원가 합'].map((desc, i) => {
-                const bg = i === 0 ? '#fff' : i <= 2 ? '#f7fbff' : '#fffcf5';
-                return (
-                  <div key={i} style={{
-                    background: bg, padding: '11px 6px', textAlign: 'center',
-                    fontSize: 10, color: '#999',
-                    borderRight: i < 4 ? '1px solid #e0e0e0' : 'none',
-                  }}>{desc}</div>
-                );
-              })}
-            </div>
+              onClick={() => navigate('/activity-log')}
+              style={{ background: '#fff', border: '1px solid #ddd', borderRadius: 8, padding: '6px 14px', fontSize: 12, color: '#555', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, boxShadow: '0 1px 4px rgba(0,0,0,0.06)' }}
+              onMouseEnter={e => { e.currentTarget.style.background = '#f5f5f5'; }}
+              onMouseLeave={e => { e.currentTarget.style.background = '#fff'; }}
+            ><span style={{ fontSize: 14 }}>&#128221;</span>활동 로그</button>
           </div>
         </div>
-      </div>
 
-      {/* 달력 */}
-      <div className="card">
-        <div className="card-header" style={{ justifyContent: 'center', gap: 16 }}>
-          <button className="btn btn-outline btn-sm" onClick={prevMonth}>◀</button>
-          <h2 style={{ fontSize: 18, fontWeight: 700, minWidth: 140, textAlign: 'center' }}>
-            {year}년 {month + 1}월
-          </h2>
-          <button className="btn btn-outline btn-sm" onClick={nextMonth}>▶</button>
-        </div>
-        <div className="card-body" style={{ padding: 12 }}>
+        <div className="card-body" style={{ padding: 16 }}>
+          {/* 자주 이용하는 메뉴 (기본) */}
+          {panelView === 'menu' && (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16 }}>
+              {[
+                { label: '일일 매출 순위', path: '/soldout-analysis/history' },
+                { label: '품절 현황', path: '/soldout-analysis' },
+                { label: '매출관리', path: '/sales' },
+                { label: '상품개선', path: '/issue/improvement' },
+                { label: 'FBC 사전계산기', path: '/fbc/pallet' },
+                { label: 'CN 결산', path: '/cn-settlement/dashboard' },
+              ].map((m, i) => {
+                // 배경은 일괄 연회색, 카드 앞쪽(좌측 바)에 퍼스널 남색 계열 그라데이션.
+                // 1번이 가장 진하고 6번으로 갈수록 옅어짐.
+                const navyBar = ['#1e2433', '#2a3259', '#3a4680', '#4f5d9e', '#7b85b8', '#a8afd4'];
+                return (
+                  <button key={m.path} className="home-menu-btn" onClick={() => navigate(m.path)}
+                    style={{ background: '#f2f3f5', border: '1px solid #e6e8eb', borderLeft: `6px solid ${navyBar[i]}` }}>
+                    <span className="mnum" style={{ color: navyBar[i] }}>{i + 1}</span>
+                    <span className="mlbl" style={{ color: '#334155' }}>{m.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          {/* 월 품절률 요약 */}
+          {panelView === 'rate' && (
+            panelData.rateView && panelData.rateView.daily.length > 0 ? (
+              <div>
+                <div style={{ display: 'flex', gap: 16, marginBottom: 16, flexWrap: 'wrap' }}>
+                  <div style={{ flex: 1, minWidth: 180, background: '#f1f5f9', borderRadius: 12, padding: '18px 20px', border: '1px solid #e2e8f0' }}>
+                    <div style={{ fontSize: 12, color: '#64748b', fontWeight: 600, marginBottom: 6 }}>이번 달 평균 품절률</div>
+                    <div style={{ fontSize: 30, fontWeight: 800, color: '#64748b' }}>{panelData.rateView.avg !== null ? `${panelData.rateView.avg}%` : '—'}</div>
+                  </div>
+                  <div style={{ flex: 1, minWidth: 180, background: '#fff', borderRadius: 12, padding: '18px 20px', border: '1px solid #e2e8f0' }}>
+                    <div style={{ fontSize: 12, color: '#64748b', fontWeight: 600, marginBottom: 6 }}>집계된 날 수</div>
+                    <div style={{ fontSize: 30, fontWeight: 800, color: '#334155' }}>{panelData.rateView.dayCount}일</div>
+                  </div>
+                </div>
+                <div style={{ maxHeight: 420, overflow: 'auto' }}>
+                  <table className="home-sum-table">
+                    <thead>
+                      <tr><th style={{ width: 24 }}></th><th>날짜</th><th>전체</th><th>품절수</th><th>품절률</th></tr>
+                    </thead>
+                    <tbody>
+                      {panelData.rateView.daily.map(d => {
+                        const isOpen = expandedDate === d.date;
+                        const items = d.items || [];
+                        return (
+                          <Fragment key={d.date}>
+                            <tr onClick={() => setExpandedDate(isOpen ? null : d.date)}
+                              style={{ cursor: 'pointer', background: isOpen ? '#eef2fb' : undefined }}>
+                              <td style={{ textAlign: 'center', color: '#64748b', userSelect: 'none' }}>{isOpen ? '▼' : '▶'}</td>
+                              <td style={{ textAlign: 'center' }}>{String(d.date).replace(/(\d{4})(\d{2})(\d{2})/, '$1.$2.$3')}</td>
+                              <td style={{ textAlign: 'center' }}>{d.total}</td>
+                              <td style={{ textAlign: 'center' }}>{d.soldout}</td>
+                              <td style={{ textAlign: 'center', fontWeight: 700, color: '#d93025' }}>{d.rate}%</td>
+                            </tr>
+                            {isOpen && (
+                              <tr>
+                                <td colSpan={5} style={{ background: '#f8fafc', padding: '8px 14px' }}>
+                                  {items.length > 0 ? (
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                      {items.map((it, i) => (
+                                        <div key={i} style={{ fontSize: 12.5, color: '#334155', display: 'flex', gap: 8 }}>
+                                          <span style={{ fontWeight: 600 }}>{it.productName}</span>
+                                          {it.optionName && <span style={{ color: '#64748b' }}>· {it.optionName}</span>}
+                                        </div>
+                                      ))}
+                                    </div>
+                                  ) : (
+                                    <span style={{ fontSize: 12.5, color: '#94a3b8' }}>집계된 품절 상품이 없습니다.</span>
+                                  )}
+                                </td>
+                              </tr>
+                            )}
+                          </Fragment>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            ) : (
+              <div style={{ padding: '60px 0', textAlign: 'center', color: '#94a3b8', fontSize: 14 }}>집계된 품절률 데이터가 없습니다. (매일 12시 이후 갱신)</div>
+            )
+          )}
+
+          {/* 가용 재고 요약 */}
+          {panelView === 'available' && (
+            panelData.availableView ? (
+              <div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 16 }}>
+                  {[
+                    { title: '일평균 10개 이상 TOP 10', rows: panelData.availableView.highTop10, color: '#0ea5e9' },
+                    { title: '일평균 10개 미만 TOP 10', rows: panelData.availableView.lowTop10, color: '#f59e0b' },
+                  ].map(grp => (
+                    <div key={grp.title}>
+                      <div style={{ fontSize: 13, fontWeight: 800, color: grp.color, marginBottom: 8 }}>{grp.title}</div>
+                      <table className="home-sum-table">
+                        <thead>
+                          <tr><th>상품명</th><th>옵션명</th><th>일평균</th></tr>
+                        </thead>
+                        <tbody>
+                          {grp.rows.length > 0 ? grp.rows.map((r, i) => (
+                            <tr key={i}>
+                              <td style={{ maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.productName}</td>
+                              <td style={{ maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.optionName}</td>
+                              <td style={{ textAlign: 'center', fontWeight: 700 }}>{r.avg}</td>
+                            </tr>
+                          )) : (
+                            <tr><td colSpan={3} style={{ textAlign: 'center', color: '#94a3b8' }}>데이터 없음</td></tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <div style={{ padding: '60px 0', textAlign: 'center', color: '#94a3b8', fontSize: 14 }}>가용 재고 데이터가 없습니다. (매일 12시 이후 갱신)</div>
+            )
+          )}
+
+          {/* 장기 재고 (판매없음) 목록 */}
+          {panelView === 'longterm' && (
+            panelData.longtermList && panelData.longtermList.length > 0 ? (
+              <div>
+                <div style={{ fontSize: 13, color: '#64748b', marginBottom: 12 }}>
+                  30일간 판매 없는 순수 장기재고 <b style={{ color: '#f59e0b' }}>{panelData.longtermList.length}종</b> · 총 재고 {panelData.longtermList.reduce((a, b) => a + b.stock, 0).toLocaleString()}개 · 총 원가 {Math.round(panelData.longtermList.reduce((a, b) => a + b.cost, 0)).toLocaleString()}원
+                </div>
+                <div style={{ maxHeight: 440, overflow: 'auto' }}>
+                  <table className="home-sum-table">
+                    <thead>
+                      <tr><th>상품명</th><th>옵션명</th><th>상태</th><th>재고</th><th>재고별 원가</th></tr>
+                    </thead>
+                    <tbody>
+                      {panelData.longtermList.map((r, i) => (
+                        <tr key={i}>
+                          <td style={{ maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.productName}</td>
+                          <td style={{ maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.optionName}</td>
+                          <td style={{ textAlign: 'center' }}>{r.status || '-'}</td>
+                          <td style={{ textAlign: 'center' }}>{r.stock.toLocaleString()}</td>
+                          <td style={{ textAlign: 'right' }}>{Math.round(r.cost).toLocaleString()}원</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            ) : (
+              <div style={{ padding: '60px 0', textAlign: 'center', color: '#94a3b8', fontSize: 14 }}>순수 판매없음 장기재고가 없습니다. (매일 12시 이후 갱신)</div>
+            )
+          )}
+
+          {/* 달력 */}
+          {panelView === 'calendar' && (<>
           {/* 요일 헤더 */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 2, marginBottom: 4 }}>
             {WEEKDAYS.map((w, i) => (
@@ -736,7 +900,7 @@ export default function Home() {
           {/* 날짜 그리드 */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 2 }}>
             {calendarDays.map((day, i) => {
-              if (!day) return <div key={`empty-${i}`} style={{ minHeight: 110 }} />;
+              if (!day) return <div key={`empty-${i}`} style={{ minHeight: 84 }} />;
               const key = dateKey(day);
               const isToday = key === todayKey;
               const events = fbcEvents[key] || [];
@@ -757,7 +921,7 @@ export default function Home() {
                   onDragLeave={handleDragLeave}
                   onDrop={e => handleDrop(e, key)}
                   style={{
-                    minHeight: 110, padding: '6px 6px 4px', borderRadius: 10,
+                    minHeight: 84, padding: '5px 5px 3px', borderRadius: 9,
                     background: isDragOver ? '#e8f0fe' : isToday ? '#f0f4ff' : '#fafbfc',
                     border: isDragOver ? '2px dashed #1a73e8' : isToday ? '2px solid #5b7ff5' : '1px solid #e8e8e8',
                     transition: 'background 0.15s, border 0.15s',
@@ -828,7 +992,9 @@ export default function Home() {
               );
             })}
           </div>
+          </>)}
         </div>
+      </div>
       </div>
 
       {/* 선택한 날 오버레이 */}
