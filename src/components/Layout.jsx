@@ -13,16 +13,16 @@ const navItems = [
   { id: 'sales', label: '매출관리', icon: 'sales', children: [
     { label: '매출관리', path: '/sales' },
     { label: '수요 예측', path: '/sales/forecast' },
+    { label: '일일 매출 순위', path: '/soldout-analysis/history' },
   ]},
   { id: 'soldout-analysis', label: '품절 분석', icon: 'soldoutAnalysis', children: [
-    { label: '(NEW)품절 현황', path: '/soldout-analysis' },
-    { label: '데이터 기록', path: '/soldout-analysis/history' },
-    { label: '(NEW)제외품목관리', path: '/soldout-analysis/exclude' },
-    { label: '(NEW)월 품절률', path: '/soldout-analysis/rate' },
+    { label: '품절 현황', path: '/soldout-analysis' },
+    { label: '제외품목관리', path: '/soldout-analysis/exclude' },
+    { label: '월 품절률', path: '/soldout-analysis/rate' },
     { label: '보충 지연 원인 관리', path: '/soldout-analysis/delay-cause' },
     { label: '데이터 업로드', path: '/soldout-analysis/upload' },
   ]},
-  { id: 'issue', label: '이슈관리', icon: 'issue', children: [
+  { id: 'issue', label: '품질관리', icon: 'issue', children: [
     { label: '특별관리', path: '/issue' },
     { label: '상품개선', path: '/issue/improvement' },
     { label: '인증관리', path: '/issue/certification' },
@@ -44,12 +44,6 @@ const bottomNavItems = [
     { label: '거래 데이터 업로드', path: '/cn-settlement/upload' },
     { label: '결산 대시보드', path: '/cn-settlement/dashboard' },
     { label: '결산 기록', path: '/cn-settlement/history' },
-  ]},
-  { id: 'soldout', label: '품절관리', icon: 'soldout', children: [
-    { label: '품절 현황', path: '/soldout' },
-    { label: '월별 품절률', path: '/soldout/rate' },
-    { label: '제외 품목 관리', path: '/soldout/exclude' },
-    { label: '품절 기록', path: '/soldout/history' },
   ]},
 ];
 
@@ -84,10 +78,10 @@ const pageTitles = {
   '/soldout/history': '품절 기록',
   '/issue': '특별관리',
   '/issue/improvement': '상품개선',
-  '/soldout-analysis': '(NEW)품절 현황',
-  '/soldout-analysis/history': '데이터 기록',
-  '/soldout-analysis/exclude': '(NEW)제외품목관리',
-  '/soldout-analysis/rate': '(NEW)월 품절률',
+  '/soldout-analysis': '품절 현황',
+  '/soldout-analysis/history': '일일 매출 순위',
+  '/soldout-analysis/exclude': '제외품목관리',
+  '/soldout-analysis/rate': '월 품절률',
   '/soldout-analysis/delay-cause': '보충 지연 원인 관리',
   '/soldout-analysis/upload': '데이터 업로드',
   '/supplies': '부자재 목록',
