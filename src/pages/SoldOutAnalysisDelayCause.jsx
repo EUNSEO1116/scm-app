@@ -766,7 +766,7 @@ export default function SoldOutAnalysisDelayCause() {
       )}
 
       {/* 툴바 */}
-      <div className="card" style={{ marginBottom: 16, overflow: 'visible', position: 'relative', zIndex: 5 }}>
+      <div className="card" style={{ marginBottom: 16, overflow: 'visible', position: 'sticky', top: 40, zIndex: 30 }}>
         <div className="card-body" style={{ padding: 16 }}>
           <div className="filter-bar" style={{ flexWrap: 'wrap', gap: 10, alignItems: 'center', marginBottom: 0 }}>
             <input className="search-input" placeholder="상품명, 옵션명, 바코드, 발주번호, 사유 검색..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} style={{ maxWidth: 260 }} />
