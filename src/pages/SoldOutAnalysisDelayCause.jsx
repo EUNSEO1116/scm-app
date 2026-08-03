@@ -5,12 +5,14 @@ import { dbStoreGet, dbStoreSet } from '../utils/dbApi';
 const SHEET_ID = '1NXhW_gG0b-gXuVqrhbY9ErWi8uO_7pXIy-NTo4FbE1I';
 const TSV_URL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent('특별 관리 상품')}`;
 const ORDERBOOK_URL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent('발주장부')}`;
-// 발주장부: 발주번호 = T열(19), 출고현황 = J열(9), 실제 출고일 = K열(10)
+// 발주장부: 발주번호 = T열(19), 출고현황 = J열(9), 실제 출고일 = K열(10), 인천 실제 도착일 = L열(11)
 const OB_ORDERNO_COL = 19;
 const OB_SHIPSTATUS_COL = 9;
 const OB_ACTUALSHIP_COL = 10;
+const OB_INCHEON_COL = 11;
 
 const STORE_KEY = 'delay_cause_items';
+const SOLDOUT_CACHE_PREFIX = 'soldout_analysis_cached_'; // 품절현황 일자별 캐시 (YYYYMMDD)
 const AUTORUN_KEY = 'delay_cause_autorun'; // { date: 'YYYY-MM-DD', count: N } (KST 11시 1회 자동감지)
 
 const REASON_STATUSES = ['작업지연', '업체발송지연', '운송지연', '재수배지연', '조치지연'];
@@ -130,6 +132,30 @@ const kstTomorrow = () => {
 // 발주번호 정규화 (공백 제거 + 대문자)
 const normOrder = (s) => (s || '').replace(/\s+/g, '').toUpperCase();
 
+// 'YYYYMMDD'(또는 'YYYY-MM-DD') → 'YYYY-MM-DD'
+const normDateKey = (s) => {
+  if (!s) return '';
+  const t = String(s).replace(/[^0-9]/g, '');
+  if (t.length < 8) return '';
+  return `${t.slice(0, 4)}-${t.slice(4, 6)}-${t.slice(6, 8)}`;
+};
+// 'YYYY-MM-DD' + n일 → 'YYYY-MM-DD'
+const addDays = (dateStr, n) => {
+  if (!dateStr) return '';
+  const d = new Date(`${dateStr}T00:00:00`);
+  if (isNaN(d)) return '';
+  d.setDate(d.getDate() + n);
+  const p = (x) => String(x).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+};
+// KST 기준 오늘부터 back일 전 YYYYMMDD 키
+const kstDateKey = (back) => {
+  const d = kstNow();
+  d.setDate(d.getDate() - back);
+  const p = (x) => String(x).padStart(2, '0');
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}`;
+};
+
 // 발주번호에서 날짜 형식(YYMMDD) 추출 → 'YYYY-MM-DD'
 // 예) 'AE-I-260529' / 'AE-I-2605292' → '2026-05-29'
 function parseOrderDate(orderNo) {
@@ -212,6 +238,8 @@ export default function SoldOutAnalysisDelayCause() {
   const [editValue, setEditValue] = useState('');
 
   const [dbSyncFailed, setDbSyncFailed] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshMsg, setRefreshMsg] = useState('');
 
   const [showUrgePanel, setShowUrgePanel] = useState(false);
   const [urgeText, setUrgeText] = useState('');
@@ -316,39 +344,88 @@ export default function SoldOutAnalysisDelayCause() {
     finally { autoRunningRef.current = false; }
   }, [saveItems]);
 
-  // 발주장부 K열(실제 출고일)을 읽어 비어있는 항목에만 1회 채움
-  // (한번 채워지면 유지 — 스프레드시트에서 지워지거나 바뀌어도 자동 변경 안 함. 수동 수정은 가능)
-  const runFillActualShipDate = useCallback(async () => {
+  // === 새로고침: 발주장부(실제출고일·인천도착일) + 품절현황(품절시작일)을 비어있는 항목에만 1회 채움 ===
+  // (한번 채워진 값은 유지 — 스프레드시트/품절현황이 바뀌어도 자동 변경 안 함. 수동 수정은 가능)
+  const handleRefresh = useCallback(async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    setRefreshMsg('');
     try {
-      const res = await fetch(ORDERBOOK_URL);
-      if (!res.ok) return;
-      const rows = parseCSV(await res.text());
-      const dateMap = new Map(); // 발주번호 → 실제 출고일(YYYY-MM-DD)
-      for (let i = 1; i < rows.length; i++) {
-        const rawOrder = rows[i][OB_ORDERNO_COL];
-        const key = normOrder(rawOrder);
-        if (!key) continue;
-        const d = normalizeShipDate(rows[i][OB_ACTUALSHIP_COL], parseOrderDate(rawOrder));
-        if (d && !dateMap.has(key)) dateMap.set(key, d);
-      }
-      const cur = itemsRef.current;
-      let count = 0;
-      const next = cur.map(it => {
-        if (it.actualShipDate) return it;        // 이미 채워짐 → 유지
-        const d = dateMap.get(normOrder(it.orderNo));
-        if (!d) return it;                        // 발주장부에 날짜 없음 → 보류(나중에 생기면 채움)
-        count++;
-        return { ...it, actualShipDate: d };
-      });
-      if (count > 0) saveItems(next);
-    } catch { /* 실패 시 다음 접속에서 재시도 */ }
-  }, [saveItems]);
+      // 1) 발주장부: 발주번호 → 실제 출고일(K), 인천 실제 도착일(L)
+      const shipMap = new Map();
+      const incheonMap = new Map();
+      try {
+        const res = await fetch(ORDERBOOK_URL);
+        if (res.ok) {
+          const rows = parseCSV(await res.text());
+          for (let i = 1; i < rows.length; i++) {
+            const rawOrder = rows[i][OB_ORDERNO_COL];
+            const key = normOrder(rawOrder);
+            if (!key) continue;
+            const ref = parseOrderDate(rawOrder);
+            const ship = normalizeShipDate(rows[i][OB_ACTUALSHIP_COL], ref);
+            if (ship && !shipMap.has(key)) shipMap.set(key, ship);
+            const inc = normalizeShipDate(rows[i][OB_INCHEON_COL], ref);
+            if (inc && !incheonMap.has(key)) incheonMap.set(key, inc);
+          }
+        }
+      } catch { /* 발주장부 실패해도 품절현황은 시도 */ }
 
-  // 접속 시 1회 발주장부 조회하여 비어있는 실제 출고일 채움
-  useEffect(() => {
-    if (!loaded) return;
-    runFillActualShipDate();
-  }, [loaded, runFillActualShipDate]);
+      // 2) 품절현황: 최근 일자별 캐시를 역순 스캔하여 최신 캐시 확보 (주말 미집계 대비)
+      //    바코드 → 품절이 시작된 날짜(trackerSnapshot.startDate, 품절위기 제외)
+      const soldoutMap = new Map();
+      for (let back = 0; back < 10; back++) {
+        let cached = null;
+        try { cached = await dbStoreGet(`${SOLDOUT_CACHE_PREFIX}${kstDateKey(back)}`); } catch { cached = null; }
+        if (!cached || !Array.isArray(cached.items)) continue;
+        const trk = cached.trackerSnapshot || {};
+        for (const it of cached.items) {
+          if (it.riskLevel !== '품절') continue; // 품절 제외/실제 품절 모두 riskLevel '품절', 품절위기만 제외
+          const bc = (it.barcode || '').trim();
+          if (!bc) continue;
+          const s = normDateKey(trk[it.optionId]?.startDate);
+          if (!s) continue;
+          if (!soldoutMap.has(bc) || s < soldoutMap.get(bc)) soldoutMap.set(bc, s);
+        }
+        break; // 가장 최신 캐시 하나만 사용
+      }
+
+      // 3) 비어있는 항목만 채움
+      const cur = itemsRef.current;
+      let cShip = 0, cInc = 0, cSold = 0;
+      const next = cur.map(it => {
+        let out = it;
+        const okey = normOrder(it.orderNo);
+        // 실제 출고일
+        if (!out.actualShipDate) {
+          const d = shipMap.get(okey);
+          if (d) { out = { ...out, actualShipDate: d }; cShip++; }
+        }
+        // 인천 도착일
+        if (!out.incheonArriveDate) {
+          const d = incheonMap.get(okey);
+          if (d) { out = { ...out, incheonArriveDate: d }; cInc++; }
+        }
+        // 품절 시작일 (진행중 = 종결 아님, 비어있을 때만)
+        if (!out.closed && !out.soldoutDate) {
+          const s = soldoutMap.get((out.barcode || '').trim());
+          if (s) {
+            const orderOk = !out.orderDate || out.orderDate < s;          // 발주일 이후에 품절 시작
+            const limit = out.incheonArriveDate ? addDays(out.incheonArriveDate, 3) : '';
+            const withinLimit = !limit || s <= limit;                     // 인천도착일 있으면 +3일 이내
+            if (orderOk && withinLimit) { out = { ...out, soldoutDate: s }; cSold++; }
+          }
+        }
+        return out;
+      });
+      if (cShip + cInc + cSold > 0) saveItems(next);
+      setRefreshMsg(`실제출고일 ${cShip} · 인천도착일 ${cInc} · 품절시작일 ${cSold}건 갱신`);
+    } catch {
+      setRefreshMsg('새로고침 실패 — 잠시 후 다시 시도하세요.');
+    } finally {
+      setRefreshing(false);
+    }
+  }, [refreshing, saveItems]);
 
   // KST 11시 이후 첫 접속 시 하루 1회 자동감지 실행
   useEffect(() => {
@@ -866,6 +943,12 @@ export default function SoldOutAnalysisDelayCause() {
               </button>
             )}
             <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
+              <button className="btn" onClick={handleRefresh} disabled={refreshing}
+                title="발주장부에서 실제출고일·인천도착일, 품절현황에서 품절시작일을 비어있는 항목에만 가져옵니다."
+                style={{ background: refreshing ? '#eceff1' : '#0b5cad', color: refreshing ? '#9aa0a6' : '#fff', border: 'none', fontWeight: 600, cursor: refreshing ? 'default' : 'pointer' }}>
+                {refreshing ? '가져오는 중…' : '↻ 새로고침'}
+              </button>
+              {refreshMsg && <span style={{ fontSize: 12, color: '#5f6368', fontWeight: 600 }}>{refreshMsg}</span>}
               <span className="dc-help">
                 <span style={{ fontSize: 14 }}>ⓘ</span> 사유상태 도움말
                 <span className="dc-help-tip">
@@ -1157,9 +1240,12 @@ export default function SoldOutAnalysisDelayCause() {
                   const isOpen = expandedId === item.id;
                   const isSelected = selectedIds.includes(item.id);
                   const color = item.closed ? CLOSED_COLOR : (PROGRESS_COLORS[getProgress(item)] || '#9e9e9e');
+                  // 종결 필요 알림: 인천도착일 + 5일이 지났는데 아직 종결 안 됨 → 행 전체 옅은 호박색
+                  const needClose = !item.closed && item.incheonArriveDate && kstToday() > addDays(item.incheonArriveDate, 5);
+                  const rowBg = isSelected ? '#eef4ff' : (needClose ? '#fff8e1' : (isOpen ? '#f8fafd' : undefined));
                   return (
                     <Fragment key={item.id}>
-                      <tr className="dc-row" style={isSelected ? { background: '#eef4ff' } : (isOpen ? { background: '#f8fafd' } : undefined)}>
+                      <tr className="dc-row" style={rowBg ? { background: rowBg } : undefined}>
                         <td style={{ textAlign: 'center', borderLeft: `3px solid ${color}` }}>
                           <input type="checkbox" checked={isSelected} onChange={() => toggleSelect(item.id)}
                             style={{ width: 15, height: 15, cursor: 'pointer', accentColor: '#1a73e8', verticalAlign: 'middle' }} />
