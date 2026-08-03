@@ -1056,15 +1056,15 @@ export default function SoldOutAnalysisDelayCause() {
               <colgroup>
                 <col style={{ width: 40 }} />
                 <col style={{ width: 38 }} />
-                <col style={{ width: 128 }} />
+                <col style={{ width: 116 }} />
                 <col style={{ width: 104 }} />
                 <col style={{ width: 112 }} />
-                <col style={{ width: 190 }} />
+                <col style={{ width: 234 }} />
                 <col style={{ width: 110 }} />
                 <col style={{ width: 120 }} />
                 <col style={{ width: 106 }} />
                 <col style={{ width: 118 }} />
-                <col style={{ width: 124 }} />
+                <col style={{ width: 92 }} />
                 <col style={{ width: 118 }} />
                 <col style={{ width: 112 }} />
                 <col style={{ width: 106 }} />
