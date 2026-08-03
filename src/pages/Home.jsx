@@ -779,7 +779,7 @@ export default function Home() {
             </div>
             {/* 설명 */}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)' }}>
-              {['판매중 품절률', '전체 재고 - 장기재고', '가용 재고의 총 원가', '장기재고 수량', '장기재고 총 원가 합'].map((desc, i) => {
+              {['판매중 품절률', '전체 재고 - 장기재고', '가용 재고의 총 원가', '30일간 판매저조 상품 수', '30일간 판매저조 상품의 총 원가 합'].map((desc, i) => {
                 const bg = i === 0 ? '#fff' : i <= 2 ? '#f7fbff' : '#fffcf5';
                 return (
                   <div key={i} style={{
