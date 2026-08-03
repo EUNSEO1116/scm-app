@@ -597,132 +597,52 @@ export default function Home() {
           활동 로그
         </button>
       </div>
-      {/* 오늘의 알림 */}
+      {/* 자주 이용하는 메뉴 (중앙) */}
       <div style={{
-        display: 'flex', gap: 10, marginBottom: 20, flexWrap: 'wrap',
+        display: 'flex', justifyContent: 'center', marginBottom: 20, flexWrap: 'wrap',
       }}>
-        {/* 신규 판매 급증 */}
-        <div
-          onClick={() => alerts.newSurge.length > 0 && navigate('/sales?tab=surge')}
-          style={{
-            background: alerts.newSurge.length > 0 ? '#fff' : '#f9f9f9',
-            borderRadius: 12, padding: '10px 16px',
-            border: alerts.newSurge.length > 0 ? '1px solid #ff8c00' : '1px solid #eee',
-            boxShadow: alerts.newSurge.length > 0 ? '0 2px 8px rgba(255,140,0,0.15)' : 'none',
-            cursor: alerts.newSurge.length > 0 ? 'pointer' : 'default',
-            display: 'flex', alignItems: 'center', gap: 10,
-            transition: 'all 0.15s',
-          }}
-          onMouseEnter={e => { if (alerts.newSurge.length > 0) e.currentTarget.style.transform = 'translateY(-1px)'; }}
-          onMouseLeave={e => { e.currentTarget.style.transform = ''; }}
-        >
-          <div style={{ position: 'relative', fontSize: 22 }}>
-            🚀
-            {alerts.newSurge.length > 0 && (
-              <span style={{
-                position: 'absolute', top: -6, right: -8,
-                background: '#ff4444', color: '#fff', fontSize: 10, fontWeight: 700,
-                borderRadius: 10, minWidth: 18, height: 18, lineHeight: '18px',
-                textAlign: 'center', padding: '0 4px',
-              }}>{alerts.newSurge.length}</span>
-            )}
+        {/* 자주 이용하는 메뉴 */}
+        <div style={{
+          background: 'linear-gradient(135deg, #f6f4ff 0%, #eef1ff 100%)',
+          borderRadius: 14, padding: '12px 18px',
+          border: '1px solid #ddd6fe', boxShadow: '0 4px 16px rgba(108,92,231,0.14)',
+          display: 'flex', alignItems: 'center', gap: 16,
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 7, whiteSpace: 'nowrap' }}>
+            <span style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              width: 30, height: 30, borderRadius: 9, fontSize: 16,
+              background: '#6c5ce7', boxShadow: '0 2px 6px rgba(108,92,231,0.4)',
+            }}>&#11088;</span>
+            <span style={{ fontSize: 13.5, fontWeight: 800, color: '#5b4bd6' }}>자주 이용하는 메뉴</span>
           </div>
-          <div>
-            <div style={{ fontSize: 13, fontWeight: 600, color: alerts.newSurge.length > 0 ? '#333' : '#999' }}>
-              신규 판매 급증
-            </div>
-            <div style={{ fontSize: 11, color: alerts.newSurge.length > 0 ? '#e65100' : '#bbb' }}>
-              {alerts.newSurge.length > 0 ? `${alerts.newSurge.length}개 품목 감지` : '없음'}
-            </div>
-          </div>
-        </div>
-
-        {/* 발주장부 확인필요 */}
-        <div
-          onClick={() => alerts.checkCount > 0 && navigate('/inventory/orderbook?card=check')}
-          style={{
-            background: alerts.checkCount > 0 ? '#fff' : '#f9f9f9',
-            borderRadius: 12, padding: '10px 16px',
-            border: alerts.checkCount > 0 ? '1px solid #1a73e8' : '1px solid #eee',
-            boxShadow: alerts.checkCount > 0 ? '0 2px 8px rgba(26,115,232,0.15)' : 'none',
-            cursor: alerts.checkCount > 0 ? 'pointer' : 'default',
-            display: 'flex', alignItems: 'center', gap: 10,
-            transition: 'all 0.15s',
-          }}
-          onMouseEnter={e => { if (alerts.checkCount > 0) e.currentTarget.style.transform = 'translateY(-1px)'; }}
-          onMouseLeave={e => { e.currentTarget.style.transform = ''; }}
-        >
-          <div style={{ position: 'relative', fontSize: 22 }}>
-            🔍
-            {alerts.checkCount > 0 && (
-              <span style={{
-                position: 'absolute', top: -6, right: -8,
-                background: '#1a73e8', color: '#fff', fontSize: 10, fontWeight: 700,
-                borderRadius: 10, minWidth: 18, height: 18, lineHeight: '18px',
-                textAlign: 'center', padding: '0 4px',
-              }}>{alerts.checkCount}</span>
-            )}
-          </div>
-          <div>
-            <div style={{ fontSize: 13, fontWeight: 600, color: alerts.checkCount > 0 ? '#333' : '#999' }}>
-              확인필요
-            </div>
-            <div style={{ fontSize: 11, color: alerts.checkCount > 0 ? '#1a73e8' : '#bbb' }}>
-              {alerts.checkCount > 0 ? `${alerts.checkCount}건 확인 대기` : '없음'}
-            </div>
-          </div>
-        </div>
-
-        {/* 이슈관리 동기화 */}
-        <div
-          onClick={() => alerts.syncCount > 0 && navigate('/issue')}
-          style={{
-            background: alerts.syncCount > 0 ? '#fff' : '#f9f9f9',
-            borderRadius: 12, padding: '10px 16px',
-            border: alerts.syncCount > 0 ? '1px solid #7c4dbd' : '1px solid #eee',
-            boxShadow: alerts.syncCount > 0 ? '0 2px 8px rgba(124,77,189,0.15)' : 'none',
-            cursor: alerts.syncCount > 0 ? 'pointer' : 'default',
-            display: 'flex', alignItems: 'center', gap: 10,
-            transition: 'all 0.15s',
-          }}
-          onMouseEnter={e => { if (alerts.syncCount > 0) e.currentTarget.style.transform = 'translateY(-1px)'; }}
-          onMouseLeave={e => { e.currentTarget.style.transform = ''; }}
-        >
-          <div style={{ position: 'relative', fontSize: 22 }}>
-            📋
-            {alerts.syncCount > 0 && (
-              <span style={{
-                position: 'absolute', top: -6, right: -8,
-                background: '#7c4dbd', color: '#fff', fontSize: 10, fontWeight: 700,
-                borderRadius: 10, minWidth: 18, height: 18, lineHeight: '18px',
-                textAlign: 'center', padding: '0 4px',
-              }}>{alerts.syncCount}</span>
-            )}
-          </div>
-          <div>
-            <div style={{ fontSize: 13, fontWeight: 600, color: alerts.syncCount > 0 ? '#333' : '#999' }}>
-              특별관리 동기화
-            </div>
-            <div style={{ fontSize: 11, color: alerts.syncCount > 0 ? '#7c4dbd' : '#bbb' }}>
-              {alerts.syncCount > 0 ? `${alerts.syncCount}건 업데이트` : '없음'}
-            </div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {[
+              { label: '일일 매출 순위', path: '/soldout-analysis/history' },
+              { label: '품절 현황', path: '/soldout-analysis' },
+              { label: '상품개선', path: '/issue/improvement' },
+              { label: 'FBC 사전계산기', path: '/fbc/pallet' },
+              { label: 'CN 결산', path: '/cn-settlement/dashboard' },
+            ].map((m, i) => (
+              <button
+                key={m.path}
+                onClick={() => navigate(m.path)}
+                style={{
+                  background: '#fff', border: '1px solid #c9c2f5', borderRadius: 20,
+                  padding: '6px 15px', fontSize: 12.5, fontWeight: 600, color: '#6c5ce7',
+                  cursor: 'pointer', whiteSpace: 'nowrap', transition: 'all 0.12s',
+                  boxShadow: '0 1px 3px rgba(108,92,231,0.15)',
+                }}
+                onMouseEnter={e => { e.currentTarget.style.background = '#6c5ce7'; e.currentTarget.style.borderColor = '#6c5ce7'; e.currentTarget.style.color = '#fff'; e.currentTarget.style.transform = 'translateY(-1px)'; e.currentTarget.style.boxShadow = '0 4px 10px rgba(108,92,231,0.35)'; }}
+                onMouseLeave={e => { e.currentTarget.style.background = '#fff'; e.currentTarget.style.borderColor = '#c9c2f5'; e.currentTarget.style.color = '#6c5ce7'; e.currentTarget.style.transform = ''; e.currentTarget.style.boxShadow = '0 1px 3px rgba(108,92,231,0.15)'; }}
+              >{`${i + 1}. ${m.label}`}</button>
+            ))}
           </div>
         </div>
       </div>
 
-      {/* 헤더: 로고 + 바로가기 */}
+      {/* 헤더: 대시보드 */}
       <div style={{ display: 'flex', gap: 24, marginBottom: 24, alignItems: 'flex-start' }}>
-        {/* 로고 */}
-        <div style={{
-          background: '#fff', borderRadius: 16, boxShadow: '0 2px 12px rgba(0,0,0,0.08)',
-          padding: 24, display: 'flex', flexDirection: 'column', alignItems: 'center', minWidth: 200,
-        }}>
-          <img src="/logo.jpg" alt="로고" style={{ width: 140, borderRadius: 12, marginBottom: 12 }} />
-          <div style={{ fontSize: 13, color: '#666', textAlign: 'center' }}>
-            {today.toLocaleDateString('ko-KR', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' })}
-          </div>
-        </div>
-
         {/* 총재고원가 대시보드 */}
         <div style={{ flex: 1 }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
@@ -751,7 +671,7 @@ export default function Home() {
                 const bg = i === 0 ? '#f0f0f0' : i <= 2 ? '#dceefb' : '#fdf5e8';
                 return (
                   <div key={title} style={{
-                    background: bg, padding: '10px 8px', textAlign: 'center',
+                    background: bg, padding: '13px 8px', textAlign: 'center',
                     fontSize: 13, fontWeight: 800, color: '#222', letterSpacing: '0.5px',
                     borderRight: i < 4 ? '1px solid #e0e0e0' : 'none',
                   }}>{title}</div>
@@ -770,7 +690,7 @@ export default function Home() {
                 const bg = i === 0 ? '#fff' : i <= 2 ? '#f0f7ff' : '#fff8f0';
                 return (
                   <div key={i} style={{
-                    background: bg, padding: '14px 8px', textAlign: 'center',
+                    background: bg, padding: '22px 8px', textAlign: 'center',
                     fontSize: 18, fontWeight: 700, color: '#222',
                     borderRight: i < 4 ? '1px solid #e0e0e0' : 'none',
                   }}>{val}</div>
@@ -783,7 +703,7 @@ export default function Home() {
                 const bg = i === 0 ? '#fff' : i <= 2 ? '#f7fbff' : '#fffcf5';
                 return (
                   <div key={i} style={{
-                    background: bg, padding: '8px 6px', textAlign: 'center',
+                    background: bg, padding: '11px 6px', textAlign: 'center',
                     fontSize: 10, color: '#999',
                     borderRight: i < 4 ? '1px solid #e0e0e0' : 'none',
                   }}>{desc}</div>

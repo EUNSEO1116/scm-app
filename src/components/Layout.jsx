@@ -1,8 +1,31 @@
 import { NavLink, useLocation } from 'react-router-dom';
-import { useState, useRef, useEffect } from 'react';
+import { useState, useEffect } from 'react';
+
+const SHEET_ID = '1NXhW_gG0b-gXuVqrhbY9ErWi8uO_7pXIy-NTo4FbE1I';
+const CSV_DAILY = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent('일일 판매량')}`;
+
+function parseCsvRow(line) {
+  const result = [];
+  let current = '';
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (inQuotes) {
+      if (ch === '"' && line[i + 1] === '"') { current += '"'; i++; }
+      else if (ch === '"') inQuotes = false;
+      else current += ch;
+    } else {
+      if (ch === '"') inQuotes = true;
+      else if (ch === ',') { result.push(current); current = ''; }
+      else current += ch;
+    }
+  }
+  result.push(current);
+  return result;
+}
 
 const navItems = [
-  { id: 'inventory', label: '재고관리', icon: 'inventory', children: [
+  { id: 'inventory', label: '재고관리', children: [
     { label: '재고 계산기', path: '/inventory' },
     { label: '입고신청', path: '/inventory/incoming' },
     { label: '발주추천', path: '/inventory/recommend' },
@@ -10,225 +33,154 @@ const navItems = [
     { label: '발주장부', path: '/inventory/orderbook' },
     { label: '인천입고신청', path: '/inventory/incheon' },
   ]},
-  { id: 'sales', label: '매출관리', icon: 'sales', children: [
-    { label: '매출관리', path: '/sales' },
-    { label: '수요 예측', path: '/sales/forecast' },
-    { label: '일일 매출 순위', path: '/soldout-analysis/history' },
+  { id: 'sales', label: '매출관리', badge: 'surge', children: [
+    { label: '매출관리', path: '/sales', badge: 'surge' },
+    { label: '수요예측', path: '/sales/forecast' },
+    { label: '* 일일 매출 순위', path: '/soldout-analysis/history' },
   ]},
-  { id: 'soldout-analysis', label: '품절 분석', icon: 'soldoutAnalysis', children: [
-    { label: '품절 현황', path: '/soldout-analysis' },
+  { id: 'soldout-analysis', label: '품절분석', children: [
+    { label: '* 품절현황', path: '/soldout-analysis' },
     { label: '제외품목관리', path: '/soldout-analysis/exclude' },
     { label: '월 품절률', path: '/soldout-analysis/rate' },
     { label: '보충 지연 원인 관리', path: '/soldout-analysis/delay-cause' },
     { label: '데이터 업로드', path: '/soldout-analysis/upload' },
   ]},
-  { id: 'issue', label: '품질관리', icon: 'issue', children: [
+  { id: 'issue', label: '품질관리', children: [
     { label: '특별관리', path: '/issue' },
-    { label: '상품개선', path: '/issue/improvement' },
+    { label: '* 상품개선', path: '/issue/improvement' },
     { label: '인증관리', path: '/issue/certification' },
   ]},
-  { id: 'supplies', label: '부자재관리', icon: 'supplies', children: [
+  { id: 'etc', label: '기타관리', children: [
+    { section: '부자재관리' },
     { label: '부자재 목록', path: '/supplies' },
     { label: '부자재 발주', path: '/supplies/order' },
-  ]},
-  { id: 'fbc', label: 'FBC관리', icon: 'fbc', children: [
+    { section: 'FBC관리' },
     { label: 'FBC 비용 계산기', path: '/fbc' },
     { label: '절감 대시보드', path: '/dashboard' },
     { label: 'FBC 품목', path: '/fbc/items' },
-    { label: 'FBC 사전계산기', path: '/fbc/pallet' },
+    { label: '* FBC 사전계산기', path: '/fbc/pallet' },
   ]},
 ];
 
-const bottomNavItems = [
-  { id: 'cn-settlement', label: 'CN 결산', icon: 'cnSettlement', children: [
+const rightNavItems = [
+  { id: 'cn-settlement', label: '* CN 결산', children: [
     { label: '거래 데이터 업로드', path: '/cn-settlement/upload' },
     { label: '결산 대시보드', path: '/cn-settlement/dashboard' },
     { label: '결산 기록', path: '/cn-settlement/history' },
   ]},
 ];
 
-const icons = {
-  inventory: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>,
-  fbc: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/><path d="M7 8h2m4 0h4M7 12h4m4 0h2"/></svg>,
-  sales: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 3v18h18"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/></svg>,
-  soldout: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18.36 6.64A9 9 0 015.64 18.36M5.64 5.64A9 9 0 0118.36 18.36"/><line x1="1" y1="1" x2="23" y2="23"/></svg>,
-  issue: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>,
-  soldoutAnalysis: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 21H3V3"/><path d="M21 7l-5 5-4-4-3 3"/><circle cx="21" cy="7" r="1.5"/><circle cx="16" cy="12" r="1.5"/><circle cx="12" cy="8" r="1.5"/><circle cx="9" cy="11" r="1.5"/></svg>,
-  supplies: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/></svg>,
-  cnSettlement: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 7h6m-6 4h6m-4 4h4M5 3h14a2 2 0 012 2v14a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2z"/></svg>,
-};
+function Badge({ value }) {
+  if (!value) return null;
+  return <span className="nav-badge">{value}</span>;
+}
 
-const pageTitles = {
-  '/': 'ARIPPLE SCM',
-  '/inventory': '재고 계산기',
-  '/inventory/incoming': '입고신청',
-  '/inventory/recommend': '발주추천',
-  '/inventory/order': '발주신청',
-  '/inventory/orderbook': '발주장부',
-  '/inventory/incheon': '인천입고신청',
-  '/fbc': 'FBC 비용 계산기',
-  '/dashboard': '절감 대시보드',
-  '/fbc/items': 'FBC 품목',
-  '/fbc/pallet': 'FBC 사전계산기',
-  '/sales': '매출관리',
-  '/sales/forecast': '수요 예측',
-  '/soldout': '품절 현황',
-  '/soldout/rate': '월별 품절률',
-  '/soldout/exclude': '제외 품목 관리',
-  '/soldout/history': '품절 기록',
-  '/issue': '특별관리',
-  '/issue/improvement': '상품개선',
-  '/soldout-analysis': '품절 현황',
-  '/soldout-analysis/history': '일일 매출 순위',
-  '/soldout-analysis/exclude': '제외품목관리',
-  '/soldout-analysis/rate': '월 품절률',
-  '/soldout-analysis/delay-cause': '보충 지연 원인 관리',
-  '/soldout-analysis/upload': '데이터 업로드',
-  '/supplies': '부자재 목록',
-  '/supplies/order': '부자재 발주',
-  '/cn-settlement/upload': '거래 데이터 업로드',
-  '/cn-settlement/dashboard': '결산 대시보드',
-  '/cn-settlement/history': '결산 기록',
-};
+function NavGroup({ item, openMenu, setOpenMenu, counts, alignRight }) {
+  const location = useLocation();
+  const isActive = item.children.some(c => c.path === location.pathname);
+  const isOpen = openMenu === item.id;
+  const groupBadge = item.badge ? counts[item.badge] : 0;
+  return (
+    <div
+      className="topnav-group"
+      onMouseEnter={() => setOpenMenu(item.id)}
+      onMouseLeave={() => setOpenMenu(null)}
+    >
+      <button className={`topnav-item${isActive ? ' active' : ''}${isOpen ? ' open' : ''}`}>
+        <span>{item.label}</span>
+        <Badge value={groupBadge} />
+        <svg className="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          <path d="M6 9l6 6 6-6" />
+        </svg>
+      </button>
+      {isOpen && (
+        <div className={`topnav-dropdown${alignRight ? ' align-right' : ''}`}>
+          {item.children.map((child, i) => (
+            child.section ? (
+              <div key={`sec-${i}`} className="dropdown-section">{child.section}</div>
+            ) : (
+              <NavLink
+                key={child.path}
+                to={child.path}
+                end
+                className={({ isActive }) => `dropdown-item ${isActive ? 'active' : ''}`}
+                onClick={() => setOpenMenu(null)}
+              >
+                <span>{child.label}</span>
+                <Badge value={child.badge ? counts[child.badge] : 0} />
+              </NavLink>
+            )
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function Layout({ children }) {
   const location = useLocation();
-  const title = pageTitles[location.pathname] || 'ARIPPLE SCM';
   const [openMenu, setOpenMenu] = useState(null);
-  const navRef = useRef(null);
-
-  // 하위 메뉴 경로에 있으면 자동으로 펼치기
-  useEffect(() => {
-    for (const item of navItems) {
-      if (item.children?.some(c => c.path === location.pathname)) {
-        setOpenMenu(item.id);
-        return;
-      }
-    }
-  }, [location.pathname]);
-
-  // 사이드바 외부 클릭시 닫기
-  useEffect(() => {
-    const handler = (e) => {
-      if (navRef.current && !navRef.current.contains(e.target)) {
-        setOpenMenu(null);
-      }
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, []);
+  const [surgeCount, setSurgeCount] = useState(0);
 
   const isHome = location.pathname === '/';
 
+  // 신규 판매 급증 건수 계산 (상단 매출관리 메뉴 뱃지)
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const res = await fetch(CSV_DAILY);
+        if (!res.ok) return;
+        const csv = await res.text();
+        const lines = csv.split('\n').filter(l => l.trim());
+        if (lines.length < 2) return;
+        let count = 0;
+        for (let i = 1; i < lines.length; i++) {
+          const cols = parseCsvRow(lines[i]);
+          if ((cols[5] || '').trim() !== '신규') continue;
+          const days = [6, 7, 8, 9, 10, 11].map(j => Number(cols[j]) || 0);
+          const curr = days[5];
+          const prevDays = days.slice(0, 5);
+          const avg = prevDays.reduce((a, b) => a + b, 0) / prevDays.length;
+          const max = Math.max(...prevDays);
+          if (curr >= 4 && (avg > 0 && curr >= avg * 2 || curr >= max + 3)) count++;
+        }
+        if (alive) setSurgeCount(count);
+      } catch { /* ignore */ }
+    })();
+    return () => { alive = false; };
+  }, []);
+
+  const counts = { surge: surgeCount };
+
   return (
     <div className="app-layout">
-      <aside className="sidebar">
+      <header className="topbar">
         <div
-          className={`sidebar-logo${isHome ? ' active' : ''}`}
+          className={`topbar-logo${isHome ? ' active' : ''}`}
           onClick={() => window.location.href = '/'}
-          style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}
         >
-          <img src="/logo.jpg" alt="ARIPPLE" style={{ width: 28, height: 28, borderRadius: 6 }} />
-          ARIPPLE SCM
+          <span className="topbar-logo-text">APDAY</span>
         </div>
-        <nav className="sidebar-nav" ref={navRef} style={{ display: 'flex', flexDirection: 'column', flex: 1 }}>
-          <div>
-            {navItems.map(item => (
-              item.children ? (
-                <div key={item.id} className="nav-group">
-                  <div
-                    className="nav-item"
-                    onClick={() => setOpenMenu(openMenu === item.id ? null : item.id)}
-                  >
-                    {icons[item.icon]}
-                    <span style={{ flex: 1 }}>{item.label}</span>
-                    <svg
-                      viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
-                      style={{
-                        width: 14, height: 14,
-                        transition: 'transform 0.2s',
-                        transform: openMenu === item.id ? 'rotate(180deg)' : 'rotate(0deg)',
-                      }}
-                    >
-                      <path d="M6 9l6 6 6-6" />
-                    </svg>
-                  </div>
-                  {openMenu === item.id && (
-                    <div className="sub-menu">
-                      {item.children.map(child => (
-                        <NavLink
-                          key={child.path}
-                          to={child.path}
-                          end
-                          className={({ isActive }) => `sub-item ${isActive ? 'active' : ''}`}
-                        >
-                          {child.label}
-                        </NavLink>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <NavLink
-                  key={item.id}
-                  to={item.path}
-                  className={({ isActive }) =>
-                    `nav-item ${isActive ? 'active' : ''}`
-                  }
-                >
-                  {icons[item.icon]}
-                  {item.label}
-                </NavLink>
-              )
-            ))}
-          </div>
-          <div style={{ marginTop: 'auto', borderTop: '1px solid rgba(255,255,255,0.1)', paddingTop: 8 }}>
-            {bottomNavItems.map(item => (
-              <div key={item.id} className="nav-group">
-                <div
-                  className="nav-item"
-                  style={{ opacity: 0.5 }}
-                  onClick={() => setOpenMenu(openMenu === item.id ? null : item.id)}
-                >
-                  {icons[item.icon]}
-                  <span style={{ flex: 1 }}>{item.label}</span>
-                  <svg
-                    viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
-                    style={{
-                      width: 14, height: 14,
-                      transition: 'transform 0.2s',
-                      transform: openMenu === item.id ? 'rotate(180deg)' : 'rotate(0deg)',
-                    }}
-                  >
-                    <path d="M6 9l6 6 6-6" />
-                  </svg>
-                </div>
-                {openMenu === item.id && (
-                  <div className="sub-menu">
-                    {item.children.map(child => (
-                      <NavLink
-                        key={child.path}
-                        to={child.path}
-                        end
-                        className={({ isActive }) => `sub-item ${isActive ? 'active' : ''}`}
-                      >
-                        {child.label}
-                      </NavLink>
-                    ))}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
+
+        <nav className="topnav">
+          {navItems.map(item => (
+            <NavGroup key={item.id} item={item} openMenu={openMenu} setOpenMenu={setOpenMenu} counts={counts} />
+          ))}
         </nav>
-      </aside>
-      <main className="main-content">
-        <header className="page-header">
-          <h1>{title}</h1>
-          <div style={{ fontSize: 13, color: '#5f6368' }}>
+
+        <div className="topbar-right">
+          <div className="topbar-divider" />
+          {rightNavItems.map(item => (
+            <NavGroup key={item.id} item={item} openMenu={openMenu} setOpenMenu={setOpenMenu} counts={counts} alignRight />
+          ))}
+          <div className="topbar-date">
             {new Date().toLocaleDateString('ko-KR', { year: 'numeric', month: 'long', day: 'numeric' })}
           </div>
-        </header>
+        </div>
+      </header>
+
+      <main className="main-content">
         <div className="page-body">
           {children}
         </div>
