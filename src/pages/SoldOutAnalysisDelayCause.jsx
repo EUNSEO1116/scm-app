@@ -13,14 +13,20 @@ const OB_ACTUALSHIP_COL = 10;
 const STORE_KEY = 'delay_cause_items';
 const AUTORUN_KEY = 'delay_cause_autorun'; // { date: 'YYYY-MM-DD', count: N } (KST 11시 1회 자동감지)
 
-const REASON_STATUSES = ['작업지연', '업체발송지연', '운송지연', '재수배지연(SCM귀책)', '조치지연(SCM귀책)'];
+const REASON_STATUSES = ['작업지연', '업체발송지연', '운송지연', '재수배지연', '조치지연'];
 const REASON_COLORS = {
   '작업지연': '#fb8c00',
   '업체발송지연': '#c62828',
   '운송지연': '#00838f',
-  '재수배지연(SCM귀책)': '#6a1b9a',
-  '조치지연(SCM귀책)': '#1565c0',
+  '재수배지연': '#6a1b9a',
+  '조치지연': '#1565c0',
 };
+// 기존 데이터 호환: '재수배지연(SCM귀책)'·'조치지연(SCM귀책)' → '(SCM귀책)' 문구 제거
+const migrateReasonStatus = (arr) => Array.isArray(arr)
+  ? arr.map(it => (typeof it.reasonStatus === 'string' && it.reasonStatus.includes('(SCM귀책)'))
+      ? { ...it, reasonStatus: it.reasonStatus.replace('(SCM귀책)', '') }
+      : it)
+  : arr;
 
 // 진행상태 (필수) — 사유상태와 별개. 종결은 별도 체크박스로만 처리
 const PROGRESS_STATUSES = ['확인중', '지장없음', '독촉완료', '조치안됨', '품절됨'];
@@ -42,6 +48,7 @@ const DATE_COLORS = {
   shipEtaDate: '#6a1b9a',  // 발송예정일 · 보라
   releaseReqDate: '#ef6c00', // 출고요청일 · 주황
   actualShipDate: '#2e7d32', // 실제 출고일 · 초록
+  incheonArriveDate: '#ad1457', // 인천도착일 · 마젠타
   soldoutDate: '#c62828',  // 품절일 · 빨강
 };
 
@@ -73,7 +80,7 @@ function normalizeShipDate(s, refDate) {
   return '';
 }
 
-const ROW_MIN_WIDTH = 1454;
+const ROW_MIN_WIDTH = 1526;
 
 function parseCSV(text) {
   const result = [];
@@ -149,6 +156,7 @@ const emptyForm = {
   confirmDate: new Date().toISOString().slice(0, 10),
   shipEtaDate: '',
   releaseReqDate: '',
+  incheonArriveDate: '',
   soldoutDate: '',
   reasonStatus: '',
   progressStatus: '확인중',
@@ -191,6 +199,8 @@ export default function SoldOutAnalysisDelayCause() {
 
   const [searchQuery, setSearchQuery] = useState('');
   const [filterReason, setFilterReason] = useState('all');
+  const [dateFilters, setDateFilters] = useState({}); // { field: 'YYYY-MM-DD' } 날짜 컬럼별 필터
+  const [openDateMenu, setOpenDateMenu] = useState(null); // { field, rect } 열린 날짜 필터 드롭다운
   const [expandedId, setExpandedId] = useState(null);
   const [selectedIds, setSelectedIds] = useState([]); // 체크박스 선택 (나중에 일괄 저장 기능 연결)
 
@@ -229,10 +239,11 @@ export default function SoldOutAnalysisDelayCause() {
   useEffect(() => {
     let localItems = null;
     try {
-      localItems = JSON.parse(localStorage.getItem(STORE_KEY) || 'null');
+      localItems = migrateReasonStatus(JSON.parse(localStorage.getItem(STORE_KEY) || 'null'));
       if (Array.isArray(localItems) && localItems.length > 0) setItems(localItems);
     } catch { /* ignore */ }
-    dbStoreGet(STORE_KEY).then((dbItems) => {
+    dbStoreGet(STORE_KEY).then((rawDbItems) => {
+      const dbItems = migrateReasonStatus(rawDbItems);
       if (Array.isArray(dbItems) && Array.isArray(localItems)) {
         if (localItems.length > dbItems.length) {
           setItems(localItems);
@@ -386,8 +397,24 @@ export default function SoldOutAnalysisDelayCause() {
         (r.reasonDetail || '').toLowerCase().includes(q)
       );
     }
+    const activeDates = Object.entries(dateFilters).filter(([, v]) => v);
+    if (activeDates.length) {
+      rows = rows.filter(r => activeDates.every(([f, v]) => (r[f] || '') === v));
+    }
     return rows;
-  }, [items, filterReason, searchQuery]);
+  }, [items, filterReason, searchQuery, dateFilters]);
+
+  // 날짜 필터 드롭다운: 스크롤/리사이즈 시 닫기 (fixed 위치가 헤더에서 분리되는 것 방지)
+  useEffect(() => {
+    if (!openDateMenu) return;
+    const close = () => setOpenDateMenu(null);
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('resize', close);
+    return () => {
+      window.removeEventListener('scroll', close, true);
+      window.removeEventListener('resize', close);
+    };
+  }, [openDateMenu]);
 
   const canSubmit = form.barcode.trim() && form.confirmDate;
 
@@ -461,12 +488,13 @@ export default function SoldOutAnalysisDelayCause() {
       '업체발송예정일': it.shipEtaDate || '',
       'CN출고요청일': it.releaseReqDate || '',
       '실제출고일': it.actualShipDate || '',
+      '인천도착일': it.incheonArriveDate || '',
       '품절시작일': it.soldoutDate || '',
       '사유상태': it.reasonStatus || '',
       '자세한사유': it.reasonDetail || '',
       '조치내용': (it.timeline || []).map(t => `[${t.date}] ${t.text}`).join('\n'),
     }));
-    const header = ['진행상태', '발주번호', '상품명', '옵션명', '바코드', '발주일', '확인일', '업체발송예정일', 'CN출고요청일', '실제출고일', '품절시작일', '사유상태', '자세한사유', '조치내용'];
+    const header = ['진행상태', '발주번호', '상품명', '옵션명', '바코드', '발주일', '확인일', '업체발송예정일', 'CN출고요청일', '실제출고일', '인천도착일', '품절시작일', '사유상태', '자세한사유', '조치내용'];
     const ws = XLSX.utils.json_to_sheet(rows, { header });
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, '보충지연원인');
@@ -671,6 +699,33 @@ export default function SoldOutAnalysisDelayCause() {
   const cellDisplay = { display: 'block', padding: '9px 10px', fontSize: 12, cursor: 'pointer', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', borderRadius: 4 };
   const cellInputStyle = { width: '100%', minWidth: 'auto', fontSize: 12, padding: '6px 8px', height: 32, boxSizing: 'border-box', border: '1.5px solid #1a73e8', borderRadius: 6, outline: 'none' };
 
+  // 날짜 컬럼 필터: 해당 컬럼의 고유 날짜값 목록(최신순) + 건수
+  const dateOptions = (field) => {
+    const m = new Map();
+    for (const it of items) { const v = it[field]; if (v) m.set(v, (m.get(v) || 0) + 1); }
+    return [...m.entries()].sort((a, b) => b[0].localeCompare(a[0]));
+  };
+  // 날짜 컬럼 헤더 (클릭 시 필터 드롭다운)
+  const renderDateHeader = (field, label) => {
+    const c = DATE_COLORS[field];
+    const active = !!dateFilters[field];
+    return (
+      <th
+        onClick={(e) => {
+          const rect = e.currentTarget.getBoundingClientRect();
+          setOpenDateMenu(prev => (prev && prev.field === field) ? null : { field, rect });
+        }}
+        style={{ color: c, borderBottom: `2px solid ${c}`, cursor: 'pointer', userSelect: 'none', background: active ? `${c}18` : undefined }}
+        title="클릭하여 날짜 필터"
+      >
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+          {label}
+          <span style={{ fontSize: 8, opacity: active ? 1 : 0.45 }}>▼</span>
+        </span>
+      </th>
+    );
+  };
+
   // 클릭하여 수정되는 셀
   const renderCell = (item, field, type, big) => {
     if (field === 'reasonStatus' || field === 'progressStatus') {
@@ -683,8 +738,8 @@ export default function SoldOutAnalysisDelayCause() {
         <select value={val} onChange={e => updateField(item.id, field, e.target.value)}
           onClick={e => e.stopPropagation()}
           style={{ width: '100%', padding: '5px 8px', fontSize: 11, fontWeight: 700, border: `1.5px solid ${c}`, borderRadius: 6, color: c, background: '#fff', cursor: 'pointer', appearance: 'none', WebkitAppearance: 'none', MozAppearance: 'none', textAlignLast: 'center' }}>
-          {!isProg && <option value="" style={{ color: '#999' }}>미선택</option>}
-          {opts.map(s => <option key={s} value={s} style={{ color: '#333' }}>{s}</option>)}
+          {!isProg && <option value="" style={{ color: '#999' }}>*미선택</option>}
+          {opts.map(s => <option key={s} value={s} style={{ color: '#333' }}>{isProg ? s : '*' + s}</option>)}
         </select>
       );
     }
@@ -983,8 +1038,8 @@ export default function SoldOutAnalysisDelayCause() {
               </div>
             </div>
 
-            {/* 2줄: 발주일 · 확인일 · 발송예정일 · 출고요청일 · 품절일 */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 10, marginBottom: 10 }}>
+            {/* 2줄: 발주일 · 확인일 · 발송예정일 · 출고요청일 · 인천도착일 · 품절일 */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 10, marginBottom: 10 }}>
               <div>
                 <label style={labelStyle}>발주일 (자동 인식)</label>
                 <input type="date" className="search-input" value={form.orderDate} onChange={e => setForm(p => ({ ...p, orderDate: e.target.value }))} style={inputStyle} />
@@ -1002,6 +1057,10 @@ export default function SoldOutAnalysisDelayCause() {
                 <input type="date" className="search-input" value={form.releaseReqDate} onChange={e => setForm(p => ({ ...p, releaseReqDate: e.target.value }))} style={inputStyle} />
               </div>
               <div>
+                <label style={labelStyle}>인천도착일</label>
+                <input type="date" className="search-input" value={form.incheonArriveDate} onChange={e => setForm(p => ({ ...p, incheonArriveDate: e.target.value }))} style={inputStyle} />
+              </div>
+              <div>
                 <label style={labelStyle}>품절시작일</label>
                 <input type="date" className="search-input" value={form.soldoutDate} onChange={e => setForm(p => ({ ...p, soldoutDate: e.target.value }))} style={inputStyle} />
               </div>
@@ -1013,8 +1072,8 @@ export default function SoldOutAnalysisDelayCause() {
                 <label style={labelStyle}>사유 상태 (선택)</label>
                 <div className="dc-select-wrap" style={{ display: 'block' }}>
                   <select value={form.reasonStatus} onChange={e => setForm(p => ({ ...p, reasonStatus: e.target.value }))} style={{ width: '100%', padding: '6px 34px 6px 12px', fontSize: 12.5 }}>
-                    <option value="">미선택</option>
-                    {REASON_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
+                    <option value="">*미선택</option>
+                    {REASON_STATUSES.map(s => <option key={s} value={s}>{'*' + s}</option>)}
                   </select>
                   <span className="dc-arrow">▼</span>
                 </div>
@@ -1056,18 +1115,19 @@ export default function SoldOutAnalysisDelayCause() {
               <colgroup>
                 <col style={{ width: 40 }} />
                 <col style={{ width: 38 }} />
-                <col style={{ width: 116 }} />
+                <col style={{ width: 88 }} />
                 <col style={{ width: 104 }} />
-                <col style={{ width: 112 }} />
+                <col style={{ width: 96 }} />
                 <col style={{ width: 234 }} />
                 <col style={{ width: 110 }} />
                 <col style={{ width: 120 }} />
-                <col style={{ width: 106 }} />
-                <col style={{ width: 118 }} />
                 <col style={{ width: 92 }} />
-                <col style={{ width: 118 }} />
-                <col style={{ width: 112 }} />
-                <col style={{ width: 106 }} />
+                <col style={{ width: 92 }} />
+                <col style={{ width: 92 }} />
+                <col style={{ width: 92 }} />
+                <col style={{ width: 92 }} />
+                <col style={{ width: 92 }} />
+                <col style={{ width: 92 }} />
                 <col style={{ width: 52 }} />
               </colgroup>
               <thead>
@@ -1082,12 +1142,13 @@ export default function SoldOutAnalysisDelayCause() {
                   <th>상품명</th>
                   <th>옵션명</th>
                   <th>바코드</th>
-                  <th style={{ color: DATE_COLORS.orderDate, borderBottom: `2px solid ${DATE_COLORS.orderDate}` }}>발주일</th>
-                  <th style={{ color: DATE_COLORS.confirmDate, borderBottom: `2px solid ${DATE_COLORS.confirmDate}` }}>확인일(조치일)</th>
-                  <th style={{ color: DATE_COLORS.shipEtaDate, borderBottom: `2px solid ${DATE_COLORS.shipEtaDate}` }}>업체 발송예정일</th>
-                  <th style={{ color: DATE_COLORS.releaseReqDate, borderBottom: `2px solid ${DATE_COLORS.releaseReqDate}` }}>CN출고요청일</th>
-                  <th style={{ color: DATE_COLORS.actualShipDate, borderBottom: `2px solid ${DATE_COLORS.actualShipDate}` }}>실제 출고일</th>
-                  <th style={{ color: DATE_COLORS.soldoutDate, borderBottom: `2px solid ${DATE_COLORS.soldoutDate}` }}>품절시작일</th>
+                  {renderDateHeader('orderDate', '발주일')}
+                  {renderDateHeader('confirmDate', '확인일(조치일)')}
+                  {renderDateHeader('shipEtaDate', '업체 발송예정일')}
+                  {renderDateHeader('releaseReqDate', 'CN출고요청일')}
+                  {renderDateHeader('actualShipDate', '실제 출고일')}
+                  {renderDateHeader('incheonArriveDate', '인천도착일')}
+                  {renderDateHeader('soldoutDate', '품절시작일')}
                   <th style={{ textAlign: 'center' }}></th>
                 </tr>
               </thead>
@@ -1119,6 +1180,7 @@ export default function SoldOutAnalysisDelayCause() {
                         <td>{renderCell(item, 'shipEtaDate', 'date')}</td>
                         <td>{renderCell(item, 'releaseReqDate', 'date')}</td>
                         <td>{renderCell(item, 'actualShipDate', 'date')}</td>
+                        <td>{renderCell(item, 'incheonArriveDate', 'date')}</td>
                         <td>{renderCell(item, 'soldoutDate', 'date')}</td>
                         <td style={{ textAlign: 'center' }}>
                           <span className="dc-del" onClick={() => handleDelete(item.id)} title="삭제">&#10005;</span>
@@ -1126,7 +1188,7 @@ export default function SoldOutAnalysisDelayCause() {
                       </tr>
                       {isOpen && (
                         <tr>
-                          <td colSpan={15} style={{ background: '#fafbfc', padding: 0 }}>
+                          <td colSpan={16} style={{ background: '#fafbfc', padding: 0 }}>
                             <div style={{ padding: '16px 20px 20px 44px' }}>
                               <div style={{ display: 'flex', alignItems: 'center', gap: 12, paddingBottom: 14, marginBottom: 4, borderBottom: '1px solid #eef1f4' }}>
                                 <div style={{ fontSize: 11, color: '#999', fontWeight: 600, whiteSpace: 'nowrap' }}>자세한 사유</div>
@@ -1182,6 +1244,36 @@ export default function SoldOutAnalysisDelayCause() {
           </div>
         </div>
       )}
+
+      {/* 날짜 컬럼 필터 드롭다운 (헤더 클릭 시) */}
+      {openDateMenu && (() => {
+        const field = openDateMenu.field;
+        const opts = dateOptions(field);
+        const c = DATE_COLORS[field];
+        const left = Math.min(openDateMenu.rect.left, window.innerWidth - 190);
+        return (
+          <>
+            <div onClick={() => setOpenDateMenu(null)} style={{ position: 'fixed', inset: 0, zIndex: 200 }} />
+            <div style={{ position: 'fixed', top: openDateMenu.rect.bottom + 3, left, zIndex: 201, minWidth: 170, maxHeight: 320, overflowY: 'auto', background: '#fff', border: '1px solid #dcdfe3', borderRadius: 8, boxShadow: '0 8px 24px rgba(0,0,0,0.18)', padding: 4 }}>
+              <div onClick={() => { setDateFilters(prev => { const n = { ...prev }; delete n[field]; return n; }); setOpenDateMenu(null); }}
+                style={{ padding: '8px 12px', fontSize: 12.5, cursor: 'pointer', borderRadius: 6, fontWeight: 600, color: dateFilters[field] ? '#1a73e8' : '#999', borderBottom: '1px solid #eef1f4', marginBottom: 2 }}>
+                전체 (해제)
+              </div>
+              {opts.length === 0 && <div style={{ padding: '8px 12px', fontSize: 12, color: '#aaa' }}>날짜 값 없음</div>}
+              {opts.map(([v, cnt]) => {
+                const sel = dateFilters[field] === v;
+                return (
+                  <div key={v} onClick={() => { setDateFilters(prev => ({ ...prev, [field]: v })); setOpenDateMenu(null); }}
+                    style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, padding: '8px 12px', fontSize: 12.5, cursor: 'pointer', borderRadius: 6, background: sel ? `${c}18` : undefined, color: sel ? c : '#333', fontWeight: sel ? 700 : 400 }}>
+                    <span>{v}</span>
+                    <span style={{ fontSize: 11, color: sel ? c : '#9aa0a6' }}>{cnt}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        );
+      })()}
     </div>
   );
 }
