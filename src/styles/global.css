@@ -63,7 +63,8 @@ body {
   font-family: 'Montserrat', system-ui, sans-serif;
   font-size: 18px;
   font-weight: 800;
-  letter-spacing: 1px;
+  letter-spacing: 4px;
+  padding-left: 4px;
   color: #fff;
   line-height: 1;
 }
