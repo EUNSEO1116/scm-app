@@ -1,4 +1,5 @@
-import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { useEffect } from 'react';
+import { BrowserRouter, Routes, Route, useNavigate } from 'react-router-dom';
 import Layout from './components/Layout';
 import InventoryCalculator from './pages/InventoryCalculator';
 import FbcCalculator from './pages/FbcCalculator';
@@ -34,9 +35,30 @@ import CnSettlementUpload from './pages/CnSettlementUpload';
 import CnSettlementDashboard from './pages/CnSettlementDashboard';
 import CnSettlementHistory from './pages/CnSettlementHistory';
 
+// 딥링크(주소창 직접 접속·외부 링크)로 최초 접속하면 홈으로 보냄.
+// 단, 새로고침(reload)·뒤로/앞으로(back_forward)는 현재 페이지 유지.
+function InitialRedirect() {
+  const navigate = useNavigate();
+  useEffect(() => {
+    let navType = 'navigate';
+    const entries = performance.getEntriesByType('navigation');
+    if (entries.length > 0) {
+      navType = entries[0].type; // 'navigate' | 'reload' | 'back_forward' | 'prerender'
+    } else if (performance.navigation) {
+      // 구형 브라우저 폴백 (0=navigate, 1=reload, 2=back_forward)
+      navType = ['navigate', 'reload', 'back_forward'][performance.navigation.type] || 'navigate';
+    }
+    if (navType === 'navigate' && window.location.pathname !== '/') {
+      navigate('/', { replace: true });
+    }
+  }, []); // 전체 페이지 로드 시 1회만 실행
+  return null;
+}
+
 function App() {
   return (
     <BrowserRouter>
+      <InitialRedirect />
       <Layout>
         <Routes>
           <Route path="/" element={<Home />} />
