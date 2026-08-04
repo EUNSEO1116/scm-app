@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, Fragment } from 'react';
 import XLSX from 'xlsx-js-style';
 import { dbStoreGet, dbStoreSet } from '../utils/dbApi';
-import { ensureUploadSoldoutCache } from '../utils/soldoutCache';
+import { ensureUploadSoldoutCache, SOLDOUT_CORRECTIONS_KEY } from '../utils/soldoutCache';
 
 const SHEET_ID = '1NXhW_gG0b-gXuVqrhbY9ErWi8uO_7pXIy-NTo4FbE1I';
 const CSV_BARCODE = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent('쿠팡바코드')}`;
@@ -272,16 +272,17 @@ export default function SoldOutAnalysis() {
     showToast('success', '해제 완료', `${r.productName} - ${r.optionName} 기간 제외 해제`);
   };
 
-  // 재고 수정: 엑셀 품절이지만 실제 재고 있는 항목 — 오늘만 반영
+  // 재고 수정: 엑셀 품절이지만 실제 재고 있는 항목 — 영구 유지(초기화 전까지 매일 반영)
   const correctStock = async (r) => {
     const updated = { ...stockCorrections, [r.optionId]: { productName: r.productName, optionName: r.optionName, calcStock: r.calcStock, correctedAt: new Date().toISOString() } };
     setStockCorrections(updated);
-    await dbStoreSet('soldout_stock_corrections', updated, { logDesc: `재고 수정: ${r.productName} - ${r.optionName}` });
+    await dbStoreSet(SOLDOUT_CORRECTIONS_KEY, updated, { logDesc: `재고 수정: ${r.productName} - ${r.optionName}` });
     // 오늘 캐시에서 해당 항목 제거 + 품절률 재계산 (과거 캐시는 건드리지 않음)
     const isToday = viewingDate === todayStr();
     if (cachedResult && isToday) {
       const newItems = cachedResult.items.filter(i => i.optionId !== r.optionId);
-      const valid = (cachedResult.validItems || []).map(v => v.optionId === r.optionId ? { ...v, coupangStock: 1 } : v);
+      // 수정된 항목은 실제 재고(재고계산기 값)로 반영 — 품절 집계에서 제외
+      const valid = (cachedResult.validItems || []).map(v => v.optionId === r.optionId ? { ...v, coupangStock: r.calcStock || 1 } : v);
       const rTotal = valid.length;
       const rSold = valid.filter(it => !excludeSet.has(it.optionId) && it.coupangStock === 0).length;
       const rate = rTotal > 0 ? Math.round(rSold / rTotal * 10000) / 100 : 0;
@@ -380,7 +381,7 @@ export default function SoldOutAnalysis() {
         dbStoreGet(`soldout_analysis_cached_${today}`),
         dbStoreGet(SOLDOUT_TRACKER_KEY),
         dbStoreGet('soldout_analysis_exclude'),
-        dbStoreGet('soldout_stock_corrections'),
+        dbStoreGet(SOLDOUT_CORRECTIONS_KEY),
       ]);
       setStockCorrections(corrections || {});
       const newExSet = new Set((exData || []).map(i => i.optionId));
@@ -464,19 +465,8 @@ export default function SoldOutAnalysis() {
       }
       await dbStoreSet('soldout_analysis_stock_tracker', stockTracker);
 
-      // 재고 수정 목록 로드 — 오늘 날짜가 아닌 과거 수정 기록은 자동 삭제
-      const rawCorrections = await dbStoreGet('soldout_stock_corrections') || {};
-      const corrections = {};
-      let correctionsCleaned = false;
-      for (const [oid, val] of Object.entries(rawCorrections)) {
-        const corrDate = val.correctedAt ? val.correctedAt.slice(0, 10).replace(/-/g, '') : '';
-        if (corrDate === today) {
-          corrections[oid] = val;
-        } else {
-          correctionsCleaned = true;
-        }
-      }
-      if (correctionsCleaned) await dbStoreSet('soldout_stock_corrections', corrections, { skipLog: true });
+      // 재고 수정 목록 로드 — 영구 유지(초기화 전까지 매일 적용). 날짜별 삭제는 업로드 페이지 초기화 버튼에서만.
+      const corrections = await dbStoreGet(SOLDOUT_CORRECTIONS_KEY) || {};
       setStockCorrections(corrections);
 
       // 분석: 전체 유효상품 카운트(품절률용) + 품절/위기 목록 생성
@@ -495,8 +485,8 @@ export default function SoldOutAnalysis() {
         }
         // 재고 수정된 항목은 품절이 아닌 것으로 처리
         const isCorrected = !!corrections[item.optionId];
-        // 유효 상품 (품절률 분모) — 수정된 항목은 coupangStock을 실제 재고로 간주
-        validItems.push({ optionId: item.optionId, coupangStock: isCorrected ? 1 : item.coupangStock });
+        // 유효 상품 (품절률 분모) — 수정된 항목은 coupangStock을 수정 시점 저장된 실제 재고로 간주
+        validItems.push({ optionId: item.optionId, coupangStock: isCorrected ? (corrections[item.optionId].calcStock || 1) : item.coupangStock });
 
         // 수정된 항목은 품절/품절위기 판정 스킵
         if (isCorrected) continue;

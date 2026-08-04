@@ -118,7 +118,7 @@ function shouldSkipLog(storeName) {
 const STORE_NAMES_KR = {
   soldout_analysis_exclude: '(NEW)품절 제외 항목',
   soldout_exclude: '품절 제외 항목',
-  soldout_stock_corrections: '품절 재고 수정',
+  soldout_analysis_corrections: '품절 재고 수정',
   soldout_reasons_obj: '품절 사유',
   soldout_history: '품절 기록',
   soldout_rate: '품절률 스냅샷',

@@ -1,7 +1,7 @@
 import { useState, useRef } from 'react';
 import * as XLSX from 'xlsx';
 import { dbStoreSet, dbStoreGet } from '../utils/dbApi';
-import { ensureUploadSoldoutCache } from '../utils/soldoutCache';
+import { ensureUploadSoldoutCache, SOLDOUT_CORRECTIONS_KEY } from '../utils/soldoutCache';
 
 const todayKey = () => new Date().toISOString().slice(0, 10).replace(/-/g, '');
 
@@ -201,7 +201,8 @@ export default function SoldOutAnalysisUpload() {
       `${label} (${keyToDisplay(dateKey)}) 품절현황 데이터를 초기화합니다.\n\n` +
       `- 업로드한 엑셀 데이터 삭제\n` +
       `- 분석 캐시 삭제 (품절현황 업데이트 버튼 다시 활성화)\n` +
-      `- 해당 날짜 품절률 스냅샷 제거\n\n` +
+      `- 해당 날짜 품절률 스냅샷 제거\n` +
+      `- 해당 날짜에 한 재고 수정 기록 삭제\n\n` +
       `계속하시겠습니까?`
     );
     if (!ok) return;
@@ -211,6 +212,14 @@ export default function SoldOutAnalysisUpload() {
       await dbStoreSet(`soldout_analysis_cached_${dateKey}`, null, { skipLog: true });
       const snaps = await dbStoreGet('soldout_analysis_rate_snapshots') || {};
       if (snaps[dateKey]) { delete snaps[dateKey]; await dbStoreSet('soldout_analysis_rate_snapshots', snaps, { skipLog: true }); }
+      // 해당 날짜에 수정 버튼을 눌렀던 재고 수정 기록도 함께 삭제 (correctedAt 날짜 == 초기화 날짜)
+      const corr = await dbStoreGet(SOLDOUT_CORRECTIONS_KEY) || {};
+      let corrChanged = false;
+      for (const [oid, val] of Object.entries(corr)) {
+        const cDate = val.correctedAt ? val.correctedAt.slice(0, 10).replace(/-/g, '') : '';
+        if (cDate === dateKey) { delete corr[oid]; corrChanged = true; }
+      }
+      if (corrChanged) await dbStoreSet(SOLDOUT_CORRECTIONS_KEY, corr, { skipLog: true });
       setLastResult(null);
       showToast('success', '초기화 완료', `${label} 데이터/캐시를 비웠습니다. 다시 업로드 → 업데이트 하세요.`);
     } catch (e) {

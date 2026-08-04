@@ -17,6 +17,8 @@ const TSV_CALC = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?form
 const EXCLUDE_KEYWORDS = ['최종마감', '품질확인서', '마감대상', '덤핑', '반출', '지재권'];
 const STORE_KEY_PREFIX = 'soldout_analysis_';
 const SOLDOUT_TRACKER_KEY = 'soldout_analysis_tracker';
+// 재고 수정(엑셀 품절이지만 실제 재고 있는 항목) 영구 저장 전역 키 — 두 페이지에서 공유
+export const SOLDOUT_CORRECTIONS_KEY = 'soldout_analysis_corrections';
 
 function shouldExclude(s) { return s ? EXCLUDE_KEYWORDS.some(kw => s.includes(kw)) : false; }
 function safeNum(v) { if (v === '' || v === '-' || v == null) return 0; const n = Number(v); return isNaN(n) ? 0 : n; }
