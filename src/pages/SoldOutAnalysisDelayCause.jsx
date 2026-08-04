@@ -241,6 +241,12 @@ export default function SoldOutAnalysisDelayCause() {
   const [refreshing, setRefreshing] = useState(false);
   const [refreshMsg, setRefreshMsg] = useState('');
 
+  // 스크롤 시 컬럼 헤더 고정: 상단 툴바(sticky top:40)와 동일 방식.
+  // 페이지(창)를 스크롤하면 헤더(th)가 툴바 바로 아래에 sticky로 붙어있게 함.
+  // 툴바 높이를 실시간 측정해 헤더 top 오프셋(40 + 툴바높이)을 계산.
+  const filterCardRef = useRef(null);
+  const [headerTop, setHeaderTop] = useState(108);
+
   const [showUrgePanel, setShowUrgePanel] = useState(false);
   const [urgeText, setUrgeText] = useState('');
   const [urgeResult, setUrgeResult] = useState(null); // { matched: [...], unmatched: [...] }
@@ -260,6 +266,18 @@ export default function SoldOutAnalysisDelayCause() {
   const itemsRef = useRef([]);
   const autoRunningRef = useRef(false);
   useEffect(() => { itemsRef.current = items; }, [items]);
+
+  // 툴바 높이 측정 → 헤더 sticky top 오프셋. 툴바 줄바꿈 등 높이 변동 시 재계산.
+  useEffect(() => {
+    const el = filterCardRef.current;
+    if (!el) return;
+    const measure = () => setHeaderTop(40 + el.offsetHeight);
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    window.addEventListener('resize', measure);
+    return () => { ro.disconnect(); window.removeEventListener('resize', measure); };
+  }, []);
 
   const fileInputRef = useRef(null);
 
@@ -864,6 +882,7 @@ export default function SoldOutAnalysisDelayCause() {
           padding: 11px 10px; font-size: 11.5px; font-weight: 700; color: #5f6368;
           background: #f4f6f8; border: 1px solid #e3e7eb; text-align: left;
           white-space: nowrap; letter-spacing: 0.2px;
+          position: sticky; top: var(--dc-header-top, 108px); z-index: 5;
         }
         .dc-table td { border: 1px solid #eceff1; vertical-align: middle; padding: 0; }
         .dc-table td.dc-pad { padding: 5px 6px; }
@@ -898,7 +917,7 @@ export default function SoldOutAnalysisDelayCause() {
       )}
 
       {/* 툴바 */}
-      <div className="card" style={{ marginBottom: 16, overflow: 'visible', position: 'sticky', top: 40, zIndex: 30 }}>
+      <div ref={filterCardRef} className="card" style={{ marginBottom: 16, overflow: 'visible', position: 'sticky', top: 40, zIndex: 30 }}>
         <div className="card-body" style={{ padding: 16 }}>
           <div className="filter-bar" style={{ flexWrap: 'wrap', gap: 10, alignItems: 'center', marginBottom: 0 }}>
             <input className="search-input" placeholder="상품명, 옵션명, 바코드, 발주번호, 사유 검색..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} style={{ maxWidth: 260 }} />
@@ -1192,9 +1211,9 @@ export default function SoldOutAnalysisDelayCause() {
           </div>
         </div>
       ) : (
-        <div className="card" style={{ padding: 0 }}>
-          <div style={{ overflowX: 'auto' }}>
-            <table className="dc-table" style={{ minWidth: ROW_MIN_WIDTH }}>
+        <div className="card" style={{ padding: 0, overflow: 'visible' }}>
+          <div>
+            <table className="dc-table" style={{ minWidth: ROW_MIN_WIDTH, '--dc-header-top': `${headerTop}px` }}>
               <colgroup>
                 <col style={{ width: 40 }} />
                 <col style={{ width: 38 }} />
