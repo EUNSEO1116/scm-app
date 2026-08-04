@@ -1261,8 +1261,8 @@ export default function SoldOutAnalysisDelayCause() {
                   const isOpen = expandedId === item.id;
                   const isSelected = selectedIds.includes(item.id);
                   const color = item.closed ? CLOSED_COLOR : (PROGRESS_COLORS[getProgress(item)] || '#9e9e9e');
-                  // 종결 필요 알림: 인천도착일 + 5일이 지났는데 아직 종결 안 됨 → 행 전체 옅은 호박색
-                  const needClose = !item.closed && item.incheonArriveDate && kstToday() > addDays(item.incheonArriveDate, 5);
+                  // 종결 필요 알림: 인천도착일 + 4일이 지났는데 아직 종결 안 됨 → 행 전체 옅은 호박색
+                  const needClose = !item.closed && item.incheonArriveDate && kstToday() > addDays(item.incheonArriveDate, 4);
                   const rowBg = isSelected ? '#eef4ff' : (needClose ? '#fff8e1' : (isOpen ? '#f8fafd' : undefined));
                   return (
                     <Fragment key={item.id}>
