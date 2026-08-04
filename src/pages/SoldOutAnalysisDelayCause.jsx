@@ -15,14 +15,18 @@ const STORE_KEY = 'delay_cause_items';
 const SOLDOUT_CACHE_PREFIX = 'soldout_analysis_cached_'; // 품절현황 일자별 캐시 (YYYYMMDD)
 const AUTORUN_KEY = 'delay_cause_autorun'; // { date: 'YYYY-MM-DD', count: N } (KST 11시 1회 자동감지)
 
-const REASON_STATUSES = ['작업지연', '업체발송지연', '운송지연', '재수배지연', '조치지연'];
+const REASON_STATUSES = ['작업지연', '업체발송지연', '판매량 증가', '운송지연', '재수배지연', '조치지연'];
 const REASON_COLORS = {
   '작업지연': '#fb8c00',
   '업체발송지연': '#c62828',
+  '판매량 증가': '#2e7d32',
   '운송지연': '#00838f',
   '재수배지연': '#6a1b9a',
   '조치지연': '#1565c0',
 };
+// '*' 표시 대상 사유상태 (재수배지연·조치지연은 별표 없음)
+const REASON_STAR = new Set(['작업지연', '업체발송지연', '판매량 증가', '운송지연']);
+const reasonLabel = (s) => (REASON_STAR.has(s) ? '*' : '') + s;
 // 기존 데이터 호환: '재수배지연(SCM귀책)'·'조치지연(SCM귀책)' → '(SCM귀책)' 문구 제거
 const migrateReasonStatus = (arr) => Array.isArray(arr)
   ? arr.map(it => (typeof it.reasonStatus === 'string' && it.reasonStatus.includes('(SCM귀책)'))
@@ -192,7 +196,6 @@ const emptyForm = {
 export default function SoldOutAnalysisDelayCause() {
   // 상품 자동완성 (특별 관리 상품 시트 — 상품개선과 동일)
   const [productList, setProductList] = useState([]);
-  const [productLoading, setProductLoading] = useState(true);
 
   useEffect(() => {
     (async () => {
@@ -212,7 +215,6 @@ export default function SoldOutAnalysisDelayCause() {
         }
         setProductList(results);
       } catch { /* 실패해도 수동 입력 가능 */ }
-      setProductLoading(false);
     })();
   }, []);
 
@@ -760,7 +762,7 @@ export default function SoldOutAnalysisDelayCause() {
     setEditingTLText('');
   };
 
-  if (!loaded || productLoading) {
+  if (!loaded) {
     return (
       <div className="loading" style={{ padding: 80, flexDirection: 'column', gap: 12 }}>
         <div className="spinner" />
@@ -834,7 +836,7 @@ export default function SoldOutAnalysisDelayCause() {
           onClick={e => e.stopPropagation()}
           style={{ width: '100%', padding: '5px 8px', fontSize: 11, fontWeight: 700, border: `1.5px solid ${c}`, borderRadius: 6, color: c, background: '#fff', cursor: 'pointer', appearance: 'none', WebkitAppearance: 'none', MozAppearance: 'none', textAlignLast: 'center' }}>
           {!isProg && <option value="" style={{ color: '#999' }}>*미선택</option>}
-          {opts.map(s => <option key={s} value={s} style={{ color: '#333' }}>{isProg ? s : '*' + s}</option>)}
+          {opts.map(s => <option key={s} value={s} style={{ color: '#333' }}>{isProg ? s : reasonLabel(s)}</option>)}
         </select>
       );
     }
@@ -962,30 +964,7 @@ export default function SoldOutAnalysisDelayCause() {
               </button>
             )}
             <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
-              <button className="btn" onClick={handleRefresh} disabled={refreshing}
-                title="발주장부에서 실제출고일·인천도착일, 품절현황에서 품절시작일을 비어있는 항목에만 가져옵니다."
-                style={{ background: refreshing ? '#eceff1' : '#0b5cad', color: refreshing ? '#9aa0a6' : '#fff', border: 'none', fontWeight: 600, cursor: refreshing ? 'default' : 'pointer' }}>
-                {refreshing ? '가져오는 중…' : '↻ 새로고침'}
-              </button>
               {refreshMsg && <span style={{ fontSize: 12, color: '#5f6368', fontWeight: 600 }}>{refreshMsg}</span>}
-              <span className="dc-help">
-                <span style={{ fontSize: 14 }}>ⓘ</span> 사유상태 도움말
-                <span className="dc-help-tip">
-                  <b>[CN 귀책]</b>{'\n'}
-                  1. 작업 지연 : 독촉O → 작업X{'\n'}
-                  ex) 봉제 등 작업량 많아서 출고가 누락된 경우{'\n'}
-                  2. 작업 지연 : 독촉O → 확인X{'\n'}
-                  ex) 사이즈실측 OR 출고 요청 했지만 답변 늦는 경우{'\n\n'}
-                  <b>[업체 귀책]</b>{'\n'}
-                  3. 업체 발송지연 : 독촉O → 발송X → 재수배O{'\n'}
-                  ex) 독촉 했지만 보내준다고 해놓고 발송부터가 늦어져서 재수배도 늦어진 경우(업체가 약속 안지킴){'\n\n'}
-                  <b>[SCM 귀책]</b>{'\n'}
-                  4. 재수배 지연 : 독촉O → 발송X → 재수배X{'\n'}
-                  ex) 독촉 했지만, 발송 안해준다고 답변 바로 들었지만, 빠른 조치 안해둔 경우{'\n'}
-                  5. 조치 지연 : 독촉X{'\n'}
-                  ex) 늦게 오는것 확인 안해서 독촉도 안되있는 경우
-                </span>
-              </span>
               <button className="btn" onClick={() => setShowShipReqPanel(v => !v)}
                 style={{ background: showShipReqPanel ? '#fff' : '#6a1b9a', color: showShipReqPanel ? '#6a1b9a' : '#fff', border: showShipReqPanel ? '1.5px solid #6a1b9a' : 'none', fontWeight: 600 }}>
                 {showShipReqPanel ? '닫기' : '출고요청 업로드'}
@@ -1011,6 +990,29 @@ export default function SoldOutAnalysisDelayCause() {
               </button>
               <button className="btn btn-primary" onClick={() => { if (showForm) { resetForm(); } else { setForm(emptyForm); setProductSearch(''); setShowForm(true); } }}>
                 {showForm ? '닫기' : '+ 새 항목'}
+              </button>
+              <span className="dc-help" style={{ color: '#d32f2f', fontWeight: 800, fontSize: 17, cursor: 'help', border: 'none', background: 'transparent', padding: '0 6px', height: 36 }}>
+                ?
+                <span className="dc-help-tip">
+                  <b>[CN 귀책]</b>{'\n'}
+                  1. 작업 지연 : 독촉O → 작업X{'\n'}
+                  ex) 봉제 등 작업량 많아서 출고가 누락된 경우{'\n'}
+                  2. 작업 지연 : 독촉O → 확인X{'\n'}
+                  ex) 사이즈실측 OR 출고 요청 했지만 답변 늦는 경우{'\n\n'}
+                  <b>[업체 귀책]</b>{'\n'}
+                  3. 업체 발송지연 : 독촉O → 발송X → 재수배O{'\n'}
+                  ex) 독촉 했지만 보내준다고 해놓고 발송부터가 늦어져서 재수배도 늦어진 경우(업체가 약속 안지킴){'\n\n'}
+                  <b>[SCM 귀책]</b>{'\n'}
+                  4. 재수배 지연 : 독촉O → 발송X → 재수배X{'\n'}
+                  ex) 독촉 했지만, 발송 안해준다고 답변 바로 들었지만, 빠른 조치 안해둔 경우{'\n'}
+                  5. 조치 지연 : 독촉X{'\n'}
+                  ex) 늦게 오는것 확인 안해서 독촉도 안되있는 경우
+                </span>
+              </span>
+              <button className="btn" onClick={handleRefresh} disabled={refreshing}
+                title="발주장부에서 실제출고일·인천도착일, 품절현황에서 품절시작일을 비어있는 항목에만 가져옵니다."
+                style={{ background: refreshing ? '#eceff1' : '#0b5cad', color: refreshing ? '#9aa0a6' : '#fff', border: 'none', fontWeight: 600, cursor: refreshing ? 'default' : 'pointer', padding: '7px 12px' }}>
+                {refreshing ? '⟳' : '↻'}
               </button>
             </div>
           </div>
@@ -1175,7 +1177,7 @@ export default function SoldOutAnalysisDelayCause() {
                 <div className="dc-select-wrap" style={{ display: 'block' }}>
                   <select value={form.reasonStatus} onChange={e => setForm(p => ({ ...p, reasonStatus: e.target.value }))} style={{ width: '100%', padding: '6px 34px 6px 12px', fontSize: 12.5 }}>
                     <option value="">*미선택</option>
-                    {REASON_STATUSES.map(s => <option key={s} value={s}>{'*' + s}</option>)}
+                    {REASON_STATUSES.map(s => <option key={s} value={s}>{reasonLabel(s)}</option>)}
                   </select>
                   <span className="dc-arrow">▼</span>
                 </div>
