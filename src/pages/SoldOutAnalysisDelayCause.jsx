@@ -1066,7 +1066,10 @@ export default function SoldOutAnalysisDelayCause() {
                   4. 재수배 지연 : 독촉O → 발송X → 재수배X{'\n'}
                   ex) 독촉 했지만, 발송 안해준다고 답변 바로 들었지만, 빠른 조치 안해둔 경우{'\n'}
                   5. 조치 지연 : 독촉X{'\n'}
-                  ex) 늦게 오는것 확인 안해서 독촉도 안되있는 경우
+                  ex) 늦게 오는것 확인 안해서 독촉도 안되있는 경우{'\n\n'}
+                  <b>[불가피 사유]</b>{'\n'}
+                  6. 판매량 증가 : 발주일 전엔 재고 충분 → 갑자기 판매량 증가 → 급히 발주하게 되어 리드타임 내 도착 불가{'\n'}
+                  7. 운송 지연 : 재수배 해봤지만, 이 업체가 유일 + 내륙 운송 기간이 3일 이상인 경우
                 </span>
               </span>
               <button className="btn" onClick={handleRefresh} disabled={refreshing}
