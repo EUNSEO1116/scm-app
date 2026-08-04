@@ -10,6 +10,10 @@ function fmt(n) { if (n == null) return '-'; return Number(n).toLocaleString('ko
 
 const calBtnStyle = { width: 28, height: 28, borderRadius: 6, border: '1px solid var(--border)', background: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12 };
 
+// 과거 날짜 blob은 업로드/업데이트 전엔 바뀌지 않으므로 세션 메모리에 캐시.
+// (오늘 날짜는 업데이트로 갱신될 수 있어 캐시하지 않고 매번 최신을 읽음)
+const _blobCache = new Map();
+
 const COLUMNS = [
   { key: 'index', label: 'No', width: '3%', align: 'center', sortable: false },
   { key: 'status', label: '상태', width: '5%', align: 'center', sortable: true },
@@ -35,8 +39,16 @@ export default function SoldOutAnalysisHistory() {
   const [statusFilter, setStatusFilter] = useState('전체');
 
   const loadData = async (dateKey) => {
+    const isToday = dateKey === todayStr();
+    // 과거 날짜는 세션 캐시가 있으면 재요청 없이 즉시 표시
+    if (!isToday && _blobCache.has(dateKey)) {
+      setData(_blobCache.get(dateKey));
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     const result = await dbStoreGet(`soldout_analysis_${dateKey}`);
+    if (!isToday) _blobCache.set(dateKey, result);
     setData(result);
     setLoading(false);
   };

@@ -388,15 +388,15 @@ export default function SoldOutAnalysis() {
       setExcludeSet(newExSet);
       // 당일 원천(upload) 캐시는 무시 — 정식 업데이트 전까지는 데이터 없음으로 취급(업데이트 버튼 노출)
       const realCached = cached && cached.source !== 'upload' ? cached : null;
-      // 오늘 캐시의 연속품절일수도 일별 DB 기준으로 재계산
-      const fixedCached = realCached ? await recalcConsecDaysForDate(today, realCached) : null;
-      // tracker state에도 재계산된 days 반영
+      // 연속품절일수는 업데이트 버튼 시점(handleUpdate)에 이미 계산되어 캐시(trackerSnapshot)에 저장됨.
+      // 진입할 때마다 30일치 blob을 다시 읽어 재계산하던 로직을 제거 → 로딩 지연 해소.
+      const fixedCached = realCached;
+      // tracker 로컬 상태에 캐시의 days 반영 (DB tracker는 업데이트 시 이미 저장돼 있어 재저장 불필요)
       const updatedTrk = { ...(trk || {}) };
       if (fixedCached?.trackerSnapshot) {
         for (const [oid, entry] of Object.entries(fixedCached.trackerSnapshot)) {
           if (updatedTrk[oid]) updatedTrk[oid].days = entry.days;
         }
-        await dbStoreSet(SOLDOUT_TRACKER_KEY, updatedTrk);
       }
       setTracker(updatedTrk);
       setCachedResult(fixedCached);

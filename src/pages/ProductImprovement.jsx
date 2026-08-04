@@ -206,34 +206,40 @@ export default function ProductImprovement() {
         dbStoreSet('improvement_items', localItems, { skipLog: true });
       }
 
-      // images: 항목별 개별 저장소 방식 (4.5MB 단일 블롭 한도 회피)
-      const hasLegacy = legacyImgs && typeof legacyImgs === 'object' && Object.keys(legacyImgs).length > 0;
-      // 1) 레거시 블롭 → 항목별 저장소로 일회성 마이그레이션 (블롭은 백업으로 보존)
-      if (!migrated && hasLegacy) {
-        await Promise.all(Object.entries(legacyImgs).map(([id, imgs]) =>
-          (Array.isArray(imgs) && imgs.length > 0) ? dbStoreSet(`imp_img_${id}`, imgs, { skipLog: true }) : null
-        ));
-        dbStoreSet('imp_img_migrated', true, { skipLog: true });
-      }
-      // 2) 항목별 저장소에서 메모리 맵 재구성
-      const ids = finalItems.map(i => i.id).filter(Boolean);
-      const entries = await Promise.all(ids.map(async (id) => {
-        try { const imgs = await dbStoreGet(`imp_img_${id}`); return [id, Array.isArray(imgs) ? imgs : []]; }
-        catch { return [id, []]; }
-      }));
-      const map = {};
-      entries.forEach(([id, imgs]) => { if (imgs.length > 0) map[id] = imgs; });
-      // 항목별 저장소가 권위 소스. DB가 완전히 비어 받아온 게 하나도 없을 때만(전송 장애 등)
-      // 로컬 백업으로 폴백 — 삭제된 사진을 부활시키지 않기 위해 평소엔 폴백하지 않음
-      const dbHadAny = entries.some(([, imgs]) => imgs.length > 0);
-      if (!dbHadAny && localImgs && typeof localImgs === 'object' && Object.keys(localImgs).length > 0) {
-        Object.entries(localImgs).forEach(([id, imgs]) => {
-          if (Array.isArray(imgs) && imgs.length > 0) map[id] = imgs;
-        });
-      }
-      setImpImages(map);
-      localStorage.setItem('improvement_images', JSON.stringify(map));
+      // 항목 먼저 표시 — 항목당 개별 이미지 요청(N+1)을 기다리느라 화면이 막히던 문제 해소.
+      // (impImages는 위에서 localStorage 캐시로 이미 초기화되어 📷 개수 배지는 즉시 표시됨)
       setLoaded(true);
+
+      // 이미지: 백그라운드로 항목별 저장소에서 재구성 → 완료되면 개수/ZIP 데이터 갱신 (페이지는 이미 표시됨)
+      (async () => {
+        // images: 항목별 개별 저장소 방식 (4.5MB 단일 블롭 한도 회피)
+        const hasLegacy = legacyImgs && typeof legacyImgs === 'object' && Object.keys(legacyImgs).length > 0;
+        // 1) 레거시 블롭 → 항목별 저장소로 일회성 마이그레이션 (블롭은 백업으로 보존)
+        if (!migrated && hasLegacy) {
+          await Promise.all(Object.entries(legacyImgs).map(([id, imgs]) =>
+            (Array.isArray(imgs) && imgs.length > 0) ? dbStoreSet(`imp_img_${id}`, imgs, { skipLog: true }) : null
+          ));
+          dbStoreSet('imp_img_migrated', true, { skipLog: true });
+        }
+        // 2) 항목별 저장소에서 메모리 맵 재구성
+        const ids = finalItems.map(i => i.id).filter(Boolean);
+        const entries = await Promise.all(ids.map(async (id) => {
+          try { const imgs = await dbStoreGet(`imp_img_${id}`); return [id, Array.isArray(imgs) ? imgs : []]; }
+          catch { return [id, []]; }
+        }));
+        const map = {};
+        entries.forEach(([id, imgs]) => { if (imgs.length > 0) map[id] = imgs; });
+        // 항목별 저장소가 권위 소스. DB가 완전히 비어 받아온 게 하나도 없을 때만(전송 장애 등)
+        // 로컬 백업으로 폴백 — 삭제된 사진을 부활시키지 않기 위해 평소엔 폴백하지 않음
+        const dbHadAny = entries.some(([, imgs]) => imgs.length > 0);
+        if (!dbHadAny && localImgs && typeof localImgs === 'object' && Object.keys(localImgs).length > 0) {
+          Object.entries(localImgs).forEach(([id, imgs]) => {
+            if (Array.isArray(imgs) && imgs.length > 0) map[id] = imgs;
+          });
+        }
+        setImpImages(map);
+        localStorage.setItem('improvement_images', JSON.stringify(map));
+      })();
     }).catch(() => setLoaded(true));
   }, []);
 

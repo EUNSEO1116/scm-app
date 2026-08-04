@@ -37,6 +37,12 @@ function safeNum(v) {
   return isNaN(n) ? 0 : n;
 }
 
+// 오늘 오전 11시 타임스탬프 (하루 1회 자동 갱신 기준)
+function todayElevenAM() {
+  const n = new Date();
+  return new Date(n.getFullYear(), n.getMonth(), n.getDate(), 11, 0, 0).getTime();
+}
+
 function fmt(n) {
   if (n === null || n === undefined || n === '' || n === '-') return '-';
   const num = Number(n);
@@ -192,14 +198,31 @@ export default function Sales() {
         parsed.push({ barcode, scode, productName, optionName, status, d6, d5, d4, d3, d2, d1, total, reviews, totalStock });
       }
       setRows(parsed);
-      setLastUpdated(new Date());
+      const now = new Date();
+      setLastUpdated(now);
+      // 계산 결과를 하루캐시에 저장 (다음 진입 시 재계산 없이 즉시 표시)
+      await dbStoreSet('sales_cache', { rows: parsed, calculatedAt: now.getTime() }, { skipLog: true }).catch(() => {});
     } catch (e) {
       setError(e.message || '데이터를 불러오지 못했습니다');
     }
     setLoading(false);
   }, []);
 
-  useEffect(() => { fetchData(); }, [fetchData]);
+  // 마운트: 하루캐시 우선. 오전 11시 이후 계산본이 있으면 재계산 없이 즉시 표시.
+  // 11시 이전이면 어제 캐시를 그대로 유지. 11시 이후 오늘 계산본이 없을 때만 새로 계산.
+  const loadInitial = useCallback(async () => {
+    const eleven = todayElevenAM();
+    const cached = await dbStoreGet('sales_cache').catch(() => null);
+    if (cached?.rows) {
+      setRows(cached.rows);
+      setLastUpdated(new Date(cached.calculatedAt || Date.now()));
+      if (cached.calculatedAt >= eleven) return;   // 오늘 11시 이후 계산본 → 최신
+      if (Date.now() < eleven) return;             // 아직 11시 전 → 어제 캐시 유지
+    }
+    await fetchData();                             // 캐시 없음 or 11시 지났는데 오늘 계산본 없음
+  }, [fetchData]);
+
+  useEffect(() => { loadInitial(); }, [loadInitial]);
 
   // 주의 품목 시트에서 로드
   useEffect(() => {
