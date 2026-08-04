@@ -152,6 +152,37 @@ const addDays = (dateStr, n) => {
   const p = (x) => String(x).padStart(2, '0');
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 };
+// 두 날짜(YYYY-MM-DD) 사이 일수 차이 (b - a). 유효하지 않으면 null
+const daysDiff = (a, b) => {
+  if (!a || !b) return null;
+  const da = new Date(`${a}T00:00:00`);
+  const db = new Date(`${b}T00:00:00`);
+  if (isNaN(da) || isNaN(db)) return null;
+  return Math.round((db - da) / 86400000);
+};
+// 자동 종결 분류: 처리 대상이면 { reasonStatus?, progressStatus } 반환, 미분류(2f)면 null.
+// (호출 측에서 progressStatus='확인중' & 알림대상 & 미처리 항목만 넘김)
+const classifyAutoClose = (it) => {
+  // 1. 품절시작일 공백 → 지장없음 (사유는 그대로)
+  if (!it.soldoutDate) return { progressStatus: '지장없음' };
+  // 2a. 사유 이미 있음 → 사유 유지 + 품절됨
+  if (it.reasonStatus) return { progressStatus: '품절됨' };
+  // 2b. 확인일 공백 → 조치지연 + 품절됨
+  if (!it.confirmDate) return { reasonStatus: '조치지연', progressStatus: '품절됨' };
+  // 2c. 발주일~확인일 5일 이상 → 조치지연 우선
+  const co = daysDiff(it.orderDate, it.confirmDate);
+  if (co !== null && co >= 5) return { reasonStatus: '조치지연', progressStatus: '품절됨' };
+  const oi = daysDiff(it.orderDate, it.incheonArriveDate); // 발주일~인천도착일 총기간
+  // 2d. 출고요청일 공백 → 총기간<10이면 판매량 증가, 아니면 조치지연
+  if (!it.releaseReqDate) {
+    const r = (oi !== null && oi < 10) ? '판매량 증가' : '조치지연';
+    return { reasonStatus: r, progressStatus: '품절됨' };
+  }
+  // 2e. 발주일~인천도착일 10일 미만 → 판매량 증가
+  if (oi !== null && oi < 10) return { reasonStatus: '판매량 증가', progressStatus: '품절됨' };
+  // 2f. 미분류 → 처리 안 함
+  return null;
+};
 // KST 기준 오늘부터 back일 전 YYYYMMDD 키
 const kstDateKey = (back) => {
   const d = kstNow();
@@ -267,6 +298,7 @@ export default function SoldOutAnalysisDelayCause() {
   });
   const itemsRef = useRef([]);
   const autoRunningRef = useRef(false);
+  const [autoCloseInfo, setAutoCloseInfo] = useState(null); // { count } 이번 접속 자동 종결 건수
   useEffect(() => { itemsRef.current = items; }, [items]);
 
   // 툴바 높이 측정 → 헤더 sticky top 오프셋. 툴바 줄바꿈 등 높이 변동 시 재계산.
@@ -462,6 +494,27 @@ export default function SoldOutAnalysisDelayCause() {
     const timer = setInterval(check, 5 * 60 * 1000); // 5분마다 재확인 (11시 전 접속 대비)
     return () => clearInterval(timer);
   }, [loaded, runAutoUnactioned]);
+
+  // === 자동 종결: 종결 알림 뜬 항목(미종결·인천도착일+4일 경과)을 규칙에 따라 자동 분류·종결 ===
+  // 새로고침(로드) 시 1회 실행. 진행상태와 무관하게 기준에 따라 분류(사유는 R5로 기존 것 유지, 진행상태는 덮어씀). 항목당 1회(autoClosedApplied).
+  useEffect(() => {
+    if (!loaded) return;
+    const today = kstToday();
+    const cur = itemsRef.current;
+    let count = 0;
+    const next = cur.map(it => {
+      if (it.closed || it.autoClosedApplied) return it;       // 이미 종결/처리됨
+      if (!it.incheonArriveDate || !(today > addDays(it.incheonArriveDate, 4))) return it; // 알림 대상 아님
+      const cls = classifyAutoClose(it);
+      if (!cls) return it;                                     // 2f 미분류 → 알림 유지, 처리 안 함
+      count++;
+      return { ...it, ...cls, autoClosedApplied: true, closed: true, closedAt: new Date().toISOString() };
+    });
+    if (count > 0) {
+      saveItems(next);
+      setAutoCloseInfo({ count });
+    }
+  }, [loaded, saveItems]);
 
   const suggestions = useMemo(() => {
     if (!productSearch || productSearch.length < 1) return [];
@@ -949,6 +1002,13 @@ export default function SoldOutAnalysisDelayCause() {
                 title="오늘 자동 감지된 조치안됨 건 보기"
                 style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '7px 14px', border: `1.5px solid ${PROGRESS_COLORS['조치안됨']}`, borderRadius: 10, background: '#fff3e0', color: '#e65100', cursor: 'pointer', fontSize: 13, fontWeight: 700, boxShadow: '0 1px 3px rgba(230,81,0,0.15)' }}>
                 🔔 조치안됨 감지 {autoDetectInfo.count}건
+              </button>
+            )}
+            {autoCloseInfo && autoCloseInfo.count > 0 && (
+              <button onClick={() => changeFilter('종결')}
+                title="이번 접속에서 자동 종결된 건 보기"
+                style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '7px 14px', border: `1.5px solid ${CLOSED_COLOR}`, borderRadius: 10, background: '#e8eaf6', color: CLOSED_COLOR, cursor: 'pointer', fontSize: 13, fontWeight: 700, boxShadow: '0 1px 3px rgba(48,63,159,0.15)' }}>
+                🔒 자동 종결 {autoCloseInfo.count}건
               </button>
             )}
             {selectedIds.length > 0 && (
