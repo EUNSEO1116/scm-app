@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, Fragment } from 'react';
 import XLSX from 'xlsx-js-style';
 import { dbStoreGet, dbStoreSet } from '../utils/dbApi';
-import { ensureUploadSoldoutCache, SOLDOUT_CORRECTIONS_KEY } from '../utils/soldoutCache';
+import { ensureUploadSoldoutCache, computeDaySnapshotFromCache, SOLDOUT_CORRECTIONS_KEY } from '../utils/soldoutCache';
 
 const SHEET_ID = '1NXhW_gG0b-gXuVqrhbY9ErWi8uO_7pXIy-NTo4FbE1I';
 const CSV_BARCODE = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent('쿠팡바코드')}`;
@@ -171,7 +171,8 @@ export default function SoldOutAnalysis() {
         const rate = rTotal > 0 ? Math.round(rSold / rTotal * 10000) / 100 : 0;
         cached.rate = rate;
         await dbStoreSet(`soldout_analysis_cached_${k}`, cached);
-        snaps[k] = { date: k, total: rTotal, soldout: rSold, rate };
+        const fullSnap = await computeDaySnapshotFromCache(k, cached);
+        snaps[k] = fullSnap ? { ...(snaps[k] || {}), ...fullSnap, computedAt: Date.now() } : { date: k, total: rTotal, soldout: rSold, rate };
         daysWithData++; rateSum += rate;
       }
       await dbStoreSet('soldout_analysis_rate_snapshots', snaps, { logDesc: `(NEW)품절 기간제외: ${r.productName} - ${r.optionName} (${rangeResult.startKey}~${rangeResult.endKey})` });
@@ -211,7 +212,8 @@ export default function SoldOutAnalysis() {
       // rate_snapshots도 갱신
       try {
         const snaps = await dbStoreGet('soldout_analysis_rate_snapshots') || {};
-        snaps[targetDate] = { date: targetDate, total: rTotal, soldout: rSold, rate };
+        const fullSnap = await computeDaySnapshotFromCache(targetDate, cached);
+        snaps[targetDate] = fullSnap ? { ...(snaps[targetDate] || {}), ...fullSnap, computedAt: Date.now() } : { date: targetDate, total: rTotal, soldout: rSold, rate };
         await dbStoreSet('soldout_analysis_rate_snapshots', snaps);
       } catch {}
     }
@@ -263,7 +265,8 @@ export default function SoldOutAnalysis() {
       const rate = rTotal > 0 ? Math.round(rSold / rTotal * 10000) / 100 : 0;
       cached.rate = rate;
       await dbStoreSet(`soldout_analysis_cached_${k}`, cached);
-      snaps[k] = { date: k, total: rTotal, soldout: rSold, rate };
+      const fullSnap = await computeDaySnapshotFromCache(k, cached);
+      snaps[k] = fullSnap ? { ...(snaps[k] || {}), ...fullSnap, computedAt: Date.now() } : { date: k, total: rTotal, soldout: rSold, rate };
       daysWithData++; rateSum += rate;
     }
     await dbStoreSet('soldout_analysis_rate_snapshots', snaps, { logDesc: `(NEW)품절 기간제외 해제: ${r.productName} - ${r.optionName} (${rangeResult.startKey}~${rangeResult.endKey})` });
@@ -289,7 +292,7 @@ export default function SoldOutAnalysis() {
       const newCached = { ...cachedResult, items: newItems, validItems: valid, rate, correctionsSnapshot: updated };
       setCachedResult(newCached);
       await dbStoreSet(`soldout_analysis_cached_${viewingDate}`, newCached);
-      try { const ex = await dbStoreGet('soldout_analysis_rate_snapshots') || {}; ex[viewingDate] = { date: viewingDate, total: rTotal, soldout: rSold, rate }; await dbStoreSet('soldout_analysis_rate_snapshots', ex); } catch {}
+      try { const ex = await dbStoreGet('soldout_analysis_rate_snapshots') || {}; const fullSnap = await computeDaySnapshotFromCache(viewingDate, newCached); ex[viewingDate] = fullSnap ? { ...(ex[viewingDate] || {}), ...fullSnap, computedAt: Date.now() } : { date: viewingDate, total: rTotal, soldout: rSold, rate }; await dbStoreSet('soldout_analysis_rate_snapshots', ex); } catch {}
     }
     showToast('success', '재고 수정', `${r.productName} - ${r.optionName} 재고 정정 완료 (재고계산기: ${r.calcStock}개)`);
   };
@@ -448,11 +451,19 @@ export default function SoldOutAnalysis() {
         stKeys.push(dateToKey(d));
       }
       const stDatasets = await Promise.all(stKeys.map(k => dbStoreGet(`${STORE_KEY_PREFIX}${k}`).catch(() => null)));
+      const sales30Sum = {}; // 상품별 직전 30일 판매량 합 (일평균판매량 계산용)
+      const netProfit30Sum = {}; // 상품별 직전 30일 순이익금(그날 총액) 합
       for (let di = 0; di < stDatasets.length; di++) {
         const ds = stDatasets[di];
         if (!ds?.items) continue;
         const dateKey = stKeys[di];
         for (const item of ds.items) {
+          const q = item.salesQty || 0;
+          // 반품(음수 판매) 날짜는 판매량·순이익금 모두 제외해 개당 이익금이 왜곡되지 않게 한다.
+          if (q > 0) {
+            sales30Sum[item.optionId] = (sales30Sum[item.optionId] || 0) + q;
+            netProfit30Sum[item.optionId] = (netProfit30Sum[item.optionId] || 0) + (item.netProfit || 0);
+          }
           const bc = bcMap[item.optionId];
           if (!bc || !bc.status.includes('신규')) continue;
           const oid = item.optionId;
@@ -486,7 +497,10 @@ export default function SoldOutAnalysis() {
         // 재고 수정된 항목은 품절이 아닌 것으로 처리
         const isCorrected = !!corrections[item.optionId];
         // 유효 상품 (품절률 분모) — 수정된 항목은 coupangStock을 수정 시점 저장된 실제 재고로 간주
-        validItems.push({ optionId: item.optionId, coupangStock: isCorrected ? (corrections[item.optionId].calcStock || 1) : item.coupangStock });
+        const _s = sales30Sum[item.optionId] || 0;
+        const _avg30d = Math.round((_s / 30) * 10) / 10;
+        const _netMargin = _s > 0 ? (netProfit30Sum[item.optionId] || 0) / _s : 0;
+        validItems.push({ optionId: item.optionId, coupangStock: isCorrected ? (corrections[item.optionId].calcStock || 1) : item.coupangStock, salesQty: item.salesQty || 0, avg30d: _avg30d, netMargin: _netMargin, lossAmount: Math.round(_avg30d * _netMargin), oppV: 3 });
 
         // 수정된 항목은 품절/품절위기 판정 스킵
         if (isCorrected) continue;
@@ -536,11 +550,12 @@ export default function SoldOutAnalysis() {
       const rTotal = validItems.length;
       const rSold = validItems.filter(it => !exSet.has(it.optionId) && it.coupangStock === 0).length;
       const rate = rTotal > 0 ? Math.round(rSold / rTotal * 10000) / 100 : 0;
-      try { const ex = await dbStoreGet('soldout_analysis_rate_snapshots') || {}; ex[today] = { date: today, total: rTotal, soldout: rSold, rate }; await dbStoreSet('soldout_analysis_rate_snapshots', ex); } catch {}
 
       // 캐시 저장 (validItems + 제외 스냅샷 포함)
       const cached = { items: results, updatedAt: new Date().toISOString(), rate, trackerSnapshot: trk, validItems, excludeSnapshot: [...exSet], correctionsSnapshot: corrections };
       await dbStoreSet(`soldout_analysis_cached_${today}`, cached);
+      // 일 품절률 영구 스냅샷 (기회손실률 등 전체 필드 포함) — 업데이트 버튼 반영 상태로 저장
+      try { const ex = await dbStoreGet('soldout_analysis_rate_snapshots') || {}; const fullSnap = await computeDaySnapshotFromCache(today, cached); ex[today] = fullSnap ? { ...(ex[today] || {}), ...fullSnap, computedAt: Date.now() } : { date: today, total: rTotal, soldout: rSold, rate }; await dbStoreSet('soldout_analysis_rate_snapshots', ex); } catch {}
       setCachedResult(cached); setLastUpdatedAt(cached.updatedAt); setExcludeSet(exSet);
       showToast('success', '업데이트 완료', `${results.length}개 품절/위기 품목 갱신`);
     } catch (e) { console.error(e); showToast('error', '실패', '스프레드시트 연동 오류'); }

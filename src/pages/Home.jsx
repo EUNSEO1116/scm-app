@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect, useCallback, Fragment } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { dbSaveCalendar, dbGetCalendar, dbStoreGet, dbStoreSet } from '../utils/dbApi';
-import { computeSoldoutRateSnapshots } from '../utils/soldoutCache';
+import { ensureDailyRateSnapshots } from '../utils/soldoutCache';
 
 const SHEET_ID = '1NXhW_gG0b-gXuVqrhbY9ErWi8uO_7pXIy-NTo4FbE1I';
 const CSV_ORDER = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent('발주장부')}`;
@@ -365,7 +365,7 @@ export default function Home() {
 
         // 캐시 버전: 새 패널(가용/장기/품절률 요약) 데이터 포함 버전.
         // 구버전 캐시면 시각과 무관하게 딱 1회 강제 재계산 → 이후 정상(내일 12시) 스케줄 복귀.
-        const CACHE_VERSION = 4;
+        const CACHE_VERSION = 7;
 
         // DB 캐시 확인
         const cached = await dbStoreGet('dashboard_cache').catch(() => null);
@@ -452,17 +452,21 @@ export default function Home() {
         const availableCost = totalCost - longTermCost;
 
         let soldoutRate = null;
-        let rateView = { avg: null, dayCount: 0, daily: [] };
+        let rateView = { avg: null, avgOpp: null, dayCount: 0, daily: [] };
         try {
           // 이번 달 데이터 있는 날(평일 정식 + 주말 원천)의 "일별 품절률 평균"
+          // 영구 저장된 일 품절률 스냅샷을 읽는다(매일 12시 1회 계산·저장, 이후 읽기만).
           // 분모 = 데이터 있는 날 수 / 제외 = 그 날짜 excludeSnapshot 그대로
           const prefix = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}`;
           const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-          const snaps = await computeSoldoutRateSnapshots(`${prefix}01`, `${prefix}${String(lastDay).padStart(2, '0')}`, { withItems: true });
-          const rates = Object.values(snaps).map(s => s.rate);
+          const store = await ensureDailyRateSnapshots(`${prefix}01`, `${prefix}${String(lastDay).padStart(2, '0')}`);
+          const snaps = Object.values(store).filter(s => s.date && String(s.date).startsWith(prefix));
+          const rates = snaps.map(s => s.rate);
           if (rates.length > 0) soldoutRate = Math.round(rates.reduce((a, b) => a + b, 0) / rates.length * 100) / 100;
-          const daily = Object.values(snaps).sort((a, b) => String(b.date).localeCompare(String(a.date)));
-          rateView = { avg: soldoutRate, dayCount: daily.length, daily };
+          const oppRates = snaps.map(s => s.oppRate ?? 0);
+          const avgOpp = oppRates.length > 0 ? Math.round(oppRates.reduce((a, b) => a + b, 0) / oppRates.length * 100) / 100 : null;
+          const daily = snaps.slice().sort((a, b) => String(b.date).localeCompare(String(a.date)));
+          rateView = { avg: soldoutRate, avgOpp, dayCount: daily.length, daily };
         } catch {}
 
         // 가용재고 요약: 일평균판매(30일합/데이터일수) 기준 그룹
@@ -638,7 +642,7 @@ export default function Home() {
         .home-dash-btn { cursor:pointer; border-radius:12px; padding:16px 12px; text-align:center; transition:all .14s; background:#fff; border:2px solid #e2e8f0; box-shadow:0 1px 4px rgba(0,0,0,.06); }
         .home-dash-btn:hover { transform:translateY(-2px); box-shadow:0 6px 16px rgba(0,0,0,.12); }
         .home-sum-table { width:100%; border-collapse:collapse; font-size:13px; }
-        .home-sum-table th { background:#f4f6f8; color:#5f6368; font-weight:700; padding:9px 10px; border:1px solid #e3e7eb; text-align:center; white-space:nowrap; }
+        .home-sum-table th { background:#f4f6f8; color:#5f6368; font-weight:700; padding:9px 10px; border:1px solid #e3e7eb; text-align:center; white-space:nowrap; position:sticky; top:0; z-index:3; }
         .home-sum-table td { padding:8px 10px; border:1px solid #eceff1; color:#333; }
       `}</style>
 
@@ -765,15 +769,27 @@ export default function Home() {
                     <div style={{ fontSize: 12, color: '#64748b', fontWeight: 600, marginBottom: 6 }}>이번 달 평균 품절률</div>
                     <div style={{ fontSize: 30, fontWeight: 800, color: '#64748b' }}>{panelData.rateView.avg !== null ? `${panelData.rateView.avg}%` : '—'}</div>
                   </div>
+                  <div style={{ flex: 1, minWidth: 180, background: '#fff7ed', borderRadius: 12, padding: '18px 20px', border: '1px solid #fed7aa' }}>
+                    <div style={{ fontSize: 12, color: '#c2410c', fontWeight: 600, marginBottom: 6 }}>이번 달 평균 기회손실률</div>
+                    <div style={{ fontSize: 30, fontWeight: 800, color: '#ea580c' }}>{panelData.rateView.avgOpp != null ? `${panelData.rateView.avgOpp}%` : '—'}</div>
+                  </div>
                   <div style={{ flex: 1, minWidth: 180, background: '#fff', borderRadius: 12, padding: '18px 20px', border: '1px solid #e2e8f0' }}>
                     <div style={{ fontSize: 12, color: '#64748b', fontWeight: 600, marginBottom: 6 }}>집계된 날 수</div>
                     <div style={{ fontSize: 30, fontWeight: 800, color: '#334155' }}>{panelData.rateView.dayCount}일</div>
                   </div>
                 </div>
                 <div style={{ maxHeight: 420, overflow: 'auto' }}>
-                  <table className="home-sum-table">
+                  <table className="home-sum-table" style={{ tableLayout: 'fixed' }}>
+                    <colgroup>
+                      <col style={{ width: 10 }} />
+                      <col style={{ width: '22%' }} />
+                      <col style={{ width: '15%' }} />
+                      <col style={{ width: '15%' }} />
+                      <col style={{ width: '18%' }} />
+                      <col style={{ width: '18%' }} />
+                    </colgroup>
                     <thead>
-                      <tr><th style={{ width: 24 }}></th><th>날짜</th><th>전체</th><th>품절수</th><th>품절률</th></tr>
+                      <tr><th style={{ padding: 0 }}></th><th>날짜</th><th>전체</th><th>품절수</th><th>품절률</th><th>기회손실률</th></tr>
                     </thead>
                     <tbody>
                       {panelData.rateView.daily.map(d => {
@@ -783,28 +799,42 @@ export default function Home() {
                           <Fragment key={d.date}>
                             <tr onClick={() => setExpandedDate(isOpen ? null : d.date)}
                               style={{ cursor: 'pointer', background: isOpen ? '#eef2fb' : undefined }}>
-                              <td style={{ textAlign: 'center', color: '#64748b', userSelect: 'none' }}>{isOpen ? '▼' : '▶'}</td>
+                              <td style={{ textAlign: 'center', color: '#64748b', userSelect: 'none', padding: '8px 0', fontSize: 10 }}>{isOpen ? '▼' : '▶'}</td>
                               <td style={{ textAlign: 'center' }}>{String(d.date).replace(/(\d{4})(\d{2})(\d{2})/, '$1.$2.$3')}</td>
                               <td style={{ textAlign: 'center' }}>{d.total}</td>
                               <td style={{ textAlign: 'center' }}>{d.soldout}</td>
                               <td style={{ textAlign: 'center', fontWeight: 700, color: '#d93025' }}>{d.rate}%</td>
+                              <td style={{ textAlign: 'center', fontWeight: 700, color: '#ea580c' }}>{d.oppRate ?? 0}%</td>
                             </tr>
-                            {isOpen && (
+                            {isOpen && items.length > 0 && (
+                              <>
+                                {/* 확장 섹션 헤더 + 병합된 오늘 손실 비용 (부모 컬럼에 정렬) */}
+                                <tr style={{ background: '#f1f5f9', color: '#94a3b8', fontWeight: 600, fontSize: 12 }}>
+                                  <td></td>
+                                  <td colSpan={2} style={{ padding: '6px 14px', textAlign: 'left' }}>상품</td>
+                                  <td style={{ padding: '6px 8px', textAlign: 'center' }}>손실 판매량</td>
+                                  <td style={{ padding: '6px 8px', textAlign: 'center' }}>손실비용</td>
+                                  <td rowSpan={items.length + 1} style={{ textAlign: 'center', verticalAlign: 'middle', background: '#fff7ed', borderLeft: '1px solid #e2e8f0' }}>
+                                    <div style={{ fontSize: 12, color: '#c2410c', fontWeight: 600, marginBottom: 4 }}>오늘 손실 비용</div>
+                                    <div style={{ fontSize: 18, fontWeight: 800, color: '#ea580c', fontVariantNumeric: 'tabular-nums' }}>{(d.dailyLoss ?? 0).toLocaleString()}원</div>
+                                  </td>
+                                </tr>
+                                {items.map((it, i) => (
+                                  <tr key={i} style={{ background: '#f8fafc', fontSize: 12.5 }}>
+                                    <td></td>
+                                    <td colSpan={2} style={{ padding: '5px 14px', textAlign: 'left', color: '#334155', overflowWrap: 'anywhere' }}>
+                                      <span style={{ fontWeight: 600 }}>{it.productName}</span>
+                                      {it.optionName && <span style={{ color: '#64748b' }}> · {it.optionName}</span>}
+                                    </td>
+                                    <td style={{ padding: '5px 8px', textAlign: 'center', color: '#64748b', fontVariantNumeric: 'tabular-nums' }}>{(it.avg30d ?? 0).toLocaleString()}</td>
+                                    <td style={{ padding: '5px 8px', textAlign: 'center', color: '#c2410c', fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>{(it.lossAmount ?? 0).toLocaleString()}원</td>
+                                  </tr>
+                                ))}
+                              </>
+                            )}
+                            {isOpen && items.length === 0 && (
                               <tr>
-                                <td colSpan={5} style={{ background: '#f8fafc', padding: '8px 14px' }}>
-                                  {items.length > 0 ? (
-                                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                                      {items.map((it, i) => (
-                                        <div key={i} style={{ fontSize: 12.5, color: '#334155', display: 'flex', gap: 8 }}>
-                                          <span style={{ fontWeight: 600 }}>{it.productName}</span>
-                                          {it.optionName && <span style={{ color: '#64748b' }}>· {it.optionName}</span>}
-                                        </div>
-                                      ))}
-                                    </div>
-                                  ) : (
-                                    <span style={{ fontSize: 12.5, color: '#94a3b8' }}>집계된 품절 상품이 없습니다.</span>
-                                  )}
-                                </td>
+                                <td colSpan={6} style={{ background: '#f8fafc', textAlign: 'center', color: '#94a3b8', padding: '8px 14px', fontSize: 12.5 }}>집계된 품절 상품이 없습니다.</td>
                               </tr>
                             )}
                           </Fragment>

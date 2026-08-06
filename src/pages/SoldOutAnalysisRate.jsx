@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { dbStoreGet } from '../utils/dbApi';
-import { computeSoldoutRateSnapshots } from '../utils/soldoutCache';
+import { ensureDailyRateSnapshots } from '../utils/soldoutCache';
 
 function keyToDisplay(k) {
   return `${k.slice(0, 4)}-${k.slice(4, 6)}-${k.slice(6, 8)}`;
@@ -22,11 +22,11 @@ export default function SoldOutAnalysisRate() {
     }).catch(() => {});
   }, []);
 
-  // 선택 연도: 데이터 있는 모든 날(평일 정식 + 주말 원천)만 계산
-  // 분모 = 데이터 있는 날들의 validItems 합 / 제외 = 전역 ∪ 그 날짜 excludeSnapshot (Home과 동일 로직)
+  // 선택 연도: 영구 저장된 일 품절률 스냅샷을 읽는다(매일 12시 1회 계산·저장).
+  // 저장 안 된 과거 날은 이때 채우고, 오늘은 12시 이후 1회만 계산해 저장. 이후엔 읽기만.
   useEffect(() => {
     setLoading(true);
-    computeSoldoutRateSnapshots(`${selectedYear}0101`, `${selectedYear}1231`)
+    ensureDailyRateSnapshots(`${selectedYear}0101`, `${selectedYear}1231`)
       .then(snaps => { setSnapshots(snaps); setLoading(false); })
       .catch(() => { setSnapshots({}); setLoading(false); });
   }, [selectedYear]);
@@ -43,11 +43,14 @@ export default function SoldOutAnalysisRate() {
     const months = {};
     for (const s of dailyData) {
       const m = s.date.slice(0, 6); // YYYYMM
-      if (!months[m]) months[m] = { days: 0, totalSum: 0, soldoutSum: 0, rateSum: 0 };
+      if (!months[m]) months[m] = { days: 0, totalSum: 0, soldoutSum: 0, rateSum: 0, oppSum: 0, oppLossSum: 0, denomSum: 0 };
       months[m].days++;
       months[m].totalSum += s.total;
       months[m].soldoutSum += s.soldout;
       months[m].rateSum += s.rate;
+      months[m].oppSum += (s.oppRate || 0);
+      months[m].oppLossSum += (s.oppLoss || 0);
+      months[m].denomSum += (s.actualSales || 0) + (s.oppLoss || 0);
     }
     return Object.entries(months).map(([key, v]) => ({
       key,
@@ -56,6 +59,9 @@ export default function SoldOutAnalysisRate() {
       avgTotal: Math.round(v.totalSum / v.days),
       avgSoldout: Math.round(v.soldoutSum / v.days),
       rate: v.days > 0 ? Math.round(v.rateSum / v.days * 100) / 100 : 0,
+      oppRate: v.days > 0 ? Math.round(v.oppSum / v.days * 100) / 100 : 0,
+      avgOppLoss: Math.round(v.oppLossSum / v.days),
+      avgDenom: Math.round(v.denomSum / v.days),
     })).sort((a, b) => a.key.localeCompare(b.key));
   }, [dailyData]);
 
@@ -66,11 +72,14 @@ export default function SoldOutAnalysisRate() {
       const month = parseInt(s.date.slice(4, 6));
       const q = Math.ceil(month / 3);
       const key = `${s.date.slice(0, 4)}Q${q}`;
-      if (!quarters[key]) quarters[key] = { days: 0, totalSum: 0, soldoutSum: 0, rateSum: 0, q };
+      if (!quarters[key]) quarters[key] = { days: 0, totalSum: 0, soldoutSum: 0, rateSum: 0, oppSum: 0, oppLossSum: 0, denomSum: 0, q };
       quarters[key].days++;
       quarters[key].totalSum += s.total;
       quarters[key].soldoutSum += s.soldout;
       quarters[key].rateSum += s.rate;
+      quarters[key].oppSum += (s.oppRate || 0);
+      quarters[key].oppLossSum += (s.oppLoss || 0);
+      quarters[key].denomSum += (s.actualSales || 0) + (s.oppLoss || 0);
     }
     return Object.entries(quarters).map(([key, v]) => ({
       key,
@@ -79,6 +88,9 @@ export default function SoldOutAnalysisRate() {
       avgTotal: Math.round(v.totalSum / v.days),
       avgSoldout: Math.round(v.soldoutSum / v.days),
       rate: v.days > 0 ? Math.round(v.rateSum / v.days * 100) / 100 : 0,
+      oppRate: v.days > 0 ? Math.round(v.oppSum / v.days * 100) / 100 : 0,
+      avgOppLoss: Math.round(v.oppLossSum / v.days),
+      avgDenom: Math.round(v.denomSum / v.days),
     })).sort((a, b) => a.key.localeCompare(b.key));
   }, [dailyData]);
 
@@ -89,11 +101,14 @@ export default function SoldOutAnalysisRate() {
       const month = parseInt(s.date.slice(4, 6));
       const h = month <= 6 ? 1 : 2;
       const key = `${s.date.slice(0, 4)}H${h}`;
-      if (!halves[key]) halves[key] = { days: 0, totalSum: 0, soldoutSum: 0, rateSum: 0, h };
+      if (!halves[key]) halves[key] = { days: 0, totalSum: 0, soldoutSum: 0, rateSum: 0, oppSum: 0, oppLossSum: 0, denomSum: 0, h };
       halves[key].days++;
       halves[key].totalSum += s.total;
       halves[key].soldoutSum += s.soldout;
       halves[key].rateSum += s.rate;
+      halves[key].oppSum += (s.oppRate || 0);
+      halves[key].oppLossSum += (s.oppLoss || 0);
+      halves[key].denomSum += (s.actualSales || 0) + (s.oppLoss || 0);
     }
     return Object.entries(halves).map(([key, v]) => ({
       key,
@@ -102,6 +117,9 @@ export default function SoldOutAnalysisRate() {
       avgTotal: Math.round(v.totalSum / v.days),
       avgSoldout: Math.round(v.soldoutSum / v.days),
       rate: v.days > 0 ? Math.round(v.rateSum / v.days * 100) / 100 : 0,
+      oppRate: v.days > 0 ? Math.round(v.oppSum / v.days * 100) / 100 : 0,
+      avgOppLoss: Math.round(v.oppLossSum / v.days),
+      avgDenom: Math.round(v.denomSum / v.days),
     })).sort((a, b) => a.key.localeCompare(b.key));
   }, [dailyData]);
 
@@ -109,6 +127,7 @@ export default function SoldOutAnalysisRate() {
 
   const rateColor = (rate) => rate > 10 ? '#d93025' : rate > 5 ? '#e65100' : '#2e7d32';
   const rateLabel = (rate) => rate > 10 ? '위험' : rate > 5 ? '주의' : '양호';
+  const oppLabel = viewMode === 'monthly' ? '월 기회손실률' : viewMode === 'quarterly' ? '분기 기회손실률' : '반기 기회손실률';
 
   if (loading) {
     return (
@@ -166,6 +185,13 @@ export default function SoldOutAnalysisRate() {
               <div className="sub">
                 품절 {d.avgSoldout} / {d.avgTotal} (일평균) · {d.days}일 기록
               </div>
+              <div style={{ paddingTop: 4, borderTop: '1px solid var(--border)' }}>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, fontSize: 12 }}>
+                  <span style={{ color: 'var(--text-secondary)', fontWeight: 600 }}>{oppLabel}</span>
+                  <span style={{ fontWeight: 800, color: rateColor(d.oppRate) }}>{d.oppRate}%</span>
+                </div>
+                <div className="sub">{d.avgOppLoss.toLocaleString()} / {d.avgDenom.toLocaleString()} (일평균)</div>
+              </div>
             </div>
           ))}
         </div>
@@ -178,24 +204,30 @@ export default function SoldOutAnalysisRate() {
             일별 품절률 (최근 30일)
           </div>
           <div className="table-wrapper" style={{ maxHeight: 'calc(100vh - 380px)', overflowY: 'auto' }}>
-            <table className="data-table">
+            <table className="data-table" style={{ textAlign: 'center' }}>
               <thead>
                 <tr>
-                  <th>날짜</th>
-                  <th>전체 품목</th>
-                  <th>품절 품목</th>
-                  <th>품절률</th>
-                  <th>상태</th>
+                  <th style={{ textAlign: 'center' }}>날짜</th>
+                  <th style={{ textAlign: 'center' }}>전체 품목</th>
+                  <th style={{ textAlign: 'center' }}>품절 품목</th>
+                  <th style={{ textAlign: 'center' }}>품절률</th>
+                  <th style={{ textAlign: 'center' }}>분자(추정손실)</th>
+                  <th style={{ textAlign: 'center' }}>분모(잠재수요)</th>
+                  <th style={{ textAlign: 'center' }}>일일 기회손실률</th>
+                  <th style={{ textAlign: 'center' }}>상태</th>
                 </tr>
               </thead>
               <tbody>
                 {[...dailyData].reverse().slice(0, 30).map(s => (
                   <tr key={s.date}>
-                    <td>{keyToDisplay(s.date)}</td>
-                    <td className="num">{s.total.toLocaleString()}</td>
-                    <td className="num" style={{ color: '#c5221f', fontWeight: 600 }}>{s.soldout.toLocaleString()}</td>
-                    <td className="num" style={{ color: rateColor(s.rate), fontWeight: 700 }}>{s.rate}%</td>
-                    <td>
+                    <td style={{ textAlign: 'center' }}>{keyToDisplay(s.date)}</td>
+                    <td style={{ textAlign: 'center', fontVariantNumeric: 'tabular-nums' }}>{s.total.toLocaleString()}</td>
+                    <td style={{ textAlign: 'center', fontVariantNumeric: 'tabular-nums', color: '#c5221f', fontWeight: 600 }}>{s.soldout.toLocaleString()}</td>
+                    <td style={{ textAlign: 'center', fontVariantNumeric: 'tabular-nums', color: rateColor(s.rate), fontWeight: 700 }}>{s.rate}%</td>
+                    <td style={{ textAlign: 'center', fontVariantNumeric: 'tabular-nums' }}>{(s.oppLoss ?? 0).toLocaleString()}</td>
+                    <td style={{ textAlign: 'center', fontVariantNumeric: 'tabular-nums' }}>{Math.round((s.actualSales ?? 0) + (s.oppLoss ?? 0)).toLocaleString()}</td>
+                    <td style={{ textAlign: 'center', fontVariantNumeric: 'tabular-nums', color: rateColor(s.oppRate ?? 0), fontWeight: 700 }}>{s.oppRate ?? 0}%</td>
+                    <td style={{ textAlign: 'center' }}>
                       <span className="alert-badge" style={{
                         background: s.rate > 10 ? '#fce8e6' : s.rate > 5 ? '#fff3e0' : '#e6f4ea',
                         color: rateColor(s.rate),
