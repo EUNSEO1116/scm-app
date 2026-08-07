@@ -5,7 +5,6 @@ import { ensureDailyRateSnapshots } from '../utils/soldoutCache';
 
 const SHEET_ID = '1NXhW_gG0b-gXuVqrhbY9ErWi8uO_7pXIy-NTo4FbE1I';
 const CSV_ORDER = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent('발주장부')}`;
-const CSV_DAILY = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent('일일 판매량')}`;
 const TSV_CALC = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=tsv&gid=1349677364`;
 const CSV_SPECIAL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent('특별 관리 상품')}`;
 const CSV_BARCODE = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent('쿠팡바코드')}`;
@@ -126,7 +125,7 @@ export default function Home() {
   const [fbcEvents, setFbcEvents] = useState(() => loadCachedEvents());
   const [selectedDay, setSelectedDay] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [alerts, setAlerts] = useState({ newSurge: [], checkCount: 0, syncCount: 0 });
+  const [alerts, setAlerts] = useState({ checkCount: 0, syncCount: 0 });
   const [dragData, setDragData] = useState(null);
   const [dragOverKey, setDragOverKey] = useState(null);
   const [dashboardData, setDashboardData] = useState({ availableCount: 0, availableCost: 0, longTermCount: 0, longTermCost: 0, soldoutRate: null });
@@ -136,40 +135,8 @@ export default function Home() {
   const [addingDay, setAddingDay] = useState(null); // 메모 추가할 날짜 키
   const [memoText, setMemoText] = useState('');
 
-  // 알림 데이터 로드: 신규 상품 판매 급증
+  // 알림 데이터 로드
   const fetchAlerts = useCallback(async () => {
-    try {
-      const res = await fetch(CSV_DAILY);
-      if (!res.ok) return;
-      const csv = await res.text();
-      const lines = csv.split('\n').filter(l => l.trim());
-      if (lines.length < 2) return;
-
-      const surgeItems = [];
-      for (let i = 1; i < lines.length; i++) {
-        const cols = parseCsvRow(lines[i]);
-        const status = (cols[5] || '').trim();
-        if (status !== '신규') continue;
-
-        const productName = (cols[3] || '').trim();
-        const optionName = (cols[4] || '').trim();
-        // G~L열: 6일전~1일전 (인덱스 6~11)
-        const days = [6,7,8,9,10,11].map(j => Number(cols[j]) || 0);
-        const curr = days[5]; // 1일전 (L열)
-        const prevDays = days.slice(0, 5); // 6일전~2일전
-        const avg = prevDays.reduce((a,b) => a+b, 0) / prevDays.length;
-        const max = Math.max(...prevDays);
-
-        // 급증 기준: 1일전이 4개 이상 AND (평균의 2배 이상 OR 최대값보다 3개 이상 많음)
-        if (curr >= 4 && (avg > 0 && curr >= avg * 2 || curr >= max + 3)) {
-          surgeItems.push({ productName, optionName, avg: Math.round(avg * 10) / 10, curr, diff: curr - Math.round(avg) });
-        }
-      }
-      // 증가량 높은 순 정렬
-      surgeItems.sort((a, b) => b.diff - a.diff);
-      setAlerts(prev => ({ ...prev, newSurge: surgeItems }));
-    } catch (e) { /* ignore */ }
-
     // 발주장부 확인필요 수 계산
     try {
       const [orderRes, specialRes] = await Promise.all([fetch(CSV_ORDER), fetch(CSV_SPECIAL)]);

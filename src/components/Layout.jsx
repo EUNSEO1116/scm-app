@@ -1,28 +1,6 @@
 import { NavLink, useLocation } from 'react-router-dom';
 import { useState, useEffect } from 'react';
-
-const SHEET_ID = '1NXhW_gG0b-gXuVqrhbY9ErWi8uO_7pXIy-NTo4FbE1I';
-const CSV_DAILY = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent('일일 판매량')}`;
-
-function parseCsvRow(line) {
-  const result = [];
-  let current = '';
-  let inQuotes = false;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    if (inQuotes) {
-      if (ch === '"' && line[i + 1] === '"') { current += '"'; i++; }
-      else if (ch === '"') inQuotes = false;
-      else current += ch;
-    } else {
-      if (ch === '"') inQuotes = true;
-      else if (ch === ',') { result.push(current); current = ''; }
-      else current += ch;
-    }
-  }
-  result.push(current);
-  return result;
-}
+import { getSurgeForDisplay } from '../utils/salesSurge.js';
 
 const navItems = [
   { id: 'inventory', label: '재고관리', children: [
@@ -124,30 +102,13 @@ export default function Layout({ children }) {
 
   const isHome = location.pathname === '/';
 
-  // 신규 판매 급증 건수 계산 (상단 매출관리 메뉴 뱃지)
+  // 신규 판매 급증 건수 (상단 매출관리 메뉴 뱃지)
+  // 품절분석>데이터 업로드(오늘자) 시 저장된 스냅샷을 읽어 표시. 다음 업로드 전까지 유지.
   useEffect(() => {
     let alive = true;
-    (async () => {
-      try {
-        const res = await fetch(CSV_DAILY);
-        if (!res.ok) return;
-        const csv = await res.text();
-        const lines = csv.split('\n').filter(l => l.trim());
-        if (lines.length < 2) return;
-        let count = 0;
-        for (let i = 1; i < lines.length; i++) {
-          const cols = parseCsvRow(lines[i]);
-          if ((cols[5] || '').trim() !== '신규') continue;
-          const days = [6, 7, 8, 9, 10, 11].map(j => Number(cols[j]) || 0);
-          const curr = days[5];
-          const prevDays = days.slice(0, 5);
-          const avg = prevDays.reduce((a, b) => a + b, 0) / prevDays.length;
-          const max = Math.max(...prevDays);
-          if (curr >= 4 && (avg > 0 && curr >= avg * 2 || curr >= max + 3)) count++;
-        }
-        if (alive) setSurgeCount(count);
-      } catch { /* ignore */ }
-    })();
+    getSurgeForDisplay().then(snap => {
+      if (alive && snap) setSurgeCount(snap.count || 0);
+    });
     return () => { alive = false; };
   }, []);
 

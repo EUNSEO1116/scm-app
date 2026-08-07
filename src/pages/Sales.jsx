@@ -2,6 +2,7 @@ import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { useLocation } from 'react-router-dom';
 import { fetchCautionItems, saveCautionItem, deleteCautionItem } from '../sheetSync.js';
 import { dbStoreGet, dbStoreSet } from '../utils/dbApi.js';
+import { getSurgeForDisplay } from '../utils/salesSurge.js';
 
 const SHEET_ID = '1NXhW_gG0b-gXuVqrhbY9ErWi8uO_7pXIy-NTo4FbE1I';
 const CSV_DAILY = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent('일일 판매량')}`;
@@ -66,18 +67,6 @@ function greenTint(val, maxVal) {
   return `rgb(${r},${g},${b})`;
 }
 
-// Surge criteria:
-// status === '신규' AND curr >= 4 AND (curr >= avg(6일전~2일전)*2 OR curr >= max(6일전~2일전)+3)
-function isSurge(row) {
-  if (row.status !== '신규') return false;
-  const curr = row.d1; // 1일전
-  if (curr < 4) return false;
-  const prevDays = [row.d6, row.d5, row.d4, row.d3, row.d2]; // 6일전~2일전
-  const avg = prevDays.reduce((a, b) => a + b, 0) / prevDays.length;
-  const max = Math.max(...prevDays);
-  return (avg > 0 && curr >= avg * 2) || curr >= max + 3;
-}
-
 // Sort icon component
 function SortIcon({ col, sortKey, sortDir }) {
   if (sortKey !== col) return <span className="sort-icon">↕</span>;
@@ -135,6 +124,7 @@ export default function Sales() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [lastUpdated, setLastUpdated] = useState(null);
+  const [surgeItems, setSurgeItems] = useState([]);
 
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
@@ -297,18 +287,15 @@ export default function Sales() {
     return { total, todaySales, yesterdaySales, diff, diffPct, avgDaily };
   }, [rows]);
 
-  // Surge items
-  const surgeItems = useMemo(() => {
-    return rows
-      .filter(isSurge)
-      .map(r => {
-        const prevDays = [r.d6, r.d5, r.d4, r.d3, r.d2];
-        const avg = prevDays.reduce((a, b) => a + b, 0) / prevDays.length;
-        const max = Math.max(...prevDays);
-        return { ...r, avg: Math.round(avg * 10) / 10, max, diff: r.d1 - Math.round(avg) };
-      })
-      .sort((a, b) => b.diff - a.diff);
-  }, [rows]);
+  // 신규 판매 급증: 품절분석>데이터 업로드(오늘자) 시 저장된 스냅샷을 읽어 표시.
+  // 다음 업로드 전까지 마지막 저장분을 그대로 유지.
+  useEffect(() => {
+    let alive = true;
+    getSurgeForDisplay().then(snap => {
+      if (alive && snap?.items) setSurgeItems(snap.items);
+    });
+    return () => { alive = false; };
+  }, []);
 
   // Status options
   const statusOptions = useMemo(() => {
