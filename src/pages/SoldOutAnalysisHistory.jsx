@@ -5,6 +5,10 @@ const EXCLUDE_KEYWORDS = ['최종마감', '품질확인서', '마감대상', '�
 function shouldExclude(s) { return s ? EXCLUDE_KEYWORDS.some(kw => s.includes(kw)) : false; }
 function todayStr() { return new Date().toISOString().slice(0, 10).replace(/-/g, ''); }
 function dateToKey(d) { return `${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}`; }
+// YYYYMMDD 키를 days만큼 이동
+function shiftKey(k, days) { const d = new Date(+k.slice(0,4), +k.slice(4,6)-1, +k.slice(6,8)); d.setDate(d.getDate()+days); return dateToKey(d); }
+// 표시(판매)일 기준 어제 = 저장(업로드)일 오늘의 하루 전
+function yesterdayStr() { return shiftKey(todayStr(), -1); }
 function keyToDisplay(k) { return `${k.slice(0,4)}-${k.slice(4,6)}-${k.slice(6,8)}`; }
 function fmt(n) { if (n == null) return '-'; return Number(n).toLocaleString('ko-KR'); }
 
@@ -22,13 +26,14 @@ const COLUMNS = [
   { key: 'productName', label: '상품명', width: '20%', align: 'left', sortable: true },
   { key: 'optionName', label: '옵션명', width: '12%', align: 'left', sortable: true },
   { key: 'coupangStock', label: '쿠팡재고', width: '10%', align: 'right', sortable: true },
-  { key: 'salesQty', label: '오늘 판매수량', width: '10%', align: 'right', sortable: true },
-  { key: 'revenue', label: '오늘 매출', width: '13%', align: 'right', sortable: true },
-  { key: 'netProfit', label: '오늘 순이익금', width: '13%', align: 'right', sortable: true },
+  { key: 'salesQty', label: '전일 판매수량', width: '10%', align: 'right', sortable: true },
+  { key: 'revenue', label: '전일 매출', width: '13%', align: 'right', sortable: true },
+  { key: 'netProfit', label: '전일 순이익금', width: '13%', align: 'right', sortable: true },
 ];
 
 export default function SoldOutAnalysisHistory() {
-  const [viewingDate, setViewingDate] = useState(todayStr());
+  // viewingDate = 화면 표시(판매)일 기준. 기본값 = 어제.
+  const [viewingDate, setViewingDate] = useState(yesterdayStr());
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [showCalendar, setShowCalendar] = useState(false);
@@ -38,22 +43,24 @@ export default function SoldOutAnalysisHistory() {
   const [sortDir, setSortDir] = useState('desc');
   const [statusFilter, setStatusFilter] = useState('전체');
 
-  const loadData = async (dateKey) => {
-    const isToday = dateKey === todayStr();
+  // salesKey(표시일) → 저장키(업로드일)는 하루 뒤. DB/업로드는 그대로 업로드 날짜 키 유지.
+  const loadData = async (salesKey) => {
+    const storageKey = shiftKey(salesKey, 1);
+    const isLatest = storageKey === todayStr();
     // 과거 날짜는 세션 캐시가 있으면 재요청 없이 즉시 표시
-    if (!isToday && _blobCache.has(dateKey)) {
-      setData(_blobCache.get(dateKey));
+    if (!isLatest && _blobCache.has(storageKey)) {
+      setData(_blobCache.get(storageKey));
       setLoading(false);
       return;
     }
     setLoading(true);
-    const result = await dbStoreGet(`soldout_analysis_${dateKey}`);
-    if (!isToday) _blobCache.set(dateKey, result);
+    const result = await dbStoreGet(`soldout_analysis_${storageKey}`);
+    if (!isLatest) _blobCache.set(storageKey, result);
     setData(result);
     setLoading(false);
   };
 
-  useEffect(() => { loadData(todayStr()); }, []);
+  useEffect(() => { loadData(yesterdayStr()); }, []);
 
   const handleSort = (key) => {
     if (sortKey === key) {
@@ -110,7 +117,8 @@ export default function SoldOutAnalysisHistory() {
   const firstDay = new Date(calYear, calMonth, 1).getDay();
   const daysInMonth = new Date(calYear, calMonth + 1, 0).getDate();
   const calendarDays = useMemo(() => { const d = []; for (let i = 0; i < firstDay; i++) d.push(null); for (let i = 1; i <= daysInMonth; i++) d.push(i); return d; }, [firstDay, daysInMonth]);
-  const todayKey = todayStr();
+  // 선택 가능한 최신 표시일 = 어제 (오늘/미래는 선택 불가)
+  const latestKey = yesterdayStr();
 
   const handleCalendarDateClick = async (day) => {
     if (!day) return;
@@ -120,9 +128,9 @@ export default function SoldOutAnalysisHistory() {
     await loadData(key);
   };
 
-  const goToToday = async () => {
-    setViewingDate(todayStr());
-    await loadData(todayStr());
+  const goToLatest = async () => {
+    setViewingDate(yesterdayStr());
+    await loadData(yesterdayStr());
   };
 
   const sortArrow = (key) => {
@@ -140,7 +148,7 @@ export default function SoldOutAnalysisHistory() {
           <div className="filter-bar">
             <span style={{ fontSize: 14, fontWeight: 700 }}>
               {keyToDisplay(viewingDate)}
-              {viewingDate === todayKey && <span style={{ fontSize: 12, color: 'var(--primary)', marginLeft: 6 }}>오늘</span>}
+              {viewingDate === latestKey && <span style={{ fontSize: 12, color: 'var(--primary)', marginLeft: 6 }}>전일</span>}
             </span>
             {data && <>
               <span style={{ fontSize: 12, color: 'var(--text-secondary)', background: '#f1f3f4', padding: '2px 8px', borderRadius: 4 }}>{fmt(totalCount)}개</span>
@@ -180,10 +188,11 @@ export default function SoldOutAnalysisHistory() {
                 {calendarDays.map((day, idx) => {
                   if (!day) return <div key={`e${idx}`} />;
                   const key = dateToKey(new Date(calYear, calMonth, day));
-                  const isToday = key === todayKey, isSel = key === viewingDate;
-                  return <div key={key} onClick={() => handleCalendarDateClick(day)} style={{ padding: '8px 2px', borderRadius: 8, cursor: 'pointer', fontSize: 13, background: isSel ? 'var(--primary)' : isToday ? 'var(--primary-light)' : 'transparent', color: isSel ? '#fff' : isToday ? 'var(--primary)' : 'var(--text)', fontWeight: isToday || isSel ? 700 : 400, border: isToday && !isSel ? '2px solid var(--primary)' : '2px solid transparent' }}
-                    onMouseOver={e => { if (!isSel) e.currentTarget.style.background = '#f1f3f4'; }}
-                    onMouseOut={e => { if (!isSel) e.currentTarget.style.background = isToday ? 'var(--primary-light)' : 'transparent'; }}
+                  const isLatest = key === latestKey, isSel = key === viewingDate;
+                  const disabled = key > latestKey; // 오늘·미래(표시일 기준)는 선택 불가
+                  return <div key={key} onClick={disabled ? undefined : () => handleCalendarDateClick(day)} style={{ padding: '8px 2px', borderRadius: 8, cursor: disabled ? 'not-allowed' : 'pointer', fontSize: 13, background: isSel ? 'var(--primary)' : isLatest ? 'var(--primary-light)' : 'transparent', color: disabled ? '#ccc' : isSel ? '#fff' : isLatest ? 'var(--primary)' : 'var(--text)', fontWeight: isLatest || isSel ? 700 : 400, border: isLatest && !isSel ? '2px solid var(--primary)' : '2px solid transparent' }}
+                    onMouseOver={e => { if (!isSel && !disabled) e.currentTarget.style.background = '#f1f3f4'; }}
+                    onMouseOut={e => { if (!isSel && !disabled) e.currentTarget.style.background = isLatest ? 'var(--primary-light)' : 'transparent'; }}
                   >{day}</div>;
                 })}
               </div>
@@ -198,8 +207,8 @@ export default function SoldOutAnalysisHistory() {
           <div style={{ fontSize: 24, marginBottom: 8 }}>📊</div>
           <div style={{ fontSize: 14, fontWeight: 600 }}>{keyToDisplay(viewingDate)} 업로드 데이터가 없습니다</div>
           <div style={{ fontSize: 13, marginTop: 4 }}>데이터 업로드 메뉴에서 해당 날짜의 엑셀을 먼저 업로드해주세요.</div>
-          {viewingDate !== todayStr() && (
-            <button onClick={goToToday} style={{ marginTop: 12, padding: '6px 16px', borderRadius: 6, border: '1px solid var(--primary)', background: '#fff', color: 'var(--primary)', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>오늘로 돌아가기</button>
+          {viewingDate !== yesterdayStr() && (
+            <button onClick={goToLatest} style={{ marginTop: 12, padding: '6px 16px', borderRadius: 6, border: '1px solid var(--primary)', background: '#fff', color: 'var(--primary)', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>전일로 돌아가기</button>
           )}
         </div>
       )}
