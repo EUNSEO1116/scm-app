@@ -125,6 +125,7 @@ export default function Sales() {
   const [error, setError] = useState(null);
   const [lastUpdated, setLastUpdated] = useState(null);
   const [surgeItems, setSurgeItems] = useState([]);
+  const [surgeAt, setSurgeAt] = useState(null);
 
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
@@ -292,7 +293,9 @@ export default function Sales() {
   useEffect(() => {
     let alive = true;
     getSurgeForDisplay().then(snap => {
-      if (alive && snap?.items) setSurgeItems(snap.items);
+      if (!alive) return;
+      if (snap?.items) setSurgeItems(snap.items);
+      setSurgeAt(snap?.calculatedAt || null);
     });
     return () => { alive = false; };
   }, []);
@@ -407,6 +410,23 @@ export default function Sales() {
                     {surgeItems.length}건
                   </span>
                 )}
+                {surgeAt && (() => {
+                  const d = new Date(surgeAt);
+                  const isToday = d.toDateString() === new Date().toDateString();
+                  const hh = String(d.getHours()).padStart(2, '0');
+                  const mm = String(d.getMinutes()).padStart(2, '0');
+                  const dateStr = `${d.getMonth() + 1}/${d.getDate()} ${hh}:${mm}`;
+                  return (
+                    <span style={{
+                      fontSize: 11, fontWeight: 700,
+                      color: isToday ? '#1a8a1a' : '#c00',
+                      background: isToday ? '#e6f4ea' : '#fdecec',
+                      padding: '2px 8px', borderRadius: 10, whiteSpace: 'nowrap',
+                    }}>
+                      {isToday ? `오늘 ${hh}:${mm} 갱신` : `${dateStr} 갱신 (오늘 미갱신)`}
+                    </span>
+                  );
+                })()}
               </h2>
               <span style={{ fontSize: 12, color: '#5f6368' }}>
                 신규 상품 중 1일전 판매량이 이전 5일 평균의 2배 이상 or 최대값+3 이상
