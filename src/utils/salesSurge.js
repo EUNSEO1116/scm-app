@@ -34,28 +34,42 @@ function safeNum(v) {
   return isNaN(n) ? 0 : n;
 }
 
-// 급증 기준: status === '신규' AND 1일전 >= 4
-//   AND (1일전 >= 이전5일(6일전~2일전)평균 * 2 OR 1일전 >= 이전5일 최대값 + 3)
-function isSurge(d1, prevDays) {
+// 신규 제외 탭에서 빼는 상태 키워드(다른 페이지들과 통일, 부분포함 매칭)
+const EXCLUDE_KEYWORDS = ['최종마감', '품질확인서', '마감대상', '덤핑', '반출', '지재권'];
+function shouldExclude(s) { return s ? EXCLUDE_KEYWORDS.some(kw => s.includes(kw)) : false; }
+
+// 급증 기준: 1일전 >= 4
+//   AND (1일전 >= 이전5일(6일전~2일전)평균 * 2 OR 1일전 >= 이전5일 최대값 + maxBonus)
+//   minAvgMult: 평균×2 조건이 적용되는 최소 평균값. 신규 제외 탭은 10(평균<10이면 ×2로는 급증 판정 안 함).
+function isSurge(d1, prevDays, maxBonus = 3, minAvgMult = 0) {
   if (d1 < 4) return false;
   const avg = prevDays.reduce((a, b) => a + b, 0) / prevDays.length;
   const max = Math.max(...prevDays);
-  return (avg > 0 && d1 >= avg * 2) || d1 >= max + 3;
+  const multOk = avg > 0 && avg >= minAvgMult && d1 >= avg * 2;
+  return multOk || d1 >= max + maxBonus;
 }
 
-// CSV_DAILY(일일 판매량)에서 급증 품목을 계산해 { count, items, calculatedAt } 반환.
-// items: 매출 카드 렌더링에 필요한 필드(바코드/상품명/옵션명/d6~d1/avg/max/diff) 포함.
+// CSV_DAILY(일일 판매량)에서 급증 품목을 계산해
+//   { count, items, otherCount, otherItems, calculatedAt } 반환.
+//   items      : 상태 '신규' 급증(최대값+3 기준) — 배지/기본 화면
+//   otherItems : 신규 제외 + 제외키워드 미포함 급증(최대값+8 기준) — 추가 탭
+// 각 item은 매출 카드 렌더링 필드(바코드/상품명/옵션명/d6~d1/avg/max/diff) 포함.
 export async function computeSurgeSnapshot() {
   const res = await fetch(CSV_DAILY);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const csv = await res.text();
   const lines = csv.split('\n').filter(l => l.trim());
-  if (lines.length < 2) return { count: 0, items: [], calculatedAt: Date.now() };
+  if (lines.length < 2) return { count: 0, items: [], otherCount: 0, otherItems: [], calculatedAt: Date.now() };
 
   const items = [];
+  const otherItems = [];
   for (let i = 1; i < lines.length; i++) {
     const cols = parseCsvRow(lines[i]);
-    if ((cols[5] || '').trim() !== '신규') continue;
+    const status = (cols[5] || '').trim();
+    const isNew = status === '신규';
+    // 신규도 아니고 신규 제외 대상(제외키워드 포함)도 아니면 → 신규 제외 탭 후보
+    const isOther = !isNew && !shouldExclude(status);
+    if (!isNew && !isOther) continue;
 
     const d6 = safeNum(cols[6]);
     const d5 = safeNum(cols[7]);
@@ -64,11 +78,13 @@ export async function computeSurgeSnapshot() {
     const d2 = safeNum(cols[10]);
     const d1 = safeNum(cols[11]);
     const prevDays = [d6, d5, d4, d3, d2];
-    if (!isSurge(d1, prevDays)) continue;
+    const maxBonus = isNew ? 3 : 8;
+    const minAvgMult = isNew ? 0 : 10;
+    if (!isSurge(d1, prevDays, maxBonus, minAvgMult)) continue;
 
     const avg = prevDays.reduce((a, b) => a + b, 0) / prevDays.length;
     const max = Math.max(...prevDays);
-    items.push({
+    const item = {
       barcode: (cols[1] || '').trim(),
       productName: (cols[3] || '').trim(),
       optionName: (cols[4] || '').trim(),
@@ -76,10 +92,13 @@ export async function computeSurgeSnapshot() {
       avg: Math.round(avg * 10) / 10,
       max,
       diff: d1 - Math.round(avg),
-    });
+    };
+    if (isNew) items.push(item);
+    else otherItems.push(item);
   }
   items.sort((a, b) => b.diff - a.diff);
-  return { count: items.length, items, calculatedAt: Date.now() };
+  otherItems.sort((a, b) => b.diff - a.diff);
+  return { count: items.length, items, otherCount: otherItems.length, otherItems, calculatedAt: Date.now() };
 }
 
 // 급증 스냅샷 계산 후 DB에 저장(최신 1개 유지, 날짜 무관). 저장된 스냅샷 반환.

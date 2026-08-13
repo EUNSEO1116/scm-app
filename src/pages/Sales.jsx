@@ -125,6 +125,8 @@ export default function Sales() {
   const [error, setError] = useState(null);
   const [lastUpdated, setLastUpdated] = useState(null);
   const [surgeItems, setSurgeItems] = useState([]);
+  const [surgeOtherItems, setSurgeOtherItems] = useState([]);
+  const [surgeTab, setSurgeTab] = useState('new'); // 'new' | 'other'
   const [surgeAt, setSurgeAt] = useState(null);
 
   const [search, setSearch] = useState('');
@@ -295,6 +297,7 @@ export default function Sales() {
     getSurgeForDisplay().then(snap => {
       if (!alive) return;
       if (snap?.items) setSurgeItems(snap.items);
+      if (snap?.otherItems) setSurgeOtherItems(snap.otherItems);
       setSurgeAt(snap?.calculatedAt || null);
     });
     return () => { alive = false; };
@@ -392,22 +395,33 @@ export default function Sales() {
             scrollMarginTop: 80,
           }}
         >
+          {(() => {
+          const isNewTab = surgeTab === 'new';
+          const activeItems = isNewTab ? surgeItems : surgeOtherItems;
+          const tabBtnStyle = (active) => ({
+            fontSize: 13, fontWeight: 700, cursor: 'pointer',
+            padding: '5px 14px', borderRadius: 999,
+            border: active ? '1.5px solid #ff8c00' : '1.5px solid var(--border)',
+            background: active ? '#ff8c00' : '#fff',
+            color: active ? '#fff' : '#5f6368',
+          });
+          return (
           <div
             className="card"
             style={{
-              border: surgeItems.length > 0 ? '2px solid #ff8c00' : '1px solid var(--border)',
-              background: surgeItems.length > 0 ? '#fffaf4' : '#fff',
+              border: activeItems.length > 0 ? '2px solid #ff8c00' : '1px solid var(--border)',
+              background: activeItems.length > 0 ? '#fffaf4' : '#fff',
             }}
           >
-            <div className="card-header" style={{ background: surgeItems.length > 0 ? '#fff3e0' : undefined }}>
+            <div className="card-header" style={{ background: activeItems.length > 0 ? '#fff3e0' : undefined }}>
               <h2 style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                🚀 신규 판매 급증
-                {surgeItems.length > 0 && (
+                {isNewTab ? '🚀 신규 판매 급증' : '📈 신규 제외 판매 급증'}
+                {activeItems.length > 0 && (
                   <span style={{
                     background: '#ff8c00', color: '#fff', fontSize: 12, fontWeight: 700,
                     padding: '2px 10px', borderRadius: 12,
                   }}>
-                    {surgeItems.length}건
+                    {activeItems.length}건
                   </span>
                 )}
                 {surgeAt && (() => {
@@ -428,12 +442,22 @@ export default function Sales() {
                   );
                 })()}
               </h2>
-              <span style={{ fontSize: 12, color: '#5f6368' }}>
-                신규 상품 중 1일전 판매량이 이전 5일 평균의 2배 이상 or 최대값+3 이상
-              </span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <button type="button" style={tabBtnStyle(isNewTab)} onClick={() => setSurgeTab('new')}>
+                  신규{surgeItems.length > 0 ? ` ${surgeItems.length}` : ''}
+                </button>
+                <button type="button" style={tabBtnStyle(!isNewTab)} onClick={() => setSurgeTab('other')}>
+                  신규 제외{surgeOtherItems.length > 0 ? ` ${surgeOtherItems.length}` : ''}
+                </button>
+              </div>
             </div>
             <div className="card-body">
-              {surgeItems.length === 0 ? (
+              <div style={{ fontSize: 12, color: '#5f6368', marginBottom: 12 }}>
+                {isNewTab
+                  ? '신규 상품 중 1일전 판매량이 이전 5일 평균의 2배 이상 or 최대값+3 이상'
+                  : '신규 제외 상품 중 1일전 판매량이 이전 5일 평균의 2배 이상(평균 10 이상일 때만) or 최대값+8 이상'}
+              </div>
+              {activeItems.length === 0 ? (
                 <div style={{ textAlign: 'center', padding: '20px 0', color: '#aaa', fontSize: 14 }}>
                   {loading ? '로딩 중...' : '현재 급증 품목이 없습니다'}
                 </div>
@@ -443,7 +467,7 @@ export default function Sales() {
                   gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
                   gap: 14,
                 }}>
-                  {surgeItems.map((item, i) => (
+                  {activeItems.map((item, i) => (
                     <div
                       key={item.barcode || i}
                       style={{
@@ -478,6 +502,8 @@ export default function Sales() {
               )}
             </div>
           </div>
+          );
+          })()}
         </div>
 
         {/* Main Table */}
