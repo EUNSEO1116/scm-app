@@ -1215,7 +1215,7 @@ export default function SoldOutAnalysis() {
               {[
                 { key: 'riskLevel', label: '상태', style: { width: 56 } },
                 { key: 'status', label: '등급', style: { width: 44 } },
-                { key: 'optionId', label: '옵션ID' },
+                { key: 'barcode', label: '쿠팡바코드' },
                 { key: 'productName', label: '상품명', style: { maxWidth: 200 } },
                 { key: 'optionName', label: '옵션명' },
                 { key: 'arrivalEst', label: '입고예상' },
@@ -1247,7 +1247,7 @@ export default function SoldOutAnalysis() {
                     <td className="center">{r.riskLevel === '품절' && <input type="checkbox" checked={selected.has(r.optionId)} onChange={() => toggleSelect(r.optionId)} style={{ cursor: 'pointer' }} />}</td>
                     <td><span className={`alert-badge ${rc.cls}`} style={{ fontSize: 10, padding: '1px 6px' }}>{rc.emoji} {rc.label}</span></td>
                     <td><span className={`alert-badge ${r.status === '효자' ? 'normal' : r.status?.includes('신규') ? 'excess' : 'no-sales'}`} style={{ fontSize: 10, padding: '1px 6px' }}>{r.status || '-'}</span></td>
-                    <td style={{ fontSize: 11, color: '#888' }}>{r.optionId}</td>
+                    <td style={{ fontSize: 11, color: '#888' }} title={r.optionId}>{r.barcode || '-'}</td>
                     <td style={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis' }} title={r.productName}>{r.productName}</td>
                     <td>{r.optionName}</td>
                     <td className="center" style={{ fontSize: 11, color: r.arrivalEst ? '#1a73e8' : '#ccc', fontWeight: r.arrivalEst ? 600 : 400 }}>{r.arrivalEst || '-'}</td>
