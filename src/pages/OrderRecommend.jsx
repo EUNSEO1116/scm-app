@@ -24,6 +24,7 @@ const HOLT_BETA = 0.1;        // 트렌드 평활 계수
 const PEAK_MULT = 1.2;        // 시즌피크: 입고예정일이 시즌 한가운데
 const ENDING_MULT = 0.7;      // 끝물: 입고예정일이 시즌 마지막 달
 const OFFSEASON_MULT = 0.2;   // 시즌밖 입고: 시즌 종료 후 도착 — 트리클(소량)만 채움
+const SEASON_OVER_MULT = 0;   // 시즌 종료 후 도착(입고 시점에 이미 시즌 지남) — 발주 제외
 
 const VOC_ACTIVE_STATUS = ['처리중', '시작전'];
 const VOC_TARGET_TYPE = ['상품문제', '재수배'];
@@ -258,17 +259,22 @@ export default function OrderRecommend() {
 
       // 시즌 보정 계수 — 입고예정일(오늘+리드타임) 기준 판정
       const now = new Date();
-      const curM = now.getMonth() + 1;
-      // 현재 시즌 중인 상품만 입고예정일로 보정. 시즌 밖이면 baseF가 이미 비시즌 속도라 보정 없음.
+      // 입고예정월 기준으로 판정. 입고월이 시즌 밖이면 "시즌 오기 전(미리 채움 → 정상 발주)"과
+      // "시즌 지난 뒤(발주 제외)"를 앞/뒤 최근 시즌월까지의 거리로 구분한다.
       function seasonMult(period, arrival) {
         const months = parseSeasonMonths(period);
         if (!months) return 1;            // 상시(시즌 미지정)
-        if (!months.has(curM)) return 1;  // 현재 시즌 아님(시즌 전/후) → 보정 없음
         const aM = arrival.getMonth() + 1;
         const aNextM = aM === 12 ? 1 : aM + 1;
-        if (!months.has(aM)) return OFFSEASON_MULT;  // 입고예정이 시즌밖 → 트리클만 ×0.2
-        if (!months.has(aNextM)) return ENDING_MULT; // 입고예정이 시즌 마지막 달 → ×0.7
-        return PEAK_MULT;                            // 시즌 한가운데 → ×1.2
+        if (months.has(aM)) {                          // 입고월이 시즌 안
+          if (!months.has(aNextM)) return ENDING_MULT; // 시즌 마지막 달 → ×0.7
+          return PEAK_MULT;                            // 시즌 한가운데 → ×1.2
+        }
+        // 입고월이 시즌 밖 — 다음 시즌월까지(fwd) vs 지난 시즌월까지(bwd) 거리로 전/후 판정
+        let fwd = 0; for (let m = aM; fwd <= 12; ) { m = m === 12 ? 1 : m + 1; fwd++; if (months.has(m)) break; }
+        let bwd = 0; for (let m = aM; bwd <= 12; ) { m = m === 1 ? 12 : m - 1; bwd++; if (months.has(m)) break; }
+        if (fwd < bwd) return 1;           // 시즌 오기 전 도착 → 정상 발주(미리 채움)
+        return SEASON_OVER_MULT;           // 시즌 지난 뒤 도착 → 발주 제외
       }
 
       // 재고 계산기: 시트 순서 그대로 전 품목
@@ -309,13 +315,13 @@ export default function OrderRecommend() {
         let reason = '';
         let tag = '';
         let kws = [];                              // 엑셀 사유 키워드(사유1~5)
-        let isUrgent = false, isCautionRow = false;
+        let isCautionRow = false;
 
         // 최종마감·품질확인서 등 판매중 아닌 대상은 발주추천 제외
         if (shouldExclude(status)) {
           tag = '제외';
         } else {
-          // 6주 판매 예측치 F
+          // 6주 판매 예측치 F — 재고주수(4주 미만)와 무관하게 판매량(수요예측)만으로 계산
           let baseF = null;
           let method = '';
           if (optionId && appeared.has(optionId)) {
@@ -325,13 +331,12 @@ export default function OrderRecommend() {
             const weeklyVals = useBuckets.map(ks => Math.max(0, ks.reduce((s, k) => s + corrQty(k, optionId, itemsByKey[k].get(optionId) || 0), 0)));
             const down = computeTrend(dailyVals, 7).dir === 'down';
             const weighted = weightedCumForecast(weeklyVals);
-            const urgent = typeof weeksStock === 'number' && weeksStock < 4;
             const isCaution = cautionSet.has(optionId);
-            isUrgent = urgent; isCautionRow = isCaution;
-            if (urgent || isCaution) {
-              // 재고주수 4주 미만 또는 주의품목: 최근 1주 민감가중(0.5/1/2/6) — 등락 민감 반영(Holt 미사용)
+            isCautionRow = isCaution;
+            if (isCaution) {
+              // 주의품목: 최근 1주 민감가중(0.5/1/2/6) — 등락 민감 반영(Holt 미사용)
               baseF = weightedCumForecast(weeklyVals, SENSITIVE_WEIGHTS);
-              method = urgent ? '긴급민감' : '주의민감';
+              method = '주의민감';
             } else if (down && weeklyVals.length >= 3) {
               const holt = holtCumForecast(weeklyVals);
               // 우하향: Holt 예측이 평탄 가중평균을 넘지 못하게 캡 — 감소 상품 과발주 방지
@@ -349,7 +354,8 @@ export default function OrderRecommend() {
             // 입고예정일 = 오늘 + 리드타임 → 시즌 보정에 사용
             const arrivalDate = new Date(now);
             arrivalDate.setDate(arrivalDate.getDate() + leadDays);
-            const mult = seasonMult(periodOf(optionId), arrivalDate);
+            const seasonPeriod = periodOf(optionId);
+            const mult = seasonMult(seasonPeriod, arrivalDate);
             // 커버일수 = 리드타임 + 발주주기 + 안전. baseF(4주=28일 예측)를 커버일수로 비례 확대.
             // '효자' 상태 상품은 기존 안전 7일, 그 외는 15일.
             const safetyDays = status.includes(HYOJA_KEYWORD) ? SAFETY_BUFFER_DAYS_HYOJA : SAFETY_BUFFER_DAYS;
@@ -365,8 +371,6 @@ export default function OrderRecommend() {
               const fRound = Math.round(baseF);
               const methodTxt = method === 'Holt'
                 ? `우하향 추세 ${HORIZON_WEEKS}주예측 필요재고 ${fRound}개`
-                : method === '긴급민감'
-                ? `긴급(재고주수 ${weeksStock}주) 최근1주 민감가중 ${HORIZON_WEEKS}주예측 필요재고 ${fRound}개`
                 : method === '주의민감'
                 ? `주의품목 최근1주 민감가중 ${HORIZON_WEEKS}주예측 필요재고 ${fRound}개`
                 : `${HORIZON_WEEKS}주예측 필요재고 ${fRound}개`;
@@ -376,8 +380,9 @@ export default function OrderRecommend() {
               if (mult === PEAK_MULT) kws.push('시즌피크');
               else if (mult === ENDING_MULT) kws.push('끝물');
               else if (mult === OFFSEASON_MULT) kws.push('시즌밖');
+              // 시즌 입력된 상품은 시즌월을 사유에 표시(입력한 그대로)
+              if (parseSeasonMonths(seasonPeriod)) kws.push(`시즌 ${seasonPeriod}월`);
               if (leadDays > DEFAULT_LEAD_DAYS) kws.push('리드타임');
-              if (isUrgent) kws.push('긴급');
               if (isCautionRow) kws.push('주의품목');
               tag = mult === PEAK_MULT ? '시즌피크'
                 : mult === ENDING_MULT ? '끝물발주'
@@ -386,10 +391,10 @@ export default function OrderRecommend() {
               // 발주 없음. 시즌 보정(×0.7·×0.2)으로 빠졌고, 원래(시즌피크 ×1.2)였다면 발주대상이던 경우만 사유/태그 표시.
               const peakDemand = baseF * (coverDays / HORIZON_DAYS) * PEAK_MULT;
               const qPeak = Math.ceil(peakDemand - totalStock);
-              if ((mult === ENDING_MULT || mult === OFFSEASON_MULT) && qPeak > 0) {
+              if ((mult === ENDING_MULT || mult === SEASON_OVER_MULT) && qPeak > 0) {
                 const arrLabel = `${arrivalDate.getFullYear()}-${pad2(arrivalDate.getMonth() + 1)}-${pad2(arrivalDate.getDate())}`;
-                const adjTxt = mult === OFFSEASON_MULT
-                  ? `시즌(${periodOf(optionId)}) 종료 후 도착 ×0.2`
+                const adjTxt = mult === SEASON_OVER_MULT
+                  ? `시즌(${periodOf(optionId)}) 종료 후 도착 → 발주 제외`
                   : `시즌(${periodOf(optionId)}) 끝물 도착 ×0.7`;
                 reason = `원래 ${qPeak}개 발주 대상이나, 입고예정 ${arrLabel} ${adjTxt}로 보정 → 보정수요 ${demandRound} ≤ 재고 ${totalStock}, 발주안함`;
                 tag = '시즌마감보류';
@@ -543,7 +548,7 @@ export default function OrderRecommend() {
           <div style={{ marginBottom: 6 }}><b>① 데이터 매칭</b> — 재고계산기 시트의 각 상품을 <b>옵션ID</b>로 수요예측 일별 판매 데이터와 매칭합니다.</div>
           <div style={{ marginBottom: 6 }}><b>② 4주 판매 예측 (F)</b> — <b>오늘 기준 최근 7일/8~14일/15~21일/22~28일</b>로 묶어(진행 중인 최근 며칠도 항상 포함) 아래 <b>우선순위</b>로 향후 4주 판매량을 예측합니다.
             <div style={{ marginTop: 6, marginLeft: 14, padding: '8px 12px', background: '#fff', border: '1px solid #e8eaed', borderRadius: 8, color: '#5f6368', fontSize: 12 }}>
-              <div style={{ marginBottom: 4 }}>• <b>① 긴급·주의품목 → 최근1주 민감가중</b> : <u>재고주수(W) 4주 미만</u>이거나 <u>주의품목</u>이면 최우선 적용. 4주전→1주전에 <u>가중치 0.5 / 1 / 2 / 6</u>을 줘 <b>최근 1주에 훨씬 민감</b>하게(최근≈63%) 예측 → 등락을 빠르게 반영해 결품/과발주를 줄입니다. (이 경우 Holt 미사용)</div>
+              <div style={{ marginBottom: 4 }}>• <b>① 주의품목 → 최근1주 민감가중</b> : <u>주의품목</u>이면 최우선 적용. 4주전→1주전에 <u>가중치 0.5 / 1 / 2 / 6</u>을 줘 <b>최근 1주에 훨씬 민감</b>하게(최근≈63%) 예측 → 등락을 빠르게 반영합니다. (이 경우 Holt 미사용) <b>재고주수(4주 미만)는 발주 추천 계산에 쓰지 않으며, 오직 판매량으로만 예측합니다.</b></div>
               <div style={{ marginBottom: 4 }}>• <b>② 우하향 추세 → Holt 선형추세 지수평활</b> : 위에 해당 안 되고 판매가 꾸준히 줄고 있는(우하향) 상품에 적용.
                 현재 <u>판매 수준(level)</u>과 <u>주마다 늘거나 줄어드는 변화량(trend)</u> 두 가지를 함께 추정해서
                 "<b>지금 추세대로 가면 4주 뒤엔 얼마나 팔릴까</b>"를 예측합니다. 감소세가 이어지면 예측치도 따라 낮아져 과발주를 막습니다. (완전한 7일 주 3주 이상일 때만, 예측치는 아래 가중평균을 넘지 않도록 캡)</div>
