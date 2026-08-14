@@ -38,21 +38,6 @@ function safeNum(v) {
   return isNaN(n) ? 0 : n;
 }
 
-// '일일 판매량' 시트의 동일 바코드(옵션ID) 중복 행 제거 — 첫 행만 유지.
-// 신규 파싱·구 캐시 모두에 적용해 브라우저 캐시로 남은 중복까지 정리한다.
-function dedupeRows(rows) {
-  if (!Array.isArray(rows)) return rows;
-  const seen = new Set();
-  const out = [];
-  for (const r of rows) {
-    const bc = (r.barcode || '').trim();
-    if (bc && seen.has(bc)) continue;
-    if (bc) seen.add(bc);
-    out.push(r);
-  }
-  return out;
-}
-
 // 오늘 오전 11시 타임스탬프 (하루 1회 자동 갱신 기준)
 function todayElevenAM() {
   const n = new Date();
@@ -205,12 +190,11 @@ export default function Sales() {
 
         parsed.push({ barcode, scode, productName, optionName, status, d6, d5, d4, d3, d2, d1, total, reviews, totalStock });
       }
-      const deduped = dedupeRows(parsed);
-      setRows(deduped);
+      setRows(parsed);
       const now = new Date();
       setLastUpdated(now);
       // 계산 결과를 하루캐시에 저장 (다음 진입 시 재계산 없이 즉시 표시)
-      await dbStoreSet('sales_cache', { rows: deduped, calculatedAt: now.getTime() }, { skipLog: true }).catch(() => {});
+      await dbStoreSet('sales_cache', { rows: parsed, calculatedAt: now.getTime() }, { skipLog: true }).catch(() => {});
     } catch (e) {
       setError(e.message || '데이터를 불러오지 못했습니다');
     }
@@ -223,7 +207,7 @@ export default function Sales() {
     const eleven = todayElevenAM();
     const cached = await dbStoreGet('sales_cache').catch(() => null);
     if (cached?.rows) {
-      setRows(dedupeRows(cached.rows));
+      setRows(cached.rows);
       setLastUpdated(new Date(cached.calculatedAt || Date.now()));
       if (cached.calculatedAt >= eleven) return;   // 오늘 11시 이후 계산본 → 최신
       if (Date.now() < eleven) return;             // 아직 11시 전 → 어제 캐시 유지
