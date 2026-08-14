@@ -401,9 +401,51 @@ export default function SoldOutAnalysis() {
           if (updatedTrk[oid]) updatedTrk[oid].days = entry.days;
         }
       }
+      // 진입 시 보충지연사유 실시간 반영 (품절현황 계산/로딩은 그대로, 사유 DB만 갱신)
+      // 품절 항목 중 사유가 비어있으면 보충지연관리(delay_cause_items)의 사유상태·자세한사유 조합으로 채움
+      // (수동/기존 사유 우선 · 비어있을 때만 · 지연사유는 하루 중 언제든 입력될 수 있어 매 진입마다 재확인)
+      let finalCached = fixedCached;
+      if (fixedCached?.items) {
+        try {
+          const delayItems = await dbStoreGet('delay_cause_items');
+          if (Array.isArray(delayItems)) {
+            const autoMap = new Map(); // barcode → { reason, date }
+            for (const it of delayItems) {
+              const bc = (it.barcode || '').trim();
+              if (!bc || !it.soldoutDate) continue;
+              const combo = [it.reasonStatus, it.reasonDetail].filter(Boolean).join(' · ').trim();
+              if (!combo) continue;
+              const prev = autoMap.get(bc);
+              if (!prev || it.soldoutDate > prev.date) autoMap.set(bc, { reason: combo, date: it.soldoutDate });
+            }
+            const filled = [];
+            for (const it of fixedCached.items) {
+              if (it.riskLevel !== '품절') continue;
+              const oid = it.optionId;
+              if (updatedTrk[oid]?.reason) continue; // 수동/기존 사유 우선, 비어있을 때만
+              const bc = (it.barcode || '').trim();
+              const auto = bc && autoMap.get(bc);
+              if (!auto) continue;
+              const base = updatedTrk[oid] || fixedCached.trackerSnapshot?.[oid] || { startDate: today, days: 1, reason: '' };
+              updatedTrk[oid] = { ...base, reason: auto.reason };
+              filled.push(oid);
+            }
+            if (filled.length > 0) {
+              const newSnap = { ...(fixedCached.trackerSnapshot || {}) };
+              for (const oid of filled) {
+                newSnap[oid] = { ...(newSnap[oid] || { startDate: updatedTrk[oid].startDate, days: updatedTrk[oid].days }), reason: updatedTrk[oid].reason };
+              }
+              finalCached = { ...fixedCached, trackerSnapshot: newSnap };
+              dbStoreSet(SOLDOUT_TRACKER_KEY, updatedTrk).catch(() => {});
+              dbStoreSet(`soldout_analysis_cached_${today}`, finalCached).catch(() => {});
+            }
+          }
+        } catch {}
+      }
+
       setTracker(updatedTrk);
-      setCachedResult(fixedCached);
-      if (fixedCached) setLastUpdatedAt(fixedCached.updatedAt);
+      setCachedResult(finalCached);
+      if (finalCached) setLastUpdatedAt(finalCached.updatedAt);
       setLoading(false);
     })();
   }, []);
