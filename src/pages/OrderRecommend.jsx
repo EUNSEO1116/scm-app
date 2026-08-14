@@ -19,6 +19,7 @@ const SAFETY_BUFFER_DAYS = 15; // 안전재고: 기본 15일치 여유분
 const SAFETY_BUFFER_DAYS_HYOJA = 7; // '효자' 상태 상품은 기존 7일 유지
 const HYOJA_KEYWORD = '효자';
 const DEFAULT_LEAD_DAYS = 20; // AF열 리드타임 빈칸 시 기본값
+const MAX_STOCK_WEEKS = 10; // 재고 상한: 목표재고가 최대 10주치 수요를 넘지 않게 캡(리드타임이 더 길면 파이프라인 커버 우선)
 const HOLT_ALPHA = 0.3;       // 레벨 평활 계수
 const HOLT_BETA = 0.1;        // 트렌드 평활 계수
 const PEAK_MULT = 1.2;        // 시즌피크: 입고예정일이 시즌 한가운데
@@ -356,11 +357,21 @@ export default function OrderRecommend() {
             arrivalDate.setDate(arrivalDate.getDate() + leadDays);
             const seasonPeriod = periodOf(optionId);
             const mult = seasonMult(seasonPeriod, arrivalDate);
-            // 커버일수 = 리드타임 + 발주주기 + 안전. baseF(4주=28일 예측)를 커버일수로 비례 확대.
+            // 사이클재고(리드+발주주기, 시즌보정) + 안전재고(가산항, 시즌·리드타임 미연동)로 분리 계산.
             // '효자' 상태 상품은 기존 안전 7일, 그 외는 15일.
             const safetyDays = status.includes(HYOJA_KEYWORD) ? SAFETY_BUFFER_DAYS_HYOJA : SAFETY_BUFFER_DAYS;
-            const coverDays = leadDays + REVIEW_DAYS + safetyDays;
-            const demand = baseF * (coverDays / HORIZON_DAYS) * mult;
+            const coverDays = leadDays + REVIEW_DAYS + safetyDays; // 사유 표시용(리드+발주주기+안전)
+            const dailyBase = baseF / HORIZON_DAYS;                 // 일 수요율(4주예측 ÷ 28)
+            const cycleDays = leadDays + REVIEW_DAYS;              // 사이클재고 대상 일수
+            // B안: 사이클재고만 시즌보정, 안전재고는 가산항(시즌계수·리드타임에 곱해지지 않음)
+            const cycleDemand = dailyBase * cycleDays * mult;
+            const safetyStock = dailyBase * safetyDays;
+            // A안: 목표재고 상한 = max(자연 커버, 10주). 리드타임이 상한보다 길면 파이프라인 커버 우선(결품 방지)
+            const capDays = Math.max(coverDays, MAX_STOCK_WEEKS * 7);
+            const capLimit = dailyBase * capDays;
+            const uncapped = cycleDemand + safetyStock;
+            const demand = Math.min(uncapped, capLimit);
+            const wasCapped = uncapped > capLimit + 0.5;
             const q = Math.ceil(demand - totalStock);
             const demandRound = Math.round(demand);
             const seasonTxt = mult === PEAK_MULT ? '·시즌피크 ×1.2'
@@ -374,7 +385,8 @@ export default function OrderRecommend() {
                 : method === '주의민감'
                 ? `주의품목 최근1주 민감가중 ${HORIZON_WEEKS}주예측 필요재고 ${fRound}개`
                 : `${HORIZON_WEEKS}주예측 필요재고 ${fRound}개`;
-              reason = `${methodTxt}${seasonTxt} → 커버 ${coverDays}일(리드 ${leadDays}) 수요 ${demandRound} − 재고 ${totalStock} = ${q}`;
+              const capTxt = wasCapped ? `·재고상한 ${MAX_STOCK_WEEKS}주캡` : '';
+              reason = `${methodTxt}${seasonTxt}${capTxt} → 사이클 ${cycleDays}일(리드 ${leadDays})＋안전 ${safetyDays}일 수요 ${demandRound} − 재고 ${totalStock} = ${q}`;
               // 엑셀 사유 키워드 — 적용된 것만 순서대로(사유1~5)
               if (method === 'Holt') kws.push('우하향');
               if (mult === PEAK_MULT) kws.push('시즌피크');
@@ -383,13 +395,14 @@ export default function OrderRecommend() {
               // 시즌 입력된 상품은 시즌월을 사유에 표시(입력한 그대로)
               if (parseSeasonMonths(seasonPeriod)) kws.push(`시즌 ${seasonPeriod}월`);
               if (leadDays > DEFAULT_LEAD_DAYS) kws.push('리드타임');
+              if (wasCapped) kws.push('재고상한');
               if (isCautionRow) kws.push('주의품목');
               tag = mult === PEAK_MULT ? '시즌피크'
                 : mult === ENDING_MULT ? '끝물발주'
                 : mult === OFFSEASON_MULT ? '시즌밖발주' : '일반발주';
             } else {
               // 발주 없음. 시즌 보정(×0.7·×0.2)으로 빠졌고, 원래(시즌피크 ×1.2)였다면 발주대상이던 경우만 사유/태그 표시.
-              const peakDemand = baseF * (coverDays / HORIZON_DAYS) * PEAK_MULT;
+              const peakDemand = Math.min(dailyBase * cycleDays * PEAK_MULT + safetyStock, capLimit);
               const qPeak = Math.ceil(peakDemand - totalStock);
               if ((mult === ENDING_MULT || mult === SEASON_OVER_MULT) && qPeak > 0) {
                 const arrLabel = `${arrivalDate.getFullYear()}-${pad2(arrivalDate.getMonth() + 1)}-${pad2(arrivalDate.getDate())}`;
@@ -564,13 +577,16 @@ export default function OrderRecommend() {
               <div>• <b>현재 시즌이 아님(전·후)·상시 상품</b> → 보정 없음 (×1.0)</div>
             </div>
             <div style={{ marginTop: 4 }}>→ 리드타임이 길어 물건이 시즌 끝난 뒤 도착하면 발주가 자동으로 확 줄어 <b>끝물 과발주</b>를 막습니다.</div></div>
-          <div style={{ marginBottom: 6 }}><b>④ 리드타임 · 커버기간</b> — 커버기간 = <b>리드타임(AF열) + 발주주기 {REVIEW_DAYS}일 + 안전 {SAFETY_BUFFER_DAYS}일</b>.
-            발주주기·안전은 고정값(월·금 주 2회 발주 기준)이고, AF열이 비면 리드타임 <b>{DEFAULT_LEAD_DAYS}일</b> 기본 적용. 4주예측 F를 이 커버일수에 맞춰 환산합니다.
-            <div style={{ marginTop: 4, color: '#5f6368' }}>※ 상태에 <b>'{HYOJA_KEYWORD}'</b>가 포함된 상품은 안전을 <b>{SAFETY_BUFFER_DAYS_HYOJA}일</b>로 적용합니다(그 외는 {SAFETY_BUFFER_DAYS}일).</div></div>
-          <div style={{ marginBottom: 6 }}><b>⑤ 추천 발주량</b> = <b>올림( F × (커버일수 ÷ 28) × 시즌계수 − O열 총재고 )</b>.
+          <div style={{ marginBottom: 6 }}><b>④ 리드타임 · 커버기간 — 사이클재고와 안전재고 분리</b>
+            <div style={{ marginTop: 2 }}>• <b>사이클재고</b> = 일수요 × (<b>리드타임(AF열) + 발주주기 {REVIEW_DAYS}일</b>) × <b>시즌계수</b> — 다음 입고 전까지 팔릴 양(시즌 보정 적용).</div>
+            <div style={{ marginTop: 2 }}>• <b>안전재고</b> = 일수요 × <b>{SAFETY_BUFFER_DAYS}일</b> — 변동 대비 완충(<u>시즌계수·리드타임에 곱해지지 않는 가산항</u>). 시즌피크라도 안전분이 부풀지 않습니다.</div>
+            <div style={{ marginTop: 2 }}>AF열이 비면 리드타임 <b>{DEFAULT_LEAD_DAYS}일</b> 기본 적용.</div>
+            <div style={{ marginTop: 4, color: '#5f6368' }}>※ 상태에 <b>'{HYOJA_KEYWORD}'</b>가 포함된 상품은 안전을 <b>{SAFETY_BUFFER_DAYS_HYOJA}일</b>로 적용합니다(그 외는 {SAFETY_BUFFER_DAYS}일).</div>
+            <div style={{ marginTop: 4, color: '#5f6368' }}>※ <b>재고 상한 {MAX_STOCK_WEEKS}주</b> — 목표재고가 {MAX_STOCK_WEEKS}주치 수요를 넘으면 캡(<b>재고상한</b> 태그). 단 리드타임이 {MAX_STOCK_WEEKS}주보다 길면 결품 방지를 위해 파이프라인 커버를 우선합니다.</div></div>
+          <div style={{ marginBottom: 6 }}><b>⑤ 추천 발주량</b> = <b>올림( [사이클재고 + 안전재고] − O열 총재고 )</b>, 목표재고 <b>최대 {MAX_STOCK_WEEKS}주치</b>로 캡.
             O열 총재고는 <u>그로스 + 박스히어로 + 미입고(오고있는) 구매분</u>을 모두 포함하므로 중복발주가 방지됩니다. 결과가 0 이하거나 예측 데이터가 없으면 공백.
             <div style={{ marginTop: 6, marginLeft: 14, padding: '8px 12px', background: '#f8faf9', border: '1px solid #e8eaed', borderRadius: 8, fontSize: 12 }}>
-              <b>예시</b> — 리드 30 · 4주예측 필요재고 84개 · 시즌피크 ×1.2 → 커버 49일(리드 30 + 발주주기 {REVIEW_DAYS} + 안전 {SAFETY_BUFFER_DAYS}), 수요 84×(49÷28)×1.2 ≈ <b>176</b>, 재고 132 → 45 → 10단위 올림 추천 <b>50개</b>.</div></div>
+              <b>예시</b> — 리드 30 · 4주예측 필요재고 84개(=일 3개) · 시즌피크 ×1.2 → 사이클 3×(30+{REVIEW_DAYS})×1.2 ≈ 122 ＋ 안전 3×{SAFETY_BUFFER_DAYS} = 45 → 수요 ≈ <b>167</b>, 재고 132 → 35 → 10단위 올림 추천 <b>40개</b>. <span style={{ color: '#5f6368' }}>(예전 공식은 안전분까지 ×1.2 되어 176 → 50개였음)</span></div></div>
           <div style={{ marginBottom: 6 }}><b>⑥ 태그(분류) — 엑셀에서 필터로 빠르게 거를 수 있습니다</b>
             <div style={{ marginTop: 6, marginLeft: 14, fontSize: 12, lineHeight: 1.9 }}>
               {[
