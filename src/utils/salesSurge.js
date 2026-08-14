@@ -2,15 +2,38 @@ import { dbStoreGet, dbStoreSet } from './dbApi.js';
 
 export const SURGE_SNAPSHOT_KEY = 'sales_surge_snapshot';
 
-// 일일 매출 순위(SoldOutAnalysisHistory)와 동일한 제외 규칙:
-//   상태 제외 키워드 + 옵션명 '반품' + 상품명 '바디스윗' → 순위·급증에서 완전 제외.
-//   → "일일 매출 순위에 계산되는 항목"만 급증 대상.
-const EXCLUDE_KEYWORDS = ['최종마감', '품질확인서', '마감대상', '덤핑', '반출'];
+// 쿠팡바코드 시트: 옵션ID(c[1]) → { status: c[9], barcode: c[5] }.
+//   급증 대상은 "쿠팡바코드 시트에 존재하는 상품"으로 한정하고, 상태·바코드는 시트값을 사용한다.
+//   → 시트에 없는 상품(예: 바디스윗)은 자동 제외되므로 별도 제외 로직이 필요 없다.
+const SHEET_ID = '1NXhW_gG0b-gXuVqrhbY9ErWi8uO_7pXIy-NTo4FbE1I';
+const CSV_BARCODE = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent('쿠팡바코드')}`;
+
+// 상태 제외 키워드(시트 상태 기준). 마감대상 등 제외 상태 상품은 급증에서 제외.
+const EXCLUDE_KEYWORDS = ['최종마감', '품질확인서', '마감대상', '덤핑', '반출', '지재권'];
 function shouldExclude(s) { return s ? EXCLUDE_KEYWORDS.some(kw => s.includes(kw)) : false; }
-function isRankExcluded(it) {
-  return shouldExclude(it.status)
-    || (it.optionName || '').includes('반품')
-    || (it.productName || '').includes('바디스윗');
+
+function parseCsvRow(line) {
+  const result = []; let current = ''; let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (inQuotes) { if (ch === '"' && line[i + 1] === '"') { current += '"'; i++; } else if (ch === '"') inQuotes = false; else current += ch; }
+    else { if (ch === '"') inQuotes = true; else if (ch === ',') { result.push(current); current = ''; } else current += ch; }
+  }
+  result.push(current); return result;
+}
+
+// 쿠팡바코드 시트를 읽어 optionId → { status, barcode } 맵을 만든다.
+async function loadBarcodeSheet() {
+  const res = await fetch(CSV_BARCODE);
+  const csv = await res.text();
+  const lines = csv.split('\n').filter(l => l.trim());
+  const map = new Map();
+  for (let i = 1; i < lines.length; i++) {
+    const c = parseCsvRow(lines[i]);
+    const oid = (c[1] || '').trim();
+    if (oid) map.set(oid, { status: (c[9] || '').trim(), barcode: (c[5] || '').trim() });
+  }
+  return map;
 }
 
 // 급증 기준: 1일전 >= 4
@@ -50,12 +73,16 @@ async function loadRecentUploads(maxDays = 6, lookback = 30) {
 
 // 업로드된 DB(soldout_analysis_*)의 판매수량(salesQty)에서 급증 품목을 계산해
 //   { count, items, otherCount, otherItems, calculatedAt } 반환.
+//   쿠팡바코드 시트에 있는 상품만 대상. 상태·신규 판정·바코드는 모두 시트값 기준.
 //   items      : 상태 '신규' 급증(최대값+3 기준) — 배지/기본 화면
-//   otherItems : 신규 제외 + 제외키워드 미포함 급증(최대값+8 기준) — 추가 탭
+//   otherItems : 신규 제외 급증(최대값+8, 평균≥10일 때만 ×2 기준) — 추가 탭
 //   가장 최근 업로드일 = d1(1일전), 그 이전 업로드분 = d2..d6.
 export async function computeSurgeSnapshot() {
-  const days = await loadRecentUploads(6, 30);
-  if (days.length === 0) {
+  const [days, bcMap] = await Promise.all([
+    loadRecentUploads(6, 30),
+    loadBarcodeSheet().catch(() => new Map()),
+  ]);
+  if (days.length === 0 || bcMap.size === 0) {
     return { count: 0, items: [], otherCount: 0, otherItems: [], calculatedAt: Date.now() };
   }
 
@@ -70,12 +97,14 @@ export async function computeSurgeSnapshot() {
   const items = [];
   const otherItems = [];
   for (const it of newest.items) {
-    // 일일 매출 순위에서 빠지는 항목(제외키워드·반품·바디스윗)은 급증에서도 제외
-    if (isRankExcluded(it)) continue;
-    const status = (it.status || '').trim();
-    const isNew = status === '신규';
-
     const oid = String(it.optionId);
+    // 쿠팡바코드 시트에 없는 상품은 급증 대상에서 제외
+    const bc = bcMap.get(oid);
+    if (!bc) continue;
+    // 시트 상태가 제외 키워드(마감대상 등)면 제외
+    if (shouldExclude(bc.status)) continue;
+    const isNew = bc.status.includes('신규');
+
     const d1 = Number(it.salesQty) || 0;
     // 이전 일자별 판매수량(해당 날 업로드에 상품이 없으면 0). [d2, d3, d4, d5, d6]
     const prev = prevMaps.map(m => m.get(oid) || 0);
@@ -87,7 +116,7 @@ export async function computeSurgeSnapshot() {
     const max = prev.length ? Math.max(...prev) : 0;
     const [d2 = 0, d3 = 0, d4 = 0, d5 = 0, d6 = 0] = prev;
     const item = {
-      barcode: (it.barcode || '').trim(),
+      barcode: (bc.barcode || it.barcode || '').trim(),
       productName: (it.productName || '').trim(),
       optionName: (it.optionName || '').trim(),
       d6, d5, d4, d3, d2, d1,
