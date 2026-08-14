@@ -1,93 +1,95 @@
 import { dbStoreGet, dbStoreSet } from './dbApi.js';
 
-const SHEET_ID = '1NXhW_gG0b-gXuVqrhbY9ErWi8uO_7pXIy-NTo4FbE1I';
-const CSV_DAILY = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent('일일 판매량')}`;
-
 export const SURGE_SNAPSHOT_KEY = 'sales_surge_snapshot';
 
-// CSV indices:
-// 0=empty, 1=barcode, 2=S-code, 3=product name, 4=option name, 5=status,
-// 6=6일전, 7=5일전, 8=4일전, 9=3일전, 10=2일전, 11=1일전, 12=total, 13=리뷰갯수(6일)
-function parseCsvRow(line) {
-  const result = [];
-  let current = '';
-  let inQuotes = false;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    if (inQuotes) {
-      if (ch === '"' && line[i + 1] === '"') { current += '"'; i++; }
-      else if (ch === '"') inQuotes = false;
-      else current += ch;
-    } else {
-      if (ch === '"') inQuotes = true;
-      else if (ch === ',') { result.push(current); current = ''; }
-      else current += ch;
-    }
-  }
-  result.push(current);
-  return result;
-}
-
-function safeNum(v) {
-  if (v === '' || v === '-' || v === undefined || v === null) return 0;
-  const n = Number(v);
-  return isNaN(n) ? 0 : n;
-}
-
-// 신규 제외 탭에서 빼는 상태 키워드(다른 페이지들과 통일, 부분포함 매칭)
-const EXCLUDE_KEYWORDS = ['최종마감', '품질확인서', '마감대상', '덤핑', '반출', '지재권'];
+// 일일 매출 순위(SoldOutAnalysisHistory)와 동일한 제외 규칙:
+//   상태 제외 키워드 + 옵션명 '반품' + 상품명 '바디스윗' → 순위·급증에서 완전 제외.
+//   → "일일 매출 순위에 계산되는 항목"만 급증 대상.
+const EXCLUDE_KEYWORDS = ['최종마감', '품질확인서', '마감대상', '덤핑', '반출'];
 function shouldExclude(s) { return s ? EXCLUDE_KEYWORDS.some(kw => s.includes(kw)) : false; }
+function isRankExcluded(it) {
+  return shouldExclude(it.status)
+    || (it.optionName || '').includes('반품')
+    || (it.productName || '').includes('바디스윗');
+}
 
 // 급증 기준: 1일전 >= 4
-//   AND (1일전 >= 이전5일(6일전~2일전)평균 * 2 OR 1일전 >= 이전5일 최대값 + maxBonus)
+//   AND (1일전 >= 이전일자평균 * 2 OR 1일전 >= 이전일자 최대값 + maxBonus)
 //   minAvgMult: 평균×2 조건이 적용되는 최소 평균값. 신규 제외 탭은 10(평균<10이면 ×2로는 급증 판정 안 함).
+//   이전 일자 데이터가 하나도 없으면(신규 업로드 첫날 등) 급증 판정하지 않음.
 function isSurge(d1, prevDays, maxBonus = 3, minAvgMult = 0) {
   if (d1 < 4) return false;
+  if (prevDays.length === 0) return false;
   const avg = prevDays.reduce((a, b) => a + b, 0) / prevDays.length;
   const max = Math.max(...prevDays);
   const multOk = avg > 0 && avg >= minAvgMult && d1 >= avg * 2;
   return multOk || d1 >= max + maxBonus;
 }
 
-// CSV_DAILY(일일 판매량)에서 급증 품목을 계산해
+// offset일 전의 'YYYYMMDD' 키 (업로드 저장 시 todayKey()와 동일한 UTC 기준으로 생성)
+function uploadDateKey(offsetDays) {
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() - offsetDays);
+  return d.toISOString().slice(0, 10).replace(/-/g, '');
+}
+
+// 오늘부터 거꾸로 훑어 실제 업로드가 존재하는 최근 maxDays개(신·구 순)를 로드.
+//   빈 날짜(주말·공휴일 등 미업로드)는 건너뛰고, lookback일 이내에서만 탐색.
+//   반환: [{ key, items }] — 최신이 [0].
+async function loadRecentUploads(maxDays = 6, lookback = 30) {
+  const result = [];
+  for (let i = 0; i < lookback && result.length < maxDays; i++) {
+    const key = uploadDateKey(i);
+    const data = await dbStoreGet(`soldout_analysis_${key}`).catch(() => null);
+    if (data && Array.isArray(data.items) && data.items.length) {
+      result.push({ key, items: data.items });
+    }
+  }
+  return result;
+}
+
+// 업로드된 DB(soldout_analysis_*)의 판매수량(salesQty)에서 급증 품목을 계산해
 //   { count, items, otherCount, otherItems, calculatedAt } 반환.
 //   items      : 상태 '신규' 급증(최대값+3 기준) — 배지/기본 화면
 //   otherItems : 신규 제외 + 제외키워드 미포함 급증(최대값+8 기준) — 추가 탭
-// 각 item은 매출 카드 렌더링 필드(바코드/상품명/옵션명/d6~d1/avg/max/diff) 포함.
+//   가장 최근 업로드일 = d1(1일전), 그 이전 업로드분 = d2..d6.
 export async function computeSurgeSnapshot() {
-  const res = await fetch(CSV_DAILY);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const csv = await res.text();
-  const lines = csv.split('\n').filter(l => l.trim());
-  if (lines.length < 2) return { count: 0, items: [], otherCount: 0, otherItems: [], calculatedAt: Date.now() };
+  const days = await loadRecentUploads(6, 30);
+  if (days.length === 0) {
+    return { count: 0, items: [], otherCount: 0, otherItems: [], calculatedAt: Date.now() };
+  }
+
+  const newest = days[0];
+  // 이전 일자(최신 제외)들의 optionId → salesQty 맵. 배열 순서: [d2, d3, d4, d5, d6]
+  const prevMaps = days.slice(1).map(d => {
+    const m = new Map();
+    for (const it of d.items) m.set(String(it.optionId), Number(it.salesQty) || 0);
+    return m;
+  });
 
   const items = [];
   const otherItems = [];
-  for (let i = 1; i < lines.length; i++) {
-    const cols = parseCsvRow(lines[i]);
-    const status = (cols[5] || '').trim();
+  for (const it of newest.items) {
+    // 일일 매출 순위에서 빠지는 항목(제외키워드·반품·바디스윗)은 급증에서도 제외
+    if (isRankExcluded(it)) continue;
+    const status = (it.status || '').trim();
     const isNew = status === '신규';
-    // 신규도 아니고 신규 제외 대상(제외키워드 포함)도 아니면 → 신규 제외 탭 후보
-    const isOther = !isNew && !shouldExclude(status);
-    if (!isNew && !isOther) continue;
 
-    const d6 = safeNum(cols[6]);
-    const d5 = safeNum(cols[7]);
-    const d4 = safeNum(cols[8]);
-    const d3 = safeNum(cols[9]);
-    const d2 = safeNum(cols[10]);
-    const d1 = safeNum(cols[11]);
-    const prevDays = [d6, d5, d4, d3, d2];
+    const oid = String(it.optionId);
+    const d1 = Number(it.salesQty) || 0;
+    // 이전 일자별 판매수량(해당 날 업로드에 상품이 없으면 0). [d2, d3, d4, d5, d6]
+    const prev = prevMaps.map(m => m.get(oid) || 0);
     const maxBonus = isNew ? 3 : 8;
     const minAvgMult = isNew ? 0 : 10;
-    if (!isSurge(d1, prevDays, maxBonus, minAvgMult)) continue;
+    if (!isSurge(d1, prev, maxBonus, minAvgMult)) continue;
 
-    const avg = prevDays.reduce((a, b) => a + b, 0) / prevDays.length;
-    const max = Math.max(...prevDays);
+    const avg = prev.length ? prev.reduce((a, b) => a + b, 0) / prev.length : 0;
+    const max = prev.length ? Math.max(...prev) : 0;
+    const [d2 = 0, d3 = 0, d4 = 0, d5 = 0, d6 = 0] = prev;
     const item = {
-      barcode: (cols[1] || '').trim(),
-      productName: (cols[3] || '').trim(),
-      optionName: (cols[4] || '').trim(),
+      barcode: (it.barcode || '').trim(),
+      productName: (it.productName || '').trim(),
+      optionName: (it.optionName || '').trim(),
       d6, d5, d4, d3, d2, d1,
       avg: Math.round(avg * 10) / 10,
       max,
@@ -113,14 +115,11 @@ export async function getSurgeSnapshot() {
   return dbStoreGet(SURGE_SNAPSHOT_KEY).catch(() => null);
 }
 
-// 화면 표시용: 저장된 스냅샷이 있으면 그대로(고정값), 없으면 현재 시트 기준으로 즉석 계산(저장 X).
-// → 업로드로 스냅샷이 만들어지기 전에도 오늘치가 비지 않고 표시됨. 배지/카드가 동일 소스 사용.
+// 화면 표시용: 저장된 스냅샷만 반환(로딩 시 재계산하지 않음).
+// → 계산은 오늘자 데이터 업로드로 급증 스냅샷이 갱신되는 순간(recordSurgeSnapshot) 1회만.
+//   그 전까지는 마지막 저장분을 그대로 유지하고, 저장분이 없으면 빈 결과.
 export async function getSurgeForDisplay() {
   const snap = await getSurgeSnapshot();
   if (snap) return snap;
-  try {
-    return await computeSurgeSnapshot();
-  } catch {
-    return { count: 0, items: [], calculatedAt: Date.now() };
-  }
+  return { count: 0, items: [], otherCount: 0, otherItems: [], calculatedAt: null };
 }
