@@ -19,7 +19,7 @@ const SAFETY_BUFFER_DAYS = 15; // 안전재고: 기본 15일치 여유분
 const SAFETY_BUFFER_DAYS_HYOJA = 7; // '효자' 상태 상품은 기존 7일 유지
 const HYOJA_KEYWORD = '효자';
 const DEFAULT_LEAD_DAYS = 20; // AF열 리드타임 빈칸 시 기본값
-const MAX_STOCK_WEEKS = 10; // 재고 상한: 목표재고가 최대 10주치 수요를 넘지 않게 캡(리드타임이 더 길면 파이프라인 커버 우선)
+const MAX_STOCK_WEEKS = 6; // 재고 상한: 목표재고가 최대 6주치 수요를 넘지 않게 캡(리드타임이 더 길면 파이프라인 커버 우선)
 const HOLT_ALPHA = 0.3;       // 레벨 평활 계수
 const HOLT_BETA = 0.1;        // 트렌드 평활 계수
 const PEAK_MULT = 1.2;        // 시즌피크: 입고예정일이 시즌 한가운데
@@ -366,7 +366,7 @@ export default function OrderRecommend() {
             // B안: 사이클재고만 시즌보정, 안전재고는 가산항(시즌계수·리드타임에 곱해지지 않음)
             const cycleDemand = dailyBase * cycleDays * mult;
             const safetyStock = dailyBase * safetyDays;
-            // A안: 목표재고 상한 = max(자연 커버, 10주). 리드타임이 상한보다 길면 파이프라인 커버 우선(결품 방지)
+            // A안: 목표재고 상한 = max(자연 커버, 6주). 리드타임이 상한보다 길면 파이프라인 커버 우선(결품 방지)
             const capDays = Math.max(coverDays, MAX_STOCK_WEEKS * 7);
             const capLimit = dailyBase * capDays;
             const uncapped = cycleDemand + safetyStock;
@@ -384,7 +384,7 @@ export default function OrderRecommend() {
                 ? `우하향 추세 ${HORIZON_WEEKS}주예측 필요재고 ${fRound}개`
                 : method === '주의민감'
                 ? `주의품목 최근1주 민감가중 ${HORIZON_WEEKS}주예측 필요재고 ${fRound}개`
-                : `${HORIZON_WEEKS}주예측 필요재고 ${fRound}개`;
+                : `최근가중 ${HORIZON_WEEKS}주예측 필요재고 ${fRound}개`;
               const capTxt = wasCapped ? `·재고상한 ${MAX_STOCK_WEEKS}주캡` : '';
               reason = `${methodTxt}${seasonTxt}${capTxt} → 사이클 ${cycleDays}일(리드 ${leadDays})＋안전 ${safetyDays}일 수요 ${demandRound} − 재고 ${totalStock} = ${q}`;
               // 엑셀 사유 키워드 — 적용된 것만 순서대로(사유1~5)
