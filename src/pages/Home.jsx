@@ -711,7 +711,7 @@ export default function Home() {
                 { label: '매출관리', path: '/sales' },
                 { label: '상품개선', path: '/issue/improvement' },
                 { label: 'FBC 사전계산기', path: '/fbc/pallet' },
-                { label: 'CN 결산', path: '/cn-settlement/dashboard' },
+                { label: '재마케팅 추천', path: '/soldout-analysis/remarket' },
               ].map((m, i) => {
                 // 배경은 일괄 연회색, 카드 앞쪽(좌측 바)에 퍼스널 남색 계열 그라데이션.
                 // 1번이 가장 진하고 6번으로 갈수록 옅어짐.
