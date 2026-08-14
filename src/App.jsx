@@ -30,6 +30,7 @@ import SoldOutAnalysisExclude from './pages/SoldOutAnalysisExclude';
 import SoldOutAnalysisRate from './pages/SoldOutAnalysisRate';
 import SoldOutAnalysisDelayCause from './pages/SoldOutAnalysisDelayCause';
 import SoldOutAnalysisUpload from './pages/SoldOutAnalysisUpload';
+import SoldOutRemarket from './pages/SoldOutRemarket';
 import ActivityLog from './pages/ActivityLog';
 import CnSettlementUpload from './pages/CnSettlementUpload';
 import CnSettlementDashboard from './pages/CnSettlementDashboard';
@@ -84,6 +85,7 @@ function App() {
           <Route path="/soldout-analysis/rate" element={<SoldOutAnalysisRate />} />
           <Route path="/soldout-analysis/delay-cause" element={<SoldOutAnalysisDelayCause />} />
           <Route path="/soldout-analysis/upload" element={<SoldOutAnalysisUpload />} />
+          <Route path="/soldout-analysis/remarket" element={<SoldOutRemarket />} />
           <Route path="/issue" element={<IssueManagement />} />
           <Route path="/issue/improvement" element={<ProductImprovement />} />
           <Route path="/issue/certification" element={<CertificationManagement />} />

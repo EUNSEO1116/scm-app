@@ -1,6 +1,7 @@
 import { NavLink, useLocation } from 'react-router-dom';
 import { useState, useEffect } from 'react';
 import { getSurgeForDisplay } from '../utils/salesSurge.js';
+import { dbStoreGet } from '../utils/dbApi';
 
 const navItems = [
   { id: 'inventory', label: '재고관리', children: [
@@ -16,8 +17,9 @@ const navItems = [
     { label: '수요예측', path: '/sales/forecast' },
     { label: '* 일일 매출 순위', path: '/soldout-analysis/history' },
   ]},
-  { id: 'soldout-analysis', label: '품절분석', children: [
+  { id: 'soldout-analysis', label: '품절분석', badge: 'remarket', children: [
     { label: '* 품절현황', path: '/soldout-analysis' },
+    { label: '재마케팅', path: '/soldout-analysis/remarket', badge: 'remarket' },
     { label: '제외품목관리', path: '/soldout-analysis/exclude' },
     { label: '월 품절률', path: '/soldout-analysis/rate' },
     { label: '보충 지연 원인 관리', path: '/soldout-analysis/delay-cause' },
@@ -99,6 +101,7 @@ export default function Layout({ children }) {
   const location = useLocation();
   const [openMenu, setOpenMenu] = useState(null);
   const [surgeCount, setSurgeCount] = useState(0);
+  const [remarketCount, setRemarketCount] = useState(0);
 
   const isHome = location.pathname === '/';
 
@@ -109,10 +112,14 @@ export default function Layout({ children }) {
     getSurgeForDisplay().then(snap => {
       if (alive && snap) setSurgeCount(snap.count || 0);
     });
+    // 재마케팅 미조치 건수 (품절분석 메뉴 뱃지)
+    dbStoreGet('soldout_remarket_events').then(list => {
+      if (alive && Array.isArray(list)) setRemarketCount(list.filter(e => e.status === 'pending').length);
+    }).catch(() => {});
     return () => { alive = false; };
-  }, []);
+  }, [location.pathname]);
 
-  const counts = { surge: surgeCount };
+  const counts = { surge: surgeCount, remarket: remarketCount };
 
   return (
     <div className="app-layout">

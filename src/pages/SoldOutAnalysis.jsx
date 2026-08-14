@@ -10,6 +10,7 @@ const CSV_ORDER = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tq
 
 const STORE_KEY_PREFIX = 'soldout_analysis_';
 const SOLDOUT_TRACKER_KEY = 'soldout_analysis_tracker';
+const REMARKET_KEY = 'soldout_remarket_events'; // 품절 해제 → 재마케팅 대상 이벤트 로그
 const EXCLUDE_KEYWORDS = ['최종마감', '품질확인서', '마감대상', '덤핑', '반출', '지재권'];
 const CRISIS_DAYS_THRESHOLD = 3;
 const HISTORY_SEARCH_DAYS = 92; // 품절 이력 검색 범위 (약 3개월)
@@ -585,6 +586,49 @@ export default function SoldOutAnalysis() {
         if (!trk[id]) trk[id] = { startDate: today, reason: '' };
         trk[id].days = consecDays[id] || 1;
       }
+
+      // === 품절 해제 감지 → 재마케팅 이벤트 적재 ===
+      // 직전 tracker에 있던(=품절이던) 상품 중, 이번 업데이트에서 실제 재고가 생겨 품절이 풀린 항목.
+      // 재고 수정(실제 품절 아님)·품절 제외 항목은 대상에서 제외.
+      const soldoutSet = new Set(soldoutIds);
+      const validStockMap = {};
+      for (const vi of validItems) validStockMap[vi.optionId] = vi.coupangStock;
+      const resolvedIds = Object.keys(trk).filter(id =>
+        !soldoutSet.has(id) &&   // 이번엔 품절 아님
+        !corrections[id] &&      // 재고 수정 항목 제외
+        !exSet.has(id) &&        // 품절 제외 항목 제외
+        validStockMap[id] > 0    // 현재 재고 있는 유효 상품만 (실제 재입고 확인)
+      );
+      if (resolvedIds.length > 0) {
+        try {
+          const events = await dbStoreGet(REMARKET_KEY) || [];
+          const existingKeys = new Set(events.map(e => e.key));
+          let added = 0;
+          for (const id of resolvedIds) {
+            const t = trk[id] || {};
+            const startDate = t.startDate || today;
+            const key = `${id}_${startDate}`;
+            if (existingKeys.has(key)) continue; // 같은 품절 건은 중복 적재 안 함
+            const bc = bcMap[id] || {};
+            events.push({
+              key, optionId: id,
+              barcode: bc.barcode || '',
+              productName: bc.productName || '',
+              optionName: bc.optionName || '',
+              soldoutStart: startDate,
+              resolvedDate: today,
+              days: t.days || 1,
+              reason: t.reason || '',
+              avg3d: avgMap[id] || 0,
+              status: 'pending',
+              actedAt: null,
+            });
+            added++;
+          }
+          if (added > 0) await dbStoreSet(REMARKET_KEY, events, { logDesc: `(NEW)품절 해제 재마케팅 ${added}건 감지` });
+        } catch (e) { console.error('remarket detect error:', e); }
+      }
+
       for (const id of Object.keys(trk)) { if (!soldoutIds.includes(id)) delete trk[id]; }
       await dbStoreSet(SOLDOUT_TRACKER_KEY, trk); setTracker(trk);
 
