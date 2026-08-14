@@ -208,6 +208,24 @@ function parseOrderDate(orderNo) {
   return '';
 }
 
+// 발주장부(ledgerSet/shippedSet) 기준 '조치안됨' 자동 감지. 항목당 1회(autoUnactionedApplied).
+// 새로 감지된 건은 autoUnactionedAck:false(미확인)로 표시 → 뱃지에 누적.
+// 반환: { next, count } (count = 이번에 새로 감지된 건수)
+function detectUnactioned(list, ledgerSet, shippedSet, todayStr) {
+  let count = 0;
+  const next = list.map(it => {
+    if (it.closed || it.autoUnactionedApplied) return it;
+    if (!it.releaseReqDate) return it;
+    if (todayStr <= it.releaseReqDate) return it;      // 아직 기한 안 지남
+    const key = normOrder(it.orderNo);
+    if (!ledgerSet.has(key)) return it;                // 발주장부에 없으면 판단 보류
+    if (shippedSet.has(key)) return it;                // 출고완료/인천도착이면 제외
+    count++;
+    return { ...it, progressStatus: '조치안됨', autoUnactionedApplied: true, autoUnactionedAck: false };
+  });
+  return { next, count };
+}
+
 const emptyForm = {
   barcode: '',
   productName: '',
@@ -288,18 +306,20 @@ export default function SoldOutAnalysisDelayCause() {
   const [shipReqText, setShipReqText] = useState('');
   const [shipReqResult, setShipReqResult] = useState(null); // { matched, unmatched, updated, date }
 
-  // 조치안됨 자동감지 (KST 11시 1회)
-  const [autoDetectInfo, setAutoDetectInfo] = useState(() => {
-    try {
-      const raw = JSON.parse(localStorage.getItem(AUTORUN_KEY) || 'null');
-      if (raw && raw.date === kstToday() && raw.count > 0) return raw;
-    } catch { /* ignore */ }
-    return null;
-  });
+  // 조치안됨 자동감지: 미확인 감지 건을 뱃지에 누적 표시.
+  // detectIds = 뱃지/감지목록 스냅샷(로드·새로고침·자동감지 시점 갱신). 체크·사유상태로 확인(ack)해도
+  // 뱃지에서는 새로고침 전까지 유지 → 사용자는 초록색으로 확인완료만 인지, 새로고침 시 알림에서 빠짐.
+  const [detectIds, setDetectIds] = useState([]);
+  const [detectViewed, setDetectViewed] = useState(false); // 뱃지를 눌러 감지목록을 봤는지 (나갈 때 알림용)
   const itemsRef = useRef([]);
   const autoRunningRef = useRef(false);
   const [autoCloseInfo, setAutoCloseInfo] = useState(null); // { count } 이번 접속 자동 종결 건수
   useEffect(() => { itemsRef.current = items; }, [items]);
+
+  // 미확인 자동감지 조치안됨 id 목록 (사유상태 미선택 & 행 미확인) 계산
+  const snapshotDetected = (list) => list
+    .filter(r => !r.closed && getProgress(r) === '조치안됨' && r.autoUnactionedApplied && !r.autoUnactionedAck)
+    .map(r => r.id);
 
   // 툴바 높이 측정 → 헤더 sticky top 오프셋. 툴바 줄바꿈 등 높이 변동 시 재계산.
   useEffect(() => {
@@ -376,22 +396,10 @@ export default function SoldOutAnalysisDelayCause() {
         const ship = (rows[i][OB_SHIPSTATUS_COL] || '').replace(/\s+/g, '');
         if (ship.includes('출고완료') || ship.includes('인천도착')) shippedSet.add(key);
       }
-      const cur = itemsRef.current;
-      let count = 0;
-      const next = cur.map(it => {
-        if (it.closed || it.autoUnactionedApplied) return it;
-        if (!it.releaseReqDate) return it;
-        if (todayStr <= it.releaseReqDate) return it; // 아직 기한 안 지남
-        const key = normOrder(it.orderNo);
-        if (!ledgerSet.has(key)) return it;          // 발주장부에 없으면 판단 보류
-        if (shippedSet.has(key)) return it;          // 출고완료/인천도착이면 제외
-        count++;
-        return { ...it, progressStatus: '조치안됨', autoUnactionedApplied: true };
-      });
+      const { next, count } = detectUnactioned(itemsRef.current, ledgerSet, shippedSet, todayStr);
       if (count > 0) saveItems(next);
-      const info = { date: todayStr, count };
-      localStorage.setItem(AUTORUN_KEY, JSON.stringify(info));
-      if (count > 0) setAutoDetectInfo(info);
+      setDetectIds(snapshotDetected(next));
+      localStorage.setItem(AUTORUN_KEY, JSON.stringify({ date: todayStr, count }));
     } catch { /* 실패 시 다음 접속에서 재시도 (lastRun 미기록) */ }
     finally { autoRunningRef.current = false; }
   }, [saveItems]);
@@ -406,6 +414,8 @@ export default function SoldOutAnalysisDelayCause() {
       // 1) 발주장부: 발주번호 → 실제 출고일(K), 인천 실제 도착일(L)
       const shipMap = new Map();
       const incheonMap = new Map();
+      const ledgerSet = new Set();   // 발주장부에 존재하는 발주번호 (조치안됨 감지용)
+      const shippedSet = new Set();  // 출고완료/인천도착 발주번호 (조치안됨 감지용)
       try {
         const res = await fetch(ORDERBOOK_URL);
         if (res.ok) {
@@ -414,6 +424,9 @@ export default function SoldOutAnalysisDelayCause() {
             const rawOrder = rows[i][OB_ORDERNO_COL];
             const key = normOrder(rawOrder);
             if (!key) continue;
+            ledgerSet.add(key);
+            const shipStatus = (rows[i][OB_SHIPSTATUS_COL] || '').replace(/\s+/g, '');
+            if (shipStatus.includes('출고완료') || shipStatus.includes('인천도착')) shippedSet.add(key);
             const ref = parseOrderDate(rawOrder);
             const ship = normalizeShipDate(rows[i][OB_ACTUALSHIP_COL], ref);
             if (ship && !shipMap.has(key)) shipMap.set(key, ship);
@@ -470,8 +483,13 @@ export default function SoldOutAnalysisDelayCause() {
         }
         return out;
       });
-      if (cShip + cInc + cSold > 0) saveItems(next);
-      setRefreshMsg(`실제출고일 ${cShip} · 인천도착일 ${cInc} · 품절시작일 ${cSold}건 갱신`);
+      // 새로고침 시 조치안됨 자동 감지도 함께 실행 (새로 조건 맞는 건을 뱃지에 추가)
+      const { next: detected, count: dCount } = detectUnactioned(next, ledgerSet, shippedSet, kstToday());
+      if (cShip + cInc + cSold > 0 || dCount > 0) saveItems(detected);
+      // 뱃지/감지목록 스냅샷 갱신 → 확인완료(ack)된 건은 여기서 빠지고, 새 감지 건은 추가됨
+      setDetectIds(snapshotDetected(detected));
+      setDetectViewed(false);
+      setRefreshMsg(`실제출고일 ${cShip} · 인천도착일 ${cInc} · 품절시작일 ${cSold}건 갱신${dCount > 0 ? ` · 조치안됨 ${dCount}건 감지` : ''}`);
     } catch {
       setRefreshMsg('새로고침 실패 — 잠시 후 다시 시도하세요.');
     } finally {
@@ -516,6 +534,37 @@ export default function SoldOutAnalysisDelayCause() {
     }
   }, [loaded, saveItems]);
 
+  // 로드 시 뱃지 스냅샷 초기화 (기존 미확인 감지 건). 자동감지(11시)가 돌면 그쪽에서 다시 갱신.
+  useEffect(() => {
+    if (!loaded) return;
+    setDetectIds(snapshotDetected(itemsRef.current));
+  }, [loaded]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 감지 뱃지를 눌러 목록을 봤는데(detectViewed) 아직 확인완료 안 한 감지 건이 남아있는지.
+  // render마다 ref 갱신 → beforeunload/언마운트 클린업에서 최신값 사용.
+  const shouldWarnLeaveRef = useRef(false);
+  shouldWarnLeaveRef.current = detectViewed && items.some(r =>
+    detectIds.includes(r.id) && !r.closed && getProgress(r) === '조치안됨' && r.autoUnactionedApplied && !r.autoUnactionedAck
+  );
+
+  // 브라우저 창/탭 닫기·새로고침 시 경고 (네이티브 확인창)
+  useEffect(() => {
+    const onBeforeUnload = (e) => {
+      if (!shouldWarnLeaveRef.current) return;
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, []);
+
+  // 다른 페이지(라우트)로 이동해 컴포넌트가 언마운트될 때 알림
+  useEffect(() => () => {
+    if (shouldWarnLeaveRef.current) {
+      alert('아직 확인완료하지 않은 조치안됨 감지 건이 남아있습니다.\n각 건의 사유상태를 선택하거나 행을 체크해 확인완료 처리해 주세요.\n(확인 안 하면 계속 알림에 남습니다.)');
+    }
+  }, []);
+
   const suggestions = useMemo(() => {
     if (!productSearch || productSearch.length < 1) return [];
     const q = productSearch.toLowerCase();
@@ -532,7 +581,8 @@ export default function SoldOutAnalysisDelayCause() {
 
   const filtered = useMemo(() => {
     let rows;
-    if (filterReason === '종결') rows = items.filter(r => r.closed);
+    if (filterReason === '감지') rows = items.filter(r => detectIds.includes(r.id));
+    else if (filterReason === '종결') rows = items.filter(r => r.closed);
     else {
       rows = items.filter(r => !r.closed);
       if (filterReason === '확인중' || filterReason === '지장없음' || filterReason === '독촉완료' || filterReason === '조치안됨' || filterReason === '품절됨') rows = rows.filter(r => getProgress(r) === filterReason);
@@ -552,7 +602,7 @@ export default function SoldOutAnalysisDelayCause() {
       rows = rows.filter(r => activeDates.every(([f, v]) => (r[f] || '') === v));
     }
     return rows;
-  }, [items, filterReason, searchQuery, dateFilters]);
+  }, [items, filterReason, searchQuery, dateFilters, detectIds]);
 
   // 날짜 필터 드롭다운: 스크롤/리사이즈 시 닫기 (fixed 위치가 헤더에서 분리되는 것 방지)
   useEffect(() => {
@@ -592,12 +642,38 @@ export default function SoldOutAnalysisDelayCause() {
     setSelectedIds(prev => prev.filter(x => x !== id));
   };
 
-  // 체크박스 선택
+  // 미확인 자동감지 건을 확인완료(ack) 처리
+  const ackDetected = (ids) => {
+    const idSet = new Set(ids);
+    let changed = false;
+    const next = items.map(i => {
+      if (idSet.has(i.id) && !i.closed && i.autoUnactionedApplied && !i.autoUnactionedAck && getProgress(i) === '조치안됨') {
+        changed = true;
+        return { ...i, autoUnactionedAck: true };
+      }
+      return i;
+    });
+    if (changed) saveItems(next);
+  };
+
+  // 체크박스 선택 (선택 시 = 확인완료 처리)
   const toggleSelect = (id) => {
+    if (!selectedIds.includes(id)) ackDetected([id]);
     setSelectedIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
   };
 
-  const changeFilter = (key) => { setFilterReason(key); setSelectedIds([]); };
+  const changeFilter = (key) => {
+    // 감지목록을 보다가 확인완료 안 한 건이 남은 채로 나가려 하면 알림
+    if (filterReason === '감지' && key !== '감지' && detectViewed) {
+      const unconfirmed = items.filter(r => detectIds.includes(r.id) && !r.closed && getProgress(r) === '조치안됨' && r.autoUnactionedApplied && !r.autoUnactionedAck);
+      if (unconfirmed.length > 0) {
+        alert(`아직 확인완료하지 않은 조치안됨 감지 건이 ${unconfirmed.length}건 있습니다.\n각 건의 사유상태를 선택하거나 행을 체크해 확인완료 처리해 주세요.\n(확인 안 하면 계속 알림에 남습니다.)`);
+      }
+      setDetectViewed(false);
+    }
+    setFilterReason(key);
+    setSelectedIds([]);
+  };
 
   // 일괄 종결 / 종결 해제
   const handleBulkClose = () => {
@@ -610,14 +686,6 @@ export default function SoldOutAnalysisDelayCause() {
     saveItems(items.map(i => selectedIds.includes(i.id)
       ? { ...i, closed: closing, closedAt: closing ? new Date().toISOString() : null }
       : i));
-    setSelectedIds([]);
-  };
-
-  // 선택 일괄 삭제
-  const handleBulkDelete = () => {
-    if (selectedIds.length === 0) return;
-    if (!confirm(`선택한 ${selectedIds.length}건을 삭제할까요? (되돌릴 수 없습니다)`)) return;
-    saveItems(items.filter(i => !selectedIds.includes(i.id)));
     setSelectedIds([]);
   };
 
@@ -779,7 +847,13 @@ export default function SoldOutAnalysisDelayCause() {
 
   // 셀 인라인 수정
   const updateField = (id, field, value) => {
-    saveItems(items.map(i => i.id === id ? { ...i, [field]: value } : i));
+    saveItems(items.map(i => {
+      if (i.id !== id) return i;
+      const upd = { ...i, [field]: value };
+      // 사유상태를 선택하면 자동감지 건 확인완료(ack) 처리 → 다음엔 뱃지에 안 뜸
+      if (field === 'reasonStatus' && value) upd.autoUnactionedAck = true;
+      return upd;
+    }));
   };
   const startEdit = (id, field, val) => { setEditingCell({ id, field }); setEditValue(val ?? ''); };
   const commitEdit = () => {
@@ -831,12 +905,18 @@ export default function SoldOutAnalysisDelayCause() {
   const countUnactioned = items.filter(r => !r.closed && getProgress(r) === '조치안됨').length;
   const countSoldout = items.filter(r => !r.closed && getProgress(r) === '품절됨').length;
   const countClosed = items.filter(r => r.closed).length;
+  // 미확인 자동감지 조치안됨 (사유상태 미선택 & 행 미선택) — 확인 전까지 날짜 넘어가도 누적
+  // 뱃지 건수는 스냅샷(detectIds) 기준 — 체크/사유상태로 확인해도 새로고침 전까지 유지
+  const countUnackedDetected = detectIds.length;
   const viewingClosed = filterReason === '종결';
 
   const allSelected = filtered.length > 0 && filtered.every(i => selectedIds.includes(i.id));
   const toggleSelectAll = () => {
     if (allSelected) setSelectedIds(prev => prev.filter(id => !filtered.some(f => f.id === id)));
-    else setSelectedIds(prev => [...new Set([...prev, ...filtered.map(f => f.id)])]);
+    else {
+      ackDetected(filtered.map(f => f.id)); // 전체 선택 시에도 확인완료 처리
+      setSelectedIds(prev => [...new Set([...prev, ...filtered.map(f => f.id)])]);
+    }
   };
 
   // ---- 스타일 토큰 ----
@@ -997,11 +1077,14 @@ export default function SoldOutAnalysisDelayCause() {
                 );
               })}
             </div>
-            {autoDetectInfo && autoDetectInfo.count > 0 && (
-              <button onClick={() => changeFilter('조치안됨')}
-                title="오늘 자동 감지된 조치안됨 건 보기"
-                style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '7px 14px', border: `1.5px solid ${PROGRESS_COLORS['조치안됨']}`, borderRadius: 10, background: '#fff3e0', color: '#e65100', cursor: 'pointer', fontSize: 13, fontWeight: 700, boxShadow: '0 1px 3px rgba(230,81,0,0.15)' }}>
-                🔔 조치안됨 감지 {autoDetectInfo.count}건
+            {countUnackedDetected > 0 && (
+              <button onClick={() => {
+                  changeFilter('감지');
+                  setDetectViewed(true);
+                }}
+                title="미확인 자동 감지 조치안됨 건 보기 (확인 전까지 누적)"
+                style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '7px 14px', border: `1.5px solid ${PROGRESS_COLORS['조치안됨']}`, borderRadius: 10, background: filterReason === '감지' ? PROGRESS_COLORS['조치안됨'] : '#fff3e0', color: filterReason === '감지' ? '#fff' : '#e65100', cursor: 'pointer', fontSize: 13, fontWeight: 700, boxShadow: '0 1px 3px rgba(230,81,0,0.15)' }}>
+                🔔 조치안됨 감지 {countUnackedDetected}건
               </button>
             )}
             {autoCloseInfo && autoCloseInfo.count > 0 && (
@@ -1015,12 +1098,6 @@ export default function SoldOutAnalysisDelayCause() {
               <button className="btn" onClick={handleBulkClose}
                 style={{ background: viewingClosed ? '#fff' : '#1e8e3e', color: viewingClosed ? '#1e8e3e' : '#fff', border: viewingClosed ? '1.5px solid #1e8e3e' : 'none', fontWeight: 600 }}>
                 선택 {selectedIds.length}건 {viewingClosed ? '종결 해제' : '종결'}
-              </button>
-            )}
-            {selectedIds.length > 0 && (
-              <button className="btn" onClick={handleBulkDelete}
-                style={{ background: '#c62828', color: '#fff', border: 'none', fontWeight: 600 }}>
-                선택 {selectedIds.length}건 삭제
               </button>
             )}
             <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -1326,7 +1403,9 @@ export default function SoldOutAnalysisDelayCause() {
                   const color = item.closed ? CLOSED_COLOR : (PROGRESS_COLORS[getProgress(item)] || '#9e9e9e');
                   // 종결 필요 알림: 인천도착일 + 4일이 지났는데 아직 종결 안 됨 → 행 전체 옅은 호박색
                   const needClose = !item.closed && item.incheonArriveDate && kstToday() > addDays(item.incheonArriveDate, 4);
-                  const rowBg = isSelected ? '#eef4ff' : (needClose ? '#fff8e1' : (isOpen ? '#f8fafd' : undefined));
+                  // 감지 건 중 확인완료(ack) 처리된 행 → 초록색 (새로고침 전까지 유지, 확인완료 인지용)
+                  const ackedDetected = detectIds.includes(item.id) && item.autoUnactionedApplied && item.autoUnactionedAck;
+                  const rowBg = ackedDetected ? '#e6f4ea' : (isSelected ? '#eef4ff' : (needClose ? '#fff8e1' : (isOpen ? '#f8fafd' : undefined)));
                   return (
                     <Fragment key={item.id}>
                       <tr className="dc-row" style={rowBg ? { background: rowBg } : undefined}>
