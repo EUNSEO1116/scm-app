@@ -12,6 +12,7 @@ const STORE_KEY_PREFIX = 'soldout_analysis_';
 const SOLDOUT_TRACKER_KEY = 'soldout_analysis_tracker';
 const REMARKET_KEY = 'soldout_remarket_events'; // 품절 해제 → 재마케팅 대상 이벤트 로그
 const EXCLUDE_KEYWORDS = ['최종마감', '품질확인서', '마감대상', '덤핑', '반출', '지재권'];
+const EXCLUDE_EXACT = ['시즌']; // 정확히 일치할 때만 제외
 const CRISIS_DAYS_THRESHOLD = 3;
 const HISTORY_SEARCH_DAYS = 92; // 품절 이력 검색 범위 (약 3개월)
 const WING_ON_STATUSES = ['CN 창고도착', '부분출고 대기', '출고 완료', '출고 대기', '출고완료'];
@@ -32,7 +33,7 @@ function keyToDate(k) { return new Date(+k.slice(0,4), +k.slice(4,6)-1, +k.slice
 function keyToDisplay(k) { return `${k.slice(0,4)}-${k.slice(4,6)}-${k.slice(6,8)}`; }
 function fmt(n) { if (n == null) return '-'; return Number(n).toLocaleString('ko-KR'); }
 function fmtDec(n, d=1) { const num = Number(n); return isNaN(num) ? '-' : num.toFixed(d); }
-function shouldExclude(s) { return s ? EXCLUDE_KEYWORDS.some(kw => s.includes(kw)) : false; }
+function shouldExclude(s) { if (!s) return false; if (EXCLUDE_EXACT.includes(s.trim())) return true; return EXCLUDE_KEYWORDS.some(kw => s.includes(kw)); }
 
 function parseOrderDateSort(dateStr) { const m = (dateStr||'').match(/(\d+)월\s*(\d+)일/); return m ? Number(m[1])*100+Number(m[2]) : 9999; }
 function parseShipDate(str) { if (!str) return null; const m = str.match(/(\d+)\/(\d+)/); return m ? new Date(new Date().getFullYear(), parseInt(m[1],10)-1, parseInt(m[2],10)) : null; }
@@ -851,7 +852,8 @@ export default function SoldOutAnalysis() {
           const pn = (it.productName || '').toLowerCase();
           const on = (it.optionName || '').toLowerCase();
           const oid = String(it.optionId || '').toLowerCase();
-          if (!pn.includes(lower) && !on.includes(lower) && !oid.includes(lower)) continue;
+          const bc = String(it.barcode || '').toLowerCase();
+          if (!pn.includes(lower) && !on.includes(lower) && !oid.includes(lower) && !bc.includes(lower)) continue;
           if (!byOption.has(it.optionId)) {
             byOption.set(it.optionId, { optionId: it.optionId, productName: it.productName, optionName: it.optionName, status: it.status, records: [] });
           }
@@ -1138,7 +1140,7 @@ export default function SoldOutAnalysis() {
                 <input
                   type="text"
                   className="search-input"
-                  placeholder="🔍 상품명·옵션명·옵션ID로 품절 이력 검색 (최근 3개월)"
+                  placeholder="🔍 상품명·옵션명·옵션ID·쿠팡바코드로 품절 이력 검색 (최근 3개월)"
                   value={searchTerm}
                   onChange={e => setSearchTerm(e.target.value)}
                   onKeyDown={e => { if (e.key === 'Enter') runSearch(); }}
