@@ -45,6 +45,65 @@ function safeNum(v) {
   return isNaN(n) ? 0 : n;
 }
 
+// UTC 기준 offset일 전의 'YYYYMMDD' 키 (업로드 저장 키와 동일 기준)
+function salesDateKey(offset) {
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() - offset);
+  return d.toISOString().slice(0, 10).replace(/-/g, '');
+}
+
+// 최근 7 '달력일' 판매수량을 옵션ID 기준으로 수집.
+//   가장 최근 업로드일(anchor)을 [0]으로 두고 달력상 뒤로 7일 연속(주말 포함, 없는 날=0).
+//   반환: { dayMaps:[Map<optionId,salesQty>×7], seen:Set<optionId> } 또는 null.
+async function loadRecent7DaySales() {
+  let anchor = -1;
+  for (let i = 0; i < 21; i++) {
+    const data = await dbStoreGet(`soldout_analysis_${salesDateKey(i)}`).catch(() => null);
+    if (data && Array.isArray(data.items) && data.items.length) { anchor = i; break; }
+  }
+  if (anchor < 0) return null;
+  const dayMaps = []; // [0]=최신(anchor) … [6]=가장 오래된
+  const seen = new Set();
+  for (let d = 0; d < 7; d++) {
+    const data = await dbStoreGet(`soldout_analysis_${salesDateKey(anchor + d)}`).catch(() => null);
+    const m = new Map();
+    if (data && Array.isArray(data.items)) {
+      for (const it of data.items) {
+        const oid = String(it.optionId || '').trim();
+        if (!oid) continue;
+        m.set(oid, (m.get(oid) || 0) + (Number(it.salesQty) || 0));
+        seen.add(oid);
+      }
+    }
+    dayMaps.push(m);
+  }
+  return { dayMaps, seen };
+}
+
+// 추세 기반 3주치 입고추천 계산.
+//   일수요: 최근3일평균 vs 앞4일평균으로 우상향/우하향(±20%)이면 최근3일평균, 평탄이면 7일평균.
+//   3주목표 = 일수요×7×3, 추천 = clamp(3주목표 − 대리창고현재, 0, 박스히어로).
+function computeRecommend(optionId, sales, agencyStock, bhStock) {
+  if (!sales || !optionId || !sales.seen.has(optionId)) return { hasSales: false, recommend: 0 };
+  const daily = sales.dayMaps.map(m => m.get(optionId) || 0); // [최신 … 오래된]
+  const recent3 = daily.slice(0, 3);
+  const early4 = daily.slice(3, 7);
+  const recentAvg = recent3.reduce((a, b) => a + b, 0) / recent3.length;
+  const early4Avg = early4.length ? early4.reduce((a, b) => a + b, 0) / early4.length : 0;
+  const avg7 = daily.reduce((a, b) => a + b, 0) / daily.length;
+  let dailyDemand;
+  if (early4Avg === 0) {
+    dailyDemand = recentAvg > 0 ? recentAvg : avg7; // 최근 급등(신규) → 최근 기준
+  } else if (recentAvg >= early4Avg * 1.2 || recentAvg <= early4Avg * 0.8) {
+    dailyDemand = recentAvg; // 우상향/우하향 → 최근 추세 반영
+  } else {
+    dailyDemand = avg7; // 평탄
+  }
+  const target3wk = Math.round(dailyDemand * 7 * 3);
+  const recommend = Math.max(0, Math.min(target3wk - agencyStock, bhStock));
+  return { hasSales: true, recommend };
+}
+
 export default function IncheonIncoming() {
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState('');
@@ -52,6 +111,7 @@ export default function IncheonIncoming() {
   const [oneTimeMap, setOneTimeMap] = useState({}); // barcode → 기타(1회성) 존재 여부
   const [qualityCertMap, setQualityCertMap] = useState({}); // barcode → 품질확인서 존재 여부
   const [ipRightMap, setIpRightMap] = useState({}); // barcode → 지재권 존재 여부
+  const [seasonMap, setSeasonMap] = useState({}); // barcode → 상태 정확일치 '시즌' 여부
   const [vocNames, setVocNames] = useState([]); // VOC 상품명 키워드 목록
   const [orderFile, setOrderFile] = useState(null); // 주문목록 파일명
   const [orderMap, setOrderMap] = useState({}); // key: "상품명||옵션명" → 합산 주문수량
@@ -65,9 +125,10 @@ export default function IncheonIncoming() {
     setLoading(true);
     setStatus('스프레드시트 데이터 가져오는 중...');
     try {
-      const [calcRes, barcodeRes, specialRes, impData] = await Promise.all([
+      const [calcRes, barcodeRes, specialRes, impData, salesData] = await Promise.all([
         fetch(TSV_CALC), fetch(CSV_BARCODE), fetch(CSV_SPECIAL),
-        dbStoreGet('improvement_items').catch(() => null)
+        dbStoreGet('improvement_items').catch(() => null),
+        loadRecent7DaySales().catch(() => null),
       ]);
 
       // 쿠팡바코드 시트: barcode(col5) → center(col11), status(col9)
@@ -75,6 +136,7 @@ export default function IncheonIncoming() {
       const dumpingSet = new Set(); // 덤핑 상태 바코드
       const newQualityCertMap = {}; // 품질확인서 상태 바코드
       const newIpRightMap = {}; // 지재권 상태 바코드
+      const newSeasonMap = {}; // 상태 정확일치 '시즌' 바코드
       if (barcodeRes.ok) {
         const csv = await barcodeRes.text();
         const rows = parseCSV(csv);
@@ -89,11 +151,14 @@ export default function IncheonIncoming() {
           if (rowText.includes('반출')) { dumpingSet.add(barcode); continue; }
           if (rowText.includes('품질확인서')) newQualityCertMap[barcode] = true;
           if (rowText.includes('지재권')) newIpRightMap[barcode] = true;
+          // 시즌: 상태 컬럼(col9)이 정확히 '시즌'일 때만
+          if ((cols[9] || '').trim() === '시즌') newSeasonMap[barcode] = true;
           centerMap[barcode] = center;
         }
       }
       setQualityCertMap(newQualityCertMap);
       setIpRightMap(newIpRightMap);
+      setSeasonMap(newSeasonMap);
 
       // 특별 관리 상품 시트: barcode(col0) → 기타(1회성)(col8)
       // 헤더 셀에 줄바꿈이 포함되어 parseCSV가 여러 행으로 분리하므로,
@@ -129,6 +194,7 @@ export default function IncheonIncoming() {
         const lines = tsv.split('\n').filter(l => l.trim());
         for (let i = 1; i < lines.length; i++) {
           const cols = lines[i].split('\t');
+          const optionId = (cols[1] || '').trim();
           const barcode = (cols[2] || '').trim();
           const productName = (cols[3] || '').trim();
           const optionName = (cols[4] || '').trim();
@@ -137,13 +203,21 @@ export default function IncheonIncoming() {
           if (!barcode || incomingQty <= 0) continue;
           if (dumpingSet.has(barcode)) continue; // 덤핑 상태 제외
 
+          // 대리판매 창고 = G+H+I열(cols 6,7,8), 내 창고 = 박스히어로 J열(cols 9)
+          const agencyStock = safeNum(cols[6]) + safeNum(cols[7]) + safeNum(cols[8]);
+          const bhStock = safeNum(cols[9]);
+          const rec = computeRecommend(optionId, salesData, agencyStock, bhStock);
+
           items.push({
+            optionId,
             barcode,
             productName,
             optionName,
             displayName: `${productName}, ${optionName}`,
             incomingQty,
             center: centerMap[barcode] || '',
+            hasSales: rec.hasSales,
+            recommend: rec.recommend,
           });
         }
       }
@@ -255,7 +329,17 @@ export default function IncheonIncoming() {
     if (ipRightMap[item.barcode]) {
       remarks.push('지재권');
     }
+    // 시즌 체크 (상태 정확일치)
+    if (seasonMap[item.barcode]) {
+      remarks.push('시즌');
+    }
     return remarks.join(', ');
+  };
+
+  // 입고추천 텍스트 (엑셀/화면 공용)
+  const recommendText = (item) => {
+    if (!item.hasSales) return '';
+    return item.recommend > 0 ? String(item.recommend) : '충분';
   };
 
   // 4) 엑셀 다운로드
@@ -263,7 +347,7 @@ export default function IncheonIncoming() {
     if (!data) return;
     const wb = XLSX_STYLE.utils.book_new();
 
-    const headerRow = ['쿠팡바코드', '상품명', '재고 입고 수량', '입고 센터', '비고'];
+    const headerRow = ['쿠팡바코드', '상품명', '재고 입고 수량', '입고 센터', '비고', '입고추천'];
     const wsData = [headerRow];
 
     for (const item of data.items) {
@@ -273,6 +357,7 @@ export default function IncheonIncoming() {
         item.incomingQty,
         item.center,
         getRemark(item),
+        recommendText(item),
       ]);
     }
 
@@ -323,6 +408,7 @@ export default function IncheonIncoming() {
       { wch: 14 },  // 재고 입고 수량
       { wch: 14 },  // 입고 센터
       { wch: 18 },  // 비고
+      { wch: 16 },  // 입고추천
     ];
 
     XLSX_STYLE.utils.book_append_sheet(wb, ws, '인천입고신청');
@@ -494,6 +580,7 @@ export default function IncheonIncoming() {
                       <th className="num">입고 수량</th>
                       <th>입고 센터</th>
                       <th>비고</th>
+                      <th>입고추천</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -505,6 +592,7 @@ export default function IncheonIncoming() {
                       const hasWait = waitBarcodes.has(item.barcode);
                       const hasQuality = qualityCertMap[item.barcode];
                       const hasIpRight = ipRightMap[item.barcode];
+                      const hasSeason = seasonMap[item.barcode];
                       return (
                         <tr key={i}>
                           <td style={{ color: '#999', fontSize: 11 }}>{i + 1}</td>
@@ -558,12 +646,29 @@ export default function IncheonIncoming() {
                             {hasIpRight && (
                               <span style={{
                                 background: '#ede7f6', color: '#4527a0', padding: '2px 6px',
-                                borderRadius: 4, fontSize: 11, fontWeight: 600,
+                                borderRadius: 4, fontSize: 11, fontWeight: 600, marginRight: 4,
                               }}>
                                 지재권
                               </span>
                             )}
+                            {hasSeason && (
+                              <span style={{
+                                background: '#fff8e1', color: '#f57f17', padding: '2px 6px',
+                                borderRadius: 4, fontSize: 11, fontWeight: 600,
+                              }}>
+                                시즌
+                              </span>
+                            )}
                             {!remark && '-'}
+                          </td>
+                          <td style={{ fontSize: 12 }}>
+                            {!item.hasSales ? '' : item.recommend > 0 ? (
+                              <span style={{ color: '#137333', fontWeight: 600 }}>
+                                {item.recommend}
+                              </span>
+                            ) : (
+                              <span style={{ color: '#999', fontSize: 11 }}>충분</span>
+                            )}
                           </td>
                         </tr>
                       );
