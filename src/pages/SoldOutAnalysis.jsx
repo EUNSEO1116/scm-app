@@ -527,6 +527,7 @@ export default function SoldOutAnalysis() {
       // 분석: 전체 유효상품 카운트(품절률용) + 품절/위기 목록 생성
       const exSet = new Set((exData || []).map(i => i.optionId));
       const results = [], soldoutIds = [];
+      let correctionsReleased = false; // 오래된 재고 수정 자동 해제 발생 여부
       // 품절률용: 전체 유효 상품 수 / 품절 수 (기존 로직과 동일)
       const validItems = []; // { optionId, coupangStock } - 유효 전체 상품
       for (const item of upload.items) {
@@ -539,7 +540,19 @@ export default function SoldOutAnalysis() {
           if (!entry || !entry.records.some(r => r.stock > 0)) continue;
         }
         // 재고 수정된 항목은 품절이 아닌 것으로 처리
-        const isCorrected = !!corrections[item.optionId];
+        // 단, 수정 등록일 다음날 이후 재고계산기 실재고(G열)도 0이면 진짜 품절 → 수정 자동 해제
+        // (쿠팡 엑셀이 아닌 실재고 기준: 수정 재고가 아직 남아있으면 해제하지 않음)
+        let isCorrected = !!corrections[item.optionId];
+        if (isCorrected) {
+          const _corr = corrections[item.optionId];
+          const _corrKey = _corr?.correctedAt ? dateToKey(new Date(_corr.correctedAt)) : null;
+          const _realStock = (cMap[item.optionId]?.calcStock) || 0;
+          if (_corrKey && today > _corrKey && _realStock === 0) {
+            delete corrections[item.optionId];
+            correctionsReleased = true;
+            isCorrected = false;
+          }
+        }
         // 유효 상품 (품절률 분모) — 수정된 항목은 coupangStock을 수정 시점 저장된 실제 재고로 간주
         const _s = sales30Sum[item.optionId] || 0;
         const _avg30d = Math.round((_s / 30) * 10) / 10;
@@ -632,6 +645,9 @@ export default function SoldOutAnalysis() {
 
       for (const id of Object.keys(trk)) { if (!soldoutIds.includes(id)) delete trk[id]; }
       await dbStoreSet(SOLDOUT_TRACKER_KEY, trk); setTracker(trk);
+
+      // 자동 해제된 재고 수정이 있으면 DB에 영구 반영 + 로컬 상태 갱신
+      if (correctionsReleased) { await dbStoreSet(SOLDOUT_CORRECTIONS_KEY, corrections); setStockCorrections(corrections); }
 
       // 품절률 스냅샷 (전체 유효 상품 기준, 제외 품목 빼고)
       const rTotal = validItems.length;
