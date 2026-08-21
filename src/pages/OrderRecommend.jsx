@@ -44,6 +44,7 @@ const TAG_COLORS = {
   '일반발주': { bg: '#e6f4ea', fg: '#1e8e3e' },
   '시즌마감보류': { bg: '#e8eaed', fg: '#5f6368' },
   '재고충분': { bg: '#e8f0fe', fg: '#1a73e8' },
+  '죽은재고': { bg: '#fde7e9', fg: '#a50e0e' },
   '제외': { bg: '#f1f3f4', fg: '#80868b' },
   '데이터없음': { bg: '#f1f3f4', fg: '#bdc1c6' },
 };
@@ -325,6 +326,7 @@ export default function OrderRecommend() {
           // 6주 판매 예측치 F — 재고주수(4주 미만)와 무관하게 판매량(수요예측)만으로 계산
           let baseF = null;
           let method = '';
+          let floored = false; // C. 최근 실판매 하한 적용 여부
           if (optionId && appeared.has(optionId)) {
             // 보정값(corrected) 반영한 일별/주간 판매
             const dailyVals = availKeys.map(k => corrQty(k, optionId, itemsByKey[k].get(optionId) || 0));
@@ -347,6 +349,14 @@ export default function OrderRecommend() {
               baseF = weighted;
               method = '가중평균';
             }
+            // C. 품절 방어: 예측이 최근 14일 실판매율보다 낮으면 하한으로 끌어올림(언더오더 해소).
+            //    단, 우하향(감소) 상품은 제외 — Holt 감소 예측을 되돌려 과발주하는 것 방지.
+            if (baseF != null && !down) {
+              const last14 = availKeys.slice(-14);
+              const recent14Daily = last14.length ? last14.reduce((s, k) => s + corrQty(k, optionId, itemsByKey[k].get(optionId) || 0), 0) / last14.length : 0;
+              const floorF = recent14Daily * HORIZON_DAYS;
+              if (floorF > baseF) { baseF = floorF; floored = true; }
+            }
           }
 
           if (baseF == null) {
@@ -359,7 +369,9 @@ export default function OrderRecommend() {
             const mult = seasonMult(seasonPeriod, arrivalDate);
             // 사이클재고(리드+발주주기, 시즌보정) + 안전재고(가산항, 시즌·리드타임 미연동)로 분리 계산.
             // '효자' 상태 상품은 기존 안전 7일, 그 외는 15일.
-            const safetyDays = status.includes(HYOJA_KEYWORD) ? SAFETY_BUFFER_DAYS_HYOJA : SAFETY_BUFFER_DAYS;
+            let safetyDays = status.includes(HYOJA_KEYWORD) ? SAFETY_BUFFER_DAYS_HYOJA : SAFETY_BUFFER_DAYS;
+            // B. 시즌 끝물(×0.7)·시즌밖(×0.2) 상품은 안전재고 축소 — 곧 시즌 종료라 과잉 비축 방지
+            if (mult === ENDING_MULT || mult === OFFSEASON_MULT) safetyDays = Math.min(safetyDays, SAFETY_BUFFER_DAYS_HYOJA);
             const coverDays = leadDays + REVIEW_DAYS + safetyDays; // 사유 표시용(리드+발주주기+안전)
             const dailyBase = baseF / HORIZON_DAYS;                 // 일 수요율(4주예측 ÷ 28)
             const cycleDays = leadDays + REVIEW_DAYS;              // 사이클재고 대상 일수
@@ -372,7 +384,20 @@ export default function OrderRecommend() {
             const uncapped = cycleDemand + safetyStock;
             const demand = Math.min(uncapped, capLimit);
             const wasCapped = uncapped > capLimit + 0.5;
-            const q = Math.ceil(demand - totalStock);
+            let q = Math.ceil(demand - totalStock);
+            // E. 효자(고회전) 1회 발주량 2주치(일수요×14) 상한 — 판매중지 시 묶임 최소화. 부족분은 4일 뒤 재발주로 커버.
+            let hyojaCapped = false;
+            if (status.includes(HYOJA_KEYWORD) && q > 0) {
+              const orderCap = Math.floor(dailyBase * 14);
+              if (q > orderCap) { q = Math.max(0, orderCap); hyojaCapped = true; }
+            }
+            // 총재고 상한: 현재고＋발주가 (리드타임＋2주)치를 넘지 않게 — 진짜 과잉 비축만 차단.
+            // 상한을 리드타임 위에 두므로 도착 전 품절은 나지 않음(파이프라인은 항상 보장).
+            let totalCapped = false;
+            if (q > 0) {
+              const totalCapUnits = Math.floor(dailyBase * (leadDays + 14));
+              if (totalStock + q > totalCapUnits) { q = Math.max(0, totalCapUnits - totalStock); totalCapped = true; }
+            }
             const demandRound = Math.round(demand);
             const seasonTxt = mult === PEAK_MULT ? '·시즌피크 ×1.2'
               : mult === ENDING_MULT ? '·시즌 끝물 ×0.7'
@@ -386,7 +411,10 @@ export default function OrderRecommend() {
                 ? `주의품목 최근1주 민감가중 ${HORIZON_WEEKS}주예측 필요재고 ${fRound}개`
                 : `최근가중 ${HORIZON_WEEKS}주예측 필요재고 ${fRound}개`;
               const capTxt = wasCapped ? `·재고상한 ${MAX_STOCK_WEEKS}주캡` : '';
-              reason = `${methodTxt}${seasonTxt}${capTxt} → 사이클 ${cycleDays}일(리드 ${leadDays})＋안전 ${safetyDays}일 수요 ${demandRound} − 재고 ${totalStock} = ${q}`;
+              const floorTxt = floored ? '·최근14일 실판매 하한' : '';
+              const hyojaTxt = hyojaCapped ? '·효자 2주 상한' : '';
+              const totalTxt = totalCapped ? `·총재고 리드+2주 상한(${leadDays + 14}일치)` : '';
+              reason = `${methodTxt}${floorTxt}${seasonTxt}${capTxt}${hyojaTxt}${totalTxt} → 사이클 ${cycleDays}일(리드 ${leadDays})＋안전 ${safetyDays}일 수요 ${demandRound} − 재고 ${totalStock} = ${q}`;
               // 엑셀 사유 키워드 — 적용된 것만 순서대로(사유1~5)
               if (method === 'Holt') kws.push('우하향');
               if (mult === PEAK_MULT) kws.push('시즌피크');
@@ -397,6 +425,9 @@ export default function OrderRecommend() {
               if (leadDays > DEFAULT_LEAD_DAYS) kws.push('리드타임');
               if (wasCapped) kws.push('재고상한');
               if (isCautionRow) kws.push('주의품목');
+              if (floored) kws.push('최근실판매하한');
+              if (hyojaCapped) kws.push('효자2주상한');
+              if (totalCapped) kws.push('총재고상한');
               tag = mult === PEAK_MULT ? '시즌피크'
                 : mult === ENDING_MULT ? '끝물발주'
                 : mult === OFFSEASON_MULT ? '시즌밖발주' : '일반발주';
@@ -412,10 +443,18 @@ export default function OrderRecommend() {
                 reason = `원래 ${qPeak}개 발주 대상이나, 입고예정 ${arrLabel} ${adjTxt}로 보정 → 보정수요 ${demandRound} ≤ 재고 ${totalStock}, 발주안함`;
                 tag = '시즌마감보류';
               } else {
-                tag = '재고충분';
-                // 재고주수 5주 미만인데 재고충분인 상품 — 왜 충분한지 사유 표시
-                if (typeof weeksStock === 'number' && weeksStock < 5) {
-                  kws.push(`수요 ${demandRound} ≤ 재고 ${totalStock}`);
+                // D. 죽은재고: 발주 없음 + 최근 14일 실판매 3개 미만(사실상 2주째 안 팔림) → 소진/할인 대상 분리
+                const last14dk = availKeys.slice(-14);
+                const recent14Sum = last14dk.reduce((s, k) => s + corrQty(k, optionId, itemsByKey[k].get(optionId) || 0), 0);
+                if (recent14Sum < 3) {
+                  tag = '죽은재고';
+                  kws.push(`최근14일 판매 ${Math.max(0, Math.round(recent14Sum))}개, 재고 ${totalStock} 소진대상`);
+                } else {
+                  tag = '재고충분';
+                  // 재고주수 5주 미만인데 재고충분인 상품 — 왜 충분한지 사유 표시
+                  if (typeof weeksStock === 'number' && weeksStock < 5) {
+                    kws.push(`수요 ${demandRound} ≤ 재고 ${totalStock}`);
+                  }
                 }
               }
             }
@@ -596,6 +635,7 @@ export default function OrderRecommend() {
                 ['일반발주', '상시·시즌전후 정상 발주'],
                 ['시즌마감보류', '원래 발주대상인데 시즌 끝물/밖 보정으로 빠짐'],
                 ['재고충분', '재고가 많아 발주 불필요'],
+                ['죽은재고', '발주 없음 + 최근 14일 실판매 3개 미만(소진/할인 대상)'],
                 ['제외', '최종마감·품질확인서 등 상태 제외'],
                 ['데이터없음', '수요예측 매칭 데이터 없음'],
               ].map(([t, d]) => {
@@ -608,8 +648,16 @@ export default function OrderRecommend() {
               <div style={{ fontFamily: 'monospace', color: '#3c4043' }}>우하향 추세 4주예측 필요재고 84개·시즌피크 ×1.2 → 커버 49일(리드 30) 수요 176 − 재고 132 = 45</div>
               <div style={{ marginTop: 4 }}>= [예측방식] · 4주예측 <u>필요재고 F</u> · [시즌계수] → 커버 <u>총일수</u>(리드 <u>일</u>) · <u>환산수요</u> − <u>O열 총재고</u> = <b>추천량</b></div>
             </div></div>
-          <div><b>⑧ 제외 대상 & 표 보기</b> — 최종마감 · 품질확인서 · 마감대상 · 덤핑 상태는 발주추천에서 제외됩니다.
+          <div style={{ marginBottom: 6 }}><b>⑧ 제외 대상 & 표 보기</b> — 최종마감 · 품질확인서 · 마감대상 · 덤핑 상태는 발주추천에서 제외됩니다.
             표의 <b>재고주수(W)</b> 값이 <b>4 미만</b>이면 셀이 연한 빨강으로 표시(재고 부족 경고)되고, <b>현재 총재고</b> 컬럼에서 O열 총재고를 바로 볼 수 있습니다.</div>
+          <div><b>⑨ 품절·판매중지 보정 (신규)</b>
+            <div style={{ marginTop: 6, marginLeft: 14, padding: '8px 12px', background: '#fff', border: '1px solid #e8eaed', borderRadius: 8, color: '#5f6368', fontSize: 12 }}>
+              <div style={{ marginBottom: 4 }}>• <b>최근 실판매 하한(품절 방어)</b> : 예측이 <u>최근 14일 실판매율</u>보다 낮으면 그 수준까지 끌어올립니다(급성장 상품 언더오더 방지). 단 <u>우하향 상품은 제외</u>.</div>
+              <div style={{ marginBottom: 4 }}>• <b>효자 2주 상한(판매중지 대비)</b> : <u>효자(고회전)</u> 상품은 1회 발주량을 <u>2주치(일수요×14)</u>로 제한. 판매중지 시 묶이는 재고를 줄이고, 부족분은 다음 발주(월·금)로 커버합니다.</div>
+              <div style={{ marginBottom: 4 }}>• <b>총재고 리드+2주 상한(과잉 차단)</b> : 현재고＋발주 합이 <u>(리드타임＋2주)치</u>를 넘으면 그만큼만 발주. 상한이 리드타임 위에 있어 <u>도착 전 품절은 나지 않고</u>, 그 위로 쌓이는 과잉 비축만 막습니다.</div>
+              <div style={{ marginBottom: 4 }}>• <b>시즌 끝물 안전재고 축소</b> : 시즌 끝물(×0.7)·시즌밖(×0.2) 상품은 안전재고를 15일 → 7일로 줄여 시즌 종료 직전 과잉 비축을 막습니다.</div>
+              <div>• <b>죽은재고 태그</b> : 발주가 없고 <u>최근 14일 실판매가 3개 미만</u>(사실상 2주째 안 팔림)이면 <b>죽은재고</b>로 표시(소진/할인 대상 분리).</div>
+            </div></div>
         </div>
       </details>
 
