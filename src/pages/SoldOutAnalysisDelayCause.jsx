@@ -722,7 +722,7 @@ export default function SoldOutAnalysisDelayCause() {
   // 업로드 양식(템플릿) 다운로드
   const handleTemplateDownload = () => {
     const rows = [
-      { '발주번호': 'AE-E-260720-JJ-002', '바코드': '8801234567890' },
+      { '발주번호': 'AE-E-260720-JJ-002', '바코드': 'S0035153536305' },
       { '발주번호': '', '바코드': '' },
     ];
     const ws = XLSX.utils.json_to_sheet(rows, { header: ['발주번호', '바코드'] });
