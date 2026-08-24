@@ -49,7 +49,16 @@ function similarity(a, b) {
   return (2 * lcsLen) / (lenA + lenB);
 }
 
+// 사이즈·숫자가 든 토큰은 정확일치만 인정해야 하는지 판정
+//   - 숫자를 포함(2XL, 230, 95, 2개입 등) → 정확일치 필요
+//   - 사이즈 글자 조합(s, m, l, xl, xxl, xxxl, xs, xxs 등) → 정확일치 필요
+//   (부분겹침 "L"⊂"XL", "XXL"⊂"XXXL" 을 다른 옵션으로 구분하기 위함)
+function isExactToken(t) {
+  return /\d/.test(t) || /^x*[sml]$/.test(t);
+}
+
 // 옵션명 토큰 기반 유사도: 순서 무관, 각 토큰의 최고 매칭을 합산
+//   단, 사이즈/숫자 토큰은 정확히 같을 때만 매칭(부분겹침 불인정)
 function optionSimilarity(a, b) {
   const tokensA = tokenize(a);
   const tokensB = tokenize(b);
@@ -64,11 +73,16 @@ function optionSimilarity(a, b) {
   let totalScore = 0;
   const usedB = new Set();
   for (const tA of tokensA) {
+    const exactA = isExactToken(tA);
     let bestScore = 0;
     let bestIdx = -1;
     for (let j = 0; j < tokensB.length; j++) {
       if (usedB.has(j)) continue;
-      const s = similarity(tA, tokensB[j]);
+      const tB = tokensB[j];
+      // 사이즈/숫자 토큰(한쪽이라도)은 완전히 같을 때만 점수 인정
+      const s = (exactA || isExactToken(tB))
+        ? (tA === tB ? 1 : 0)
+        : similarity(tA, tB);
       if (s > bestScore) { bestScore = s; bestIdx = j; }
     }
     if (bestIdx >= 0) usedB.add(bestIdx);
