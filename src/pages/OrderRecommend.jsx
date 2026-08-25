@@ -588,7 +588,7 @@ export default function OrderRecommend() {
       <style>{`@keyframes spin { to { transform: rotate(360deg); } } details.dd > summary::-webkit-details-marker { display: none; }`}</style>
 
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12, marginBottom: 16 }}>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }} data-tut="recommend-logic">
           <details className="dd" style={{ position: 'relative' }}>
             <summary style={{ cursor: 'pointer', listStyle: 'none', userSelect: 'none', display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 14px', borderRadius: 8, fontSize: 13, fontWeight: 600, border: '1px solid #d2e8d8', background: '#fff', color: '#1e8e3e', boxShadow: '0 1px 2px rgba(0,0,0,0.04)' }}>
               <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2">
@@ -704,6 +704,7 @@ export default function OrderRecommend() {
         <div style={{ display: 'flex', gap: 10 }}>
           {spikes.length > 0 && (
             <button
+              data-tut="recommend-correction"
               onClick={() => setShowCorrModal(true)}
               style={{
                 display: 'inline-flex', alignItems: 'center', gap: 6,
@@ -718,6 +719,7 @@ export default function OrderRecommend() {
             </button>
           )}
           <button
+            data-tut="recommend-refresh"
             onClick={load}
             disabled={loading}
             style={{
@@ -736,6 +738,7 @@ export default function OrderRecommend() {
             {loading ? '계산 중…' : '새로고침'}
           </button>
           <button
+            data-tut="recommend-export"
             onClick={exportExcel}
             disabled={loading || rows.length === 0}
             style={{
@@ -766,7 +769,7 @@ export default function OrderRecommend() {
         </div>
       )}
 
-      <div style={{ overflowX: 'auto', maxHeight: '70vh', overflowY: 'auto', border: '1px solid #e0e0e0', borderRadius: 6 }}>
+      <div data-tut="recommend-table" style={{ overflowX: 'auto', maxHeight: '70vh', overflowY: 'auto', border: '1px solid #e0e0e0', borderRadius: 6 }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
           <thead style={{ position: 'sticky', top: 0, background: '#f8f9fa', zIndex: 1 }}>
             <tr>

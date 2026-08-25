@@ -35,6 +35,7 @@ import ActivityLog from './pages/ActivityLog';
 import CnSettlementUpload from './pages/CnSettlementUpload';
 import CnSettlementDashboard from './pages/CnSettlementDashboard';
 import CnSettlementHistory from './pages/CnSettlementHistory';
+import HelpAdmin from './pages/HelpAdmin';
 
 // 딥링크(주소창 직접 접속·외부 링크)로 최초 접속하면 홈으로 보냄.
 // 단, 새로고침(reload)·뒤로/앞으로(back_forward)는 현재 페이지 유지.
@@ -95,6 +96,7 @@ function App() {
           <Route path="/cn-settlement/upload" element={<CnSettlementUpload />} />
           <Route path="/cn-settlement/dashboard" element={<CnSettlementDashboard />} />
           <Route path="/cn-settlement/history" element={<CnSettlementHistory />} />
+          <Route path="/help-admin" element={<HelpAdmin />} />
         </Routes>
       </Layout>
     </BrowserRouter>

@@ -2,6 +2,8 @@ import { NavLink, useLocation } from 'react-router-dom';
 import { useState, useEffect } from 'react';
 import { getSurgeForDisplay } from '../utils/salesSurge.js';
 import { dbStoreGet } from '../utils/dbApi';
+import HelpButton from './HelpButton';
+import { pathToPageKey } from '../tutorials/pageRegistry';
 
 const navItems = [
   { id: 'inventory', label: '재고관리', children: [
@@ -142,6 +144,18 @@ export default function Layout({ children }) {
           {rightNavItems.map(item => (
             <NavGroup key={item.id} item={item} openMenu={openMenu} setOpenMenu={setOpenMenu} counts={counts} alignRight />
           ))}
+          <NavLink to="/help-admin" title="도움말 관리"
+            className={({ isActive }) => `topbar-gear${isActive ? ' active' : ''}`}
+            style={({ isActive }) => ({
+              display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+              width: 34, height: 34, borderRadius: 8, marginLeft: 6, color: isActive ? '#1e8e3e' : '#5f6368',
+              background: isActive ? '#e6f4ea' : 'transparent', textDecoration: 'none',
+            })}>
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2">
+              <circle cx="12" cy="12" r="3" />
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+            </svg>
+          </NavLink>
           <div className="topbar-date">
             {new Date().toLocaleDateString('ko-KR', { year: 'numeric', month: 'long', day: 'numeric' })}
           </div>
@@ -153,6 +167,9 @@ export default function Layout({ children }) {
           {children}
         </div>
       </main>
+
+      {/* 전역 도움말 버튼 — 현재 페이지에 튜토리얼 콘텐츠가 있으면 자동 표시 */}
+      {pathToPageKey[location.pathname] && <HelpButton pageKey={pathToPageKey[location.pathname]} />}
     </div>
   );
 }
