@@ -398,6 +398,13 @@ export default function IncheonIncoming() {
             border: borderThin,
             alignment: c === 1 ? { horizontal: 'left', vertical: 'center' } : { ...baseAlign },
           };
+          // 입고추천 셀(F열, c===5): 추천 숫자 > 재고 입고 수량이면 연한 주황 강조
+          if (c === 5) {
+            const item = data.items[r - 1];
+            if (item && item.hasSales && item.recommend > item.incomingQty) {
+              ws[ref].s.fill = { patternType: 'solid', fgColor: { rgb: 'FFFFE0B2' } };
+            }
+          }
         }
       }
     }
