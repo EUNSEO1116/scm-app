@@ -916,11 +916,11 @@ export default function SalesForecast() {
           {lastUpdated && <span style={{ fontSize: 12, color: '#999' }}>{lastUpdated.toLocaleTimeString('ko-KR')} 기준 · 데이터 {dataDays}일분</span>}
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <div style={{ display: 'flex', border: '1px solid #ddd', borderRadius: 8, overflow: 'hidden' }}>
+          <div data-tut="forecast-range" style={{ display: 'flex', border: '1px solid #ddd', borderRadius: 8, overflow: 'hidden' }}>
             <button onClick={() => setRange('30')} style={{ ...filterBtn(range === '30'), border: 'none', borderRadius: 0 }}>30일</button>
             <button onClick={() => setRange('90')} style={{ ...filterBtn(range === '90'), border: 'none', borderRadius: 0 }}>3개월</button>
           </div>
-          <button onClick={decideLoad} disabled={loading} style={{ padding: '5px 14px', fontSize: 13, borderRadius: 8, border: '1px solid #ddd', background: '#fff', cursor: 'pointer' }}>
+          <button onClick={decideLoad} disabled={loading} data-tut="forecast-refresh" style={{ padding: '5px 14px', fontSize: 13, borderRadius: 8, border: '1px solid #ddd', background: '#fff', cursor: 'pointer' }}>
             {loading ? '불러오는 중…' : '↻ 다시 보기'}
           </button>
           <button onClick={exportSeasonExcel} style={{ padding: '5px 14px', fontSize: 13, borderRadius: 8, border: '1px solid #1e7e34', background: '#fff', color: '#1e7e34', cursor: 'pointer' }}>
@@ -952,7 +952,7 @@ export default function SalesForecast() {
 
       {/* 요약 */}
       {!loading && rows.length > 0 && (
-        <div style={{ display: 'flex', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
+        <div data-tut="forecast-summary" style={{ display: 'flex', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
           {[
             ['전체', stats.total, '#374151'],
             ['우상향', stats.up, TREND_COLOR.up],
@@ -1002,7 +1002,7 @@ export default function SalesForecast() {
       )}
 
       {/* 필터 바 */}
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 16 }}>
+      <div data-tut="forecast-filter" style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 16 }}>
         <input value={search} onChange={e => setSearch(e.target.value)} placeholder="상품명·시즌 검색"
           style={{ padding: '6px 12px', fontSize: 13, border: '1px solid #ddd', borderRadius: 8, minWidth: 180 }} />
         <div style={{ display: 'flex', gap: 4 }}>
@@ -1043,7 +1043,7 @@ export default function SalesForecast() {
 
       {/* 리스트 대시보드 (제품 한 줄씩, 펼치면 넓은 차트) */}
       {!loading && (
-        <div style={{ border: '1px solid #eaeaea', borderRadius: 12, overflow: 'hidden' }}>
+        <div data-tut="forecast-table" style={{ border: '1px solid #eaeaea', borderRadius: 12, overflow: 'hidden' }}>
           {filtered.slice(0, visibleCount).map((row, idx, arr) => {
             const color = TREND_COLOR[row.trend.dir];
             const open = isOpen(row);

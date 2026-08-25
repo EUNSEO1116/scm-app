@@ -153,10 +153,12 @@ export default function SoldOutAnalysisHistory() {
             {data && <>
               <span style={{ fontSize: 12, color: 'var(--text-secondary)', background: '#f1f3f4', padding: '2px 8px', borderRadius: 4 }}>{fmt(totalCount)}개</span>
               <span style={{ margin: '0 2px', color: 'var(--border)' }}>|</span>
-              {['전체', '신규', '효자'].map(s => (
-                <button key={s} onClick={() => setStatusFilter(s)} className={`filter-btn${statusFilter === s ? ' active' : ''}`} style={{ fontSize: 12, padding: '2px 10px' }}>{s}</button>
-              ))}
-              <span style={{ fontSize: 12, fontWeight: 700, padding: '3px 10px', borderRadius: 6, background: totalNetProfit >= 0 ? '#e8f0fe' : '#fce8e6', color: totalNetProfit >= 0 ? '#1a73e8' : '#c5221f' }}>
+              <span data-tut="rank-filter" style={{ display: 'inline-flex', gap: 4 }}>
+                {['전체', '신규', '효자'].map(s => (
+                  <button key={s} onClick={() => setStatusFilter(s)} className={`filter-btn${statusFilter === s ? ' active' : ''}`} style={{ fontSize: 12, padding: '2px 10px' }}>{s}</button>
+                ))}
+              </span>
+              <span data-tut="rank-profit" style={{ fontSize: 12, fontWeight: 700, padding: '3px 10px', borderRadius: 6, background: totalNetProfit >= 0 ? '#e8f0fe' : '#fce8e6', color: totalNetProfit >= 0 ? '#1a73e8' : '#c5221f' }}>
                 순이익 합계 {fmt(totalNetProfit)}원
               </span>
             </>}
@@ -168,7 +170,7 @@ export default function SoldOutAnalysisHistory() {
               onChange={e => setSearch(e.target.value)}
               style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid var(--border)', fontSize: 12, width: 160 }}
             />
-            <button onClick={() => setShowCalendar(!showCalendar)} style={{ width: 32, height: 32, borderRadius: 8, border: '1px solid var(--border)', background: showCalendar ? 'var(--primary)' : '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+            <button data-tut="rank-date" onClick={() => setShowCalendar(!showCalendar)} style={{ width: 32, height: 32, borderRadius: 8, border: '1px solid var(--border)', background: showCalendar ? 'var(--primary)' : '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={showCalendar ? '#fff' : '#555'} strokeWidth="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
             </button>
           </div>
@@ -216,7 +218,7 @@ export default function SoldOutAnalysisHistory() {
       {/* 테이블 */}
       {data && (
         <div className="card" style={{ padding: 0 }}>
-          <div style={{ overflowX: 'auto' }}>
+          <div data-tut="rank-table" style={{ overflowX: 'auto' }}>
             <table style={{ width: '100%', tableLayout: 'fixed', borderCollapse: 'collapse', fontSize: 12, lineHeight: 1.4 }}>
               <thead>
                 <tr style={{ background: '#f8f9fa', borderBottom: '2px solid #dee2e6' }}>

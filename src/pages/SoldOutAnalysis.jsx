@@ -1144,7 +1144,7 @@ export default function SoldOutAnalysis() {
       {/* 필터 바 */}
       <div className="card" style={{ marginBottom: 16, position: 'relative', overflow: 'visible' }}>
         <div className="card-body">
-          <div className="filter-bar">
+          <div className="filter-bar" data-tut="soldout-toolbar">
             {(cachedResult || rangeResult) && <>
               <button className={`filter-btn${riskFilter === 'all' ? ' active' : ''}`} onClick={() => setRiskFilter('all')}>전체 ({stats.total})</button>
               <button className={`filter-btn${riskFilter === '품절' ? ' active' : ''}`} style={riskFilter === '품절' ? { background: '#c5221f', borderColor: '#c5221f' } : {}} onClick={() => setRiskFilter(riskFilter === '품절' ? 'all' : '품절')}>🔴 품절 ({stats.soldout})</button>
@@ -1170,7 +1170,7 @@ export default function SoldOutAnalysis() {
                 )}
               </div>
               {selected.size > 0 && (
-                <button className="btn btn-primary btn-sm" onClick={() => setShowBatchInput(true)}>
+                <button className="btn btn-primary btn-sm" data-tut="soldout-reason" onClick={() => setShowBatchInput(true)}>
                   {selected.size}개 사유 입력
                 </button>
               )}
@@ -1178,11 +1178,11 @@ export default function SoldOutAnalysis() {
               <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{fmt(filtered.length)}개</span>
             </>}
             {viewingDate === todayStr() && !cachedResult && !rangeResult && (
-              <button onClick={handleUpdate} disabled={updating} className="btn btn-primary btn-sm" style={{ whiteSpace: 'nowrap' }}>
+              <button onClick={handleUpdate} disabled={updating} data-tut="soldout-update" className="btn btn-primary btn-sm" style={{ whiteSpace: 'nowrap' }}>
                 {updating ? '갱신 중...' : '🔄 업데이트'}
               </button>
             )}
-            <button onClick={handleExportMonth} disabled={exporting} className="btn btn-outline btn-sm" style={{ whiteSpace: 'nowrap' }}>
+            <button onClick={handleExportMonth} disabled={exporting} data-tut="soldout-export" className="btn btn-outline btn-sm" style={{ whiteSpace: 'nowrap' }}>
               {exporting ? '다운로드 중...' : `📥 ${calMonth + 1}월 엑셀`}
             </button>
             <button onClick={() => { if (!showCalendar && selStart && !selEnd) setSelStart(null); setShowCalendar(!showCalendar); }} style={{ width: 32, height: 32, borderRadius: 8, border: '1px solid var(--border)', background: showCalendar ? 'var(--primary)' : '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
@@ -1312,7 +1312,7 @@ export default function SoldOutAnalysis() {
           {(rangeResult || viewingDate !== todayStr()) && <button onClick={goToToday} style={{ padding: '5px 12px', borderRadius: 6, border: '1px solid var(--primary)', background: '#fff', color: 'var(--primary)', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>오늘로 돌아가기</button>}
         </div>
         <div style={{ fontSize: 11, color: '#999', marginBottom: 4 }}>* 입고예상은 예상일일 뿐이오니, 정확한 입고 예정일은 SCM팀에 문의 바랍니다.</div>
-        <div className="table-wrapper" style={{ maxHeight: 'calc(100vh - 340px)', overflowY: 'auto' }}>
+        <div className="table-wrapper" data-tut="soldout-table" style={{ maxHeight: 'calc(100vh - 340px)', overflowY: 'auto' }}>
           <table className="data-table">
             <thead><tr>
               <th style={{ width: 32 }}><input type="checkbox" checked={filtered.filter(r => r.riskLevel === '품절').length > 0 && filtered.filter(r => r.riskLevel === '품절').every(r => selected.has(r.optionId))} onChange={() => { const ids = filtered.filter(r => r.riskLevel === '품절').map(r => r.optionId); const allSel = ids.every(id => selected.has(id)); setSelected(allSel ? new Set() : new Set(ids)); }} style={{ cursor: 'pointer' }} /></th>

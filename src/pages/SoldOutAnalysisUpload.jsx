@@ -345,6 +345,7 @@ export default function SoldOutAnalysisUpload() {
           <label style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>업로드 날짜</label>
           <input
             type="date"
+            data-tut="upload-date"
             value={targetDate}
             max={keyToDateInput(todayKey())}
             onChange={e => setTargetDate(e.target.value)}
@@ -362,6 +363,7 @@ export default function SoldOutAnalysisUpload() {
           <div style={{ flex: 1 }} />
           <button
             onClick={handleReset}
+            data-tut="upload-reset"
             disabled={resetting || uploading}
             style={{
               padding: '8px 14px', borderRadius: 8,
@@ -375,6 +377,7 @@ export default function SoldOutAnalysisUpload() {
         </div>
 
         <div
+          data-tut="upload-drop"
           onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
           onDragLeave={() => setDragging(false)}
           onDrop={handleDrop}
@@ -438,7 +441,7 @@ export default function SoldOutAnalysisUpload() {
         </p>
 
         {/* 모드 선택 */}
-        <div style={{ display: 'flex', gap: 8, marginBottom: 20 }}>
+        <div data-tut="upload-dlmode" style={{ display: 'flex', gap: 8, marginBottom: 20 }}>
           {[['single', '단일 날짜'], ['range', '기간 설정']].map(([mode, label]) => {
             const active = dlMode === mode;
             return (
@@ -495,6 +498,7 @@ export default function SoldOutAnalysisUpload() {
 
         <button
           onClick={handleDownload}
+          data-tut="upload-download"
           disabled={downloading}
           style={{
             padding: '10px 20px', borderRadius: 8, border: 'none',
