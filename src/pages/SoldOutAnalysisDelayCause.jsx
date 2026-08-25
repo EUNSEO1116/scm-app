@@ -689,6 +689,14 @@ export default function SoldOutAnalysisDelayCause() {
     setSelectedIds([]);
   };
 
+  // 일괄 삭제 (선택 건 DB에서도 제거)
+  const handleBulkDelete = () => {
+    if (selectedIds.length === 0) return;
+    if (!confirm(`선택한 ${selectedIds.length}건을 삭제하시겠습니까? (되돌릴 수 없습니다)`)) return;
+    saveItems(items.filter(i => !selectedIds.includes(i.id)));
+    setSelectedIds([]);
+  };
+
   // 엑셀 다운로드 (현재 필터/검색 결과 기준)
   const handleExcelDownload = () => {
     if (filtered.length === 0) {
@@ -1098,6 +1106,12 @@ export default function SoldOutAnalysisDelayCause() {
               <button className="btn" onClick={handleBulkClose}
                 style={{ background: viewingClosed ? '#fff' : '#1e8e3e', color: viewingClosed ? '#1e8e3e' : '#fff', border: viewingClosed ? '1.5px solid #1e8e3e' : 'none', fontWeight: 600 }}>
                 선택 {selectedIds.length}건 {viewingClosed ? '종결 해제' : '종결'}
+              </button>
+            )}
+            {selectedIds.length > 0 && (
+              <button className="btn" onClick={handleBulkDelete}
+                style={{ background: '#c62828', color: '#fff', border: 'none', fontWeight: 600 }}>
+                선택 {selectedIds.length}건 삭제
               </button>
             )}
             <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
