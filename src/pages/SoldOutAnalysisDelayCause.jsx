@@ -344,18 +344,14 @@ export default function SoldOutAnalysisDelayCause() {
     } catch { /* ignore */ }
     dbStoreGet(STORE_KEY).then((rawDbItems) => {
       const dbItems = migrateReasonStatus(rawDbItems);
-      if (Array.isArray(dbItems) && Array.isArray(localItems)) {
-        if (localItems.length > dbItems.length) {
-          setItems(localItems);
-          dbStoreSet(STORE_KEY, localItems, { skipLog: true });
-        } else {
-          setItems(dbItems);
-          localStorage.setItem(STORE_KEY, JSON.stringify(dbItems));
-        }
-      } else if (Array.isArray(dbItems)) {
+      // DB를 기준(source of truth)으로 삼는다: DB에 데이터가 있으면 항상 DB를 사용하고
+      // localStorage는 캐시로만 갱신한다. (기존 '길이가 긴 쪽이 이김' 병합은
+      // 삭제가 stale localStorage로 되살아나는 문제가 있어 폐기)
+      if (Array.isArray(dbItems) && dbItems.length > 0) {
         setItems(dbItems);
         localStorage.setItem(STORE_KEY, JSON.stringify(dbItems));
       } else if (Array.isArray(localItems) && localItems.length > 0) {
+        // DB가 비어있으면(최초 사용 등) 로컬로 최초 시드
         dbStoreSet(STORE_KEY, localItems, { skipLog: true });
       }
       setLoaded(true);
@@ -757,6 +753,11 @@ export default function SoldOutAnalysisDelayCause() {
       if (idxOrderNo < 0 || idxBarcode < 0) {
         alert('첫 행 헤더에 발주번호 · 바코드 열이 있어야 합니다.');
         return;
+      }
+      // 상품명은 '특별 관리 상품' 시트를 fetch한 productList에서 채운다.
+      // 시트 로딩 실패/미완료(네트워크에서 docs.google.com 차단 등)면 상품명이 공란으로 등록되므로 미리 경고한다.
+      if (productList.length === 0) {
+        if (!confirm('상품 시트(특별 관리 상품)가 아직 로딩되지 않았거나 로딩에 실패했습니다.\n이대로 업로드하면 상품명·옵션명이 공란으로 등록됩니다.\n(네트워크에서 docs.google.com 접근이 막혔을 수 있습니다. 페이지를 새로고침한 뒤 다시 시도해 보세요.)\n\n그래도 계속할까요?')) return;
       }
       const pmap = {};
       for (const p of productList) { if (p.barcode) pmap[p.barcode] = p; }
