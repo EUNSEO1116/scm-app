@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { dbStoreGet, dbStoreSet } from '../utils/dbApi';
 
 const REMARKET_KEY = 'soldout_remarket_events';
@@ -8,6 +8,20 @@ function keyToDisplay(k) {
   return `${k.slice(0, 4)}-${k.slice(4, 6)}-${k.slice(6, 8)}`;
 }
 function fmtDec(n, d = 1) { const num = Number(n); return isNaN(num) ? '-' : num.toFixed(d); }
+
+function SortableTh({ label, sortKey, sort, onSort }) {
+  const active = sort.key === sortKey;
+  const arrow = active ? (sort.dir === 'asc' ? ' ▲' : ' ▼') : '';
+  return (
+    <th
+      style={{ textAlign: 'center', cursor: 'pointer', userSelect: 'none', color: active ? '#1a73e8' : undefined }}
+      onClick={() => onSort(sortKey)}
+      title="클릭하여 정렬"
+    >
+      {label}<span style={{ fontSize: 10, color: active ? '#1a73e8' : '#bbb' }}>{arrow || ' ⇅'}</span>
+    </th>
+  );
+}
 
 const TABS = [
   { id: 'pending', label: '미조치', color: '#d93025', desc: '재입고되어 마케팅 검토가 필요한 상품' },
@@ -22,6 +36,8 @@ export default function SoldOutRemarket() {
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState(new Set());
   const [toast, setToast] = useState(null);
+  const [sort, setSort] = useState({ key: null, dir: 'asc' });
+  const dragRef = useRef({ active: false, mode: 'select' });
 
   const showToast = (type, title, msg) => { setToast({ type, title, message: msg }); setTimeout(() => setToast(null), 3000); };
 
@@ -34,7 +50,12 @@ export default function SoldOutRemarket() {
     return () => { alive = false; };
   }, []);
 
-  useEffect(() => { setSelected(new Set()); }, [tab]);
+  useEffect(() => { setSelected(new Set()); setSort({ key: null, dir: 'asc' }); }, [tab]);
+
+  const toggleSort = (key) => setSort(prev =>
+    prev.key === key
+      ? (prev.dir === 'asc' ? { key, dir: 'desc' } : { key: null, dir: 'asc' })
+      : { key, dir: 'asc' });
 
   const counts = useMemo(() => {
     const c = { pending: 0, done: 0, held: 0 };
@@ -53,13 +74,26 @@ export default function SoldOutRemarket() {
         (e.reason || '').toLowerCase().includes(q)
       );
     }
-    // 최근 해결 먼저, 그 안에서 판매량(마케팅 우선순위) 높은 순
+    if (sort.key) {
+      const numCols = { days: true, avg3d: true };
+      const mul = sort.dir === 'asc' ? 1 : -1;
+      return [...list].sort((a, b) => {
+        let cmp;
+        if (numCols[sort.key]) {
+          cmp = (Number(a[sort.key]) || 0) - (Number(b[sort.key]) || 0);
+        } else {
+          cmp = String(a[sort.key] || '').localeCompare(String(b[sort.key] || ''), 'ko');
+        }
+        return cmp * mul;
+      });
+    }
+    // 기본값: 최근 해결 먼저, 그 안에서 판매량(마케팅 우선순위) 높은 순
     return [...list].sort((a, b) => {
       const d = (b.resolvedDate || '').localeCompare(a.resolvedDate || '');
       if (d !== 0) return d;
       return (b.avg3d || 0) - (a.avg3d || 0);
     });
-  }, [events, tab, search]);
+  }, [events, tab, search, sort]);
 
   const applyStatus = async (keys, status) => {
     const keySet = keys instanceof Set ? keys : new Set(keys);
@@ -79,6 +113,22 @@ export default function SoldOutRemarket() {
   const toggleSelect = (key) => setSelected(prev => {
     const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n;
   });
+
+  // 마우스 드래그 다중선택
+  const applyDrag = (key) => setSelected(prev => {
+    const n = new Set(prev);
+    if (dragRef.current.mode === 'select') n.add(key); else n.delete(key);
+    return n;
+  });
+  const startDrag = (key) => {
+    dragRef.current = { active: true, mode: selected.has(key) ? 'deselect' : 'select' };
+    applyDrag(key);
+  };
+  useEffect(() => {
+    const up = () => { dragRef.current.active = false; };
+    window.addEventListener('mouseup', up);
+    return () => window.removeEventListener('mouseup', up);
+  }, []);
   const toggleAll = () => setSelected(prev => {
     const allKeys = rows.map(r => r.key);
     const allSelected = allKeys.length > 0 && allKeys.every(k => prev.has(k));
@@ -117,13 +167,11 @@ export default function SoldOutRemarket() {
       {/* 검색 */}
       <div className="card" style={{ marginBottom: 16 }}>
         <div className="card-body">
-          <div className="filter-bar">
-            <input
-              className="search-input"
-              placeholder="상품명, 옵션명, 바코드, 사유 검색..."
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-            />
+          <div className="filter-bar" style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '8px 14px', borderRadius: 10, background: '#eef4ff', border: '1px solid #c7dbff', color: '#1a56db', fontSize: 12.5, fontWeight: 600, whiteSpace: 'nowrap' }}>
+              <span style={{ fontSize: 10.5, background: '#1a56db', color: '#fff', borderRadius: 5, padding: '2px 7px', fontWeight: 700, letterSpacing: 0.5 }}>TIP</span>
+              체크박스를 누른 채 위·아래로 드래그하면 여러 건을 한 번에 선택할 수 있어요
+            </div>
             {selected.size > 0 && (
               tab === 'pending' ? (
                 <>
@@ -134,14 +182,19 @@ export default function SoldOutRemarket() {
                 <button className="btn btn-outline btn-sm" onClick={() => applyStatus(selected, 'pending')}>선택 {selected.size}건 미조치로</button>
               )
             )}
-            <div style={{ flex: 1 }} />
-            <span style={{ fontSize: 13, color: '#5f6368' }}>{rows.length}건</span>
+            <div style={{ flex: 1, textAlign: 'center', fontSize: 12.5, color: '#5f6368', lineHeight: 1.5, minWidth: 0 }}>
+              {activeTab.desc} · 품절되었다가 재입고된 상품은 판매량 회복이 더디므로 재마케팅 대상으로 관리합니다.
+            </div>
+            <span style={{ fontSize: 13, color: '#5f6368', whiteSpace: 'nowrap' }}>{rows.length}건</span>
+            <input
+              className="search-input"
+              placeholder="상품명, 옵션명, 바코드, 사유 검색..."
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              style={{ width: 380, maxWidth: '40%' }}
+            />
           </div>
         </div>
-      </div>
-
-      <div style={{ padding: '0 0 12px', fontSize: 12, color: '#5f6368', textAlign: 'center' }}>
-        {activeTab.desc} · 품절되었다가 재입고된 상품은 판매량 회복이 더디므로 재마케팅 대상으로 관리합니다.
       </div>
 
       {loading ? (
@@ -166,22 +219,26 @@ export default function SoldOutRemarket() {
                   />
                 </th>
                 <th style={{ width: 40, textAlign: 'center' }}>#</th>
-                <th style={{ textAlign: 'center' }}>상품명</th>
-                <th style={{ textAlign: 'center' }}>옵션명</th>
-                <th style={{ textAlign: 'center' }}>바코드</th>
-                <th style={{ textAlign: 'center' }}>품절일</th>
-                <th style={{ textAlign: 'center' }}>해결일</th>
-                <th style={{ textAlign: 'center' }}>품절기간</th>
-                <th style={{ textAlign: 'center' }}>평균판매</th>
-                <th style={{ textAlign: 'center' }}>품절사유</th>
+                <SortableTh label="상품명" sortKey="productName" sort={sort} onSort={toggleSort} />
+                <SortableTh label="옵션명" sortKey="optionName" sort={sort} onSort={toggleSort} />
+                <SortableTh label="바코드" sortKey="barcode" sort={sort} onSort={toggleSort} />
+                <SortableTh label="품절일" sortKey="soldoutStart" sort={sort} onSort={toggleSort} />
+                <SortableTh label="해결일" sortKey="resolvedDate" sort={sort} onSort={toggleSort} />
+                <SortableTh label="품절기간" sortKey="days" sort={sort} onSort={toggleSort} />
+                <SortableTh label="평균판매" sortKey="avg3d" sort={sort} onSort={toggleSort} />
+                <SortableTh label="품절사유" sortKey="reason" sort={sort} onSort={toggleSort} />
                 <th style={{ textAlign: 'center', width: 200 }}>조치</th>
               </tr>
             </thead>
             <tbody>
               {rows.map((e, i) => (
                 <tr key={e.key} style={selected.has(e.key) ? { background: '#e8f0fe' } : {}}>
-                  <td style={{ textAlign: 'center' }}>
-                    <input type="checkbox" checked={selected.has(e.key)} onChange={() => toggleSelect(e.key)} style={{ cursor: 'pointer' }} />
+                  <td
+                    style={{ textAlign: 'center', cursor: 'pointer', userSelect: 'none' }}
+                    onMouseDown={(ev) => { ev.preventDefault(); startDrag(e.key); }}
+                    onMouseEnter={() => { if (dragRef.current.active) applyDrag(e.key); }}
+                  >
+                    <input type="checkbox" checked={selected.has(e.key)} readOnly style={{ cursor: 'pointer', pointerEvents: 'none' }} />
                   </td>
                   <td style={{ textAlign: 'center' }}>{i + 1}</td>
                   <td style={{ textAlign: 'center', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis' }} title={e.productName}>{e.productName || '-'}</td>
