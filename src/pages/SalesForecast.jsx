@@ -334,19 +334,12 @@ export default function SalesForecast() {
       const partial = buckets.some(b => !b.hasData);
       setCoverage({ partial, firstDate: availKeys.length ? keyToMMDD(availKeys[0]) : '' });
 
-      // 시즌 시드 (스프레드시트 → 정규화) + DB 병합
-      const seed = {};
+      // 시즌: DB(엑셀 업로드)만 사용 — 스프레드시트 Q열은 더 이상 시즌 출처로 쓰지 않음(최초 1회 이관 완료)
       const appeared = new Set();
       for (const key of availKeys) { for (const oid of itemsByKey[key].keys()) appeared.add(oid); }
-      for (const oid of appeared) {
-        const bc = bcMap[oid];
-        if (!bc) continue;
-        seed[oid] = { period: bc.sheetPeriod, tags: normalizeSeasonText(bc.sheetSeasonText) };
-      }
-      const merged = { ...seed, ...(dbSeasons || {}) };
+      const merged = { ...(dbSeasons || {}) };
       setSeasonMap(merged);
       setCustomTags(Array.isArray(dbTags) ? dbTags : []);
-      if (!dbSeasons) { dbStoreSet(SEASONS_STORE, merged, { skipLog: true }); } // 최초 1회 DB 이관
 
       // 행 구성: 판매중 + 기간 내 한 번이라도 등장한 상품
       const list = [];
@@ -354,7 +347,7 @@ export default function SalesForecast() {
         const bc = bcMap[oid];
         if (!bc) continue;
         if (shouldExclude(bc.status)) continue;
-        const season = merged[oid] || seed[oid] || { period: '', tags: [] };
+        const season = merged[oid] || { period: '', tags: [] };
 
         // 데이터 있는 구간은 추세색, DB 없는 구간(예: 5월 이전)은 회색선(pre)으로 표시
         const chartData = buckets.map((b, i) => {
@@ -438,7 +431,7 @@ export default function SalesForecast() {
           const allAvg = aCnt ? aSum / aCnt : 0, monthAvg = mCnt ? mSum / mCnt : allAvg, eps = Math.max(0.3, allAvg * 0.1), diff = monthAvg - allAvg;
           dir = Math.abs(diff) < eps ? 'flat' : (diff > 0 ? 'up' : 'down');
         }
-        const season = merged[oid] || seed[oid] || { period: '', tags: [] };
+        const season = merged[oid] || { period: '', tags: [] };
         overstockList.push({
           optionId: oid, barcode: bc.barcode || calc.barcode || '',
           productName: bc.productName, optionName: bc.optionName, brand: bc.brand,
@@ -656,21 +649,32 @@ export default function SalesForecast() {
   };
 
   // ───────── 시즌 데이터 엑셀 다운로드 ─────────
-  const exportSeasonExcel = () => {
+  const exportSeasonExcel = async () => {
     const aoa = [['옵션ID', '바코드', '상품명', '옵션명', '시즌', '시즌기간']];
-    const entries = Object.entries(seasonMap)
-      .filter(([oid]) => { const nm = nameMap[oid]; return nm && !shouldExclude(nm.status); }) // 판매중만
-      .sort((a, b) => (nameMap[a[0]]?.productName || '').localeCompare(nameMap[b[0]]?.productName || ''));
-    for (const [oid, s] of entries) {
-      const nm = nameMap[oid] || {};
-      aoa.push([oid, nm.barcode || '', nm.productName || '', nm.optionName || '', (s.tags || []).join(', '), s.period || '']);
+    // 쿠팡바코드 시트를 즉석에서 읽어 시트 행 순서 그대로 출력(로우데이터 순서 유지).
+    // 이미 입력된 시즌·시즌기간은 채우고, 없으면 빈칸 → 사용자가 시즌만 적어 업로드.
+    let count = 0;
+    try {
+      const bcCsv = await (await fetch(CSV_BARCODE)).text();
+      const bcLines = bcCsv.split('\n').filter(l => l.trim());
+      for (let i = 1; i < bcLines.length; i++) {
+        const c = parseCsvRow(bcLines[i]);
+        const oid = (c[1] || '').trim();
+        if (!oid) continue; // 옵션ID 없는 행 건너뜀
+        const s = seasonMap[oid] || { tags: [], period: '' };
+        aoa.push([oid, (c[5] || '').trim(), (c[3] || '').trim(), (c[4] || '').trim(), (s.tags || []).join(', '), s.period || '']);
+        count++;
+      }
+    } catch (err) {
+      showToast('error', '쿠팡바코드 시트 읽기 실패: ' + (err.message || err));
+      return;
     }
     const ws = XLSX.utils.aoa_to_sheet(aoa);
     ws['!cols'] = [{ wch: 16 }, { wch: 16 }, { wch: 40 }, { wch: 24 }, { wch: 22 }, { wch: 16 }];
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, '시즌데이터');
     XLSX.writeFile(wb, `시즌데이터_${dateToKey(new Date())}.xlsx`);
-    showToast('success', `시즌 데이터 ${entries.length}건 다운로드`);
+    showToast('success', `시즌 데이터 ${count}건 다운로드`);
   };
 
   // ───────── 시즌 데이터 엑셀 업로드 (대량편집·병합 덮어쓰기) ─────────
