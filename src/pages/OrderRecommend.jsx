@@ -5,7 +5,6 @@ import { dbStoreGet, dbStoreSet, dbGetCaution } from '../utils/dbApi';
 // ───────── 상수 ─────────
 const SHEET_ID = '1NXhW_gG0b-gXuVqrhbY9ErWi8uO_7pXIy-NTo4FbE1I';
 const TSV_CALC = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=tsv&gid=1349677364`; // 재고 계산기
-const CSV_BARCODE = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent('쿠팡바코드')}`;
 
 const STORE_PREFIX = 'soldout_analysis_';
 const SEASONS_STORE = 'sales_forecast_seasons';
@@ -185,9 +184,8 @@ export default function OrderRecommend() {
       const dayList = [];
       for (let i = FORECAST_DAYS - 1; i >= 0; i--) { const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - i); dayList.push(d); }
 
-      const [calcRes, barcodeRes, dbSeasons, dbImprove, dbCorrections, dbCaution, ...stores] = await Promise.all([
+      const [calcRes, dbSeasons, dbImprove, dbCorrections, dbCaution, ...stores] = await Promise.all([
         fetch(TSV_CALC),
-        fetch(CSV_BARCODE),
         dbStoreGet(SEASONS_STORE).catch(() => null),
         dbStoreGet(IMPROVE_STORE).catch(() => null),
         dbStoreGet(CORRECTIONS_STORE).catch(() => null),
@@ -234,21 +232,10 @@ export default function OrderRecommend() {
       const recentBucket = useBuckets.length ? useBuckets[useBuckets.length - 1] : [];
       const spikeList = []; // 보정 알럿 목록
 
-      // 시즌기간 시드: 쿠팡바코드 시트 Q(16) → 옵션id별 period
-      const seedPeriod = {};
-      try {
-        const bcCsv = await barcodeRes.text();
-        const bcLines = bcCsv.split('\n').filter(l => l.trim());
-        for (let i = 1; i < bcLines.length; i++) {
-          const c = parseCsvRow(bcLines[i]);
-          const oid = (c[1] || '').trim();
-          if (oid) seedPeriod[oid] = (c[16] || '').trim();
-        }
-      } catch { /* 시즌 시드 실패 시 DB값만 사용 */ }
+      // 시즌 출처: DB(엑셀 업로드)만 사용 — 스프레드시트 Q열 시드는 쓰지 않음(수요예측과 통일, 오염 재발 방지).
+      // DB에 값이 없으면 빈칸('상시', 시즌 보정 없음)으로 처리됨.
       const seasons = dbSeasons || {};
-      // DB에 키가 있으면(시즌 삭제로 빈칸이어도) DB값 우선 — 시트 시드로 부활 방지.
-      // 빈칸 period는 seasonMult에서 '상시'(보정 없음)로 처리됨.
-      const periodOf = (oid) => (oid in seasons) ? (seasons[oid].period || '') : (seedPeriod[oid] || '');
+      const periodOf = (oid) => (oid in seasons) ? (seasons[oid].period || '') : '';
 
       // VOC: 쿠팡바코드 → 상품문제/재수배 & 처리중/시작전
       const vocBarcodes = new Set();
