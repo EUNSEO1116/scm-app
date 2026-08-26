@@ -216,6 +216,7 @@ export default function IncheonIncoming() {
             displayName: `${productName}, ${optionName}`,
             incomingQty,
             center: centerMap[barcode] || '',
+            agencyStock, // G+H+I 합계(대리판매 창고 재고)
             hasSales: rec.hasSales,
             recommend: rec.recommend,
           });
@@ -398,6 +399,17 @@ export default function IncheonIncoming() {
             border: borderThin,
             alignment: c === 1 ? { horizontal: 'left', vertical: 'center' } : { ...baseAlign },
           };
+          // 재고 입고 수량 셀(C열, c===2): G+H+I 합계 ≤20 연한 빨강, ≥100 연한 초록
+          if (c === 2) {
+            const item = data.items[r - 1];
+            if (item) {
+              if (item.agencyStock <= 20) {
+                ws[ref].s.fill = { patternType: 'solid', fgColor: { rgb: 'FFFFCDD2' } };
+              } else if (item.agencyStock >= 100) {
+                ws[ref].s.fill = { patternType: 'solid', fgColor: { rgb: 'FFC8E6C9' } };
+              }
+            }
+          }
           // 입고추천 셀(F열, c===5): 추천 숫자 > 재고 입고 수량이면 연한 주황 강조
           if (c === 5) {
             const item = data.items[r - 1];
