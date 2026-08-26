@@ -381,7 +381,8 @@ export default function OrderRecommend() {
             // A안: 목표재고 상한 = max(자연 커버, 6주). 리드타임이 상한보다 길면 파이프라인 커버 우선(결품 방지)
             const capDays = Math.max(coverDays, MAX_STOCK_WEEKS * 7);
             const capLimit = dailyBase * capDays;
-            const uncapped = cycleDemand + safetyStock;
+            // 시즌 종료 후 도착(×0)은 안전재고까지 제외해 발주 0 — '시즌마감보류'로 처리(주석 의도대로)
+            const uncapped = mult === SEASON_OVER_MULT ? 0 : cycleDemand + safetyStock;
             const demand = Math.min(uncapped, capLimit);
             const wasCapped = uncapped > capLimit + 0.5;
             let q = Math.ceil(demand - totalStock);
