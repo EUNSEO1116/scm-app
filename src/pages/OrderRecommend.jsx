@@ -411,7 +411,7 @@ export default function OrderRecommend() {
                 ? `주의품목 최근1주 민감가중 ${HORIZON_WEEKS}주예측 필요재고 ${fRound}개`
                 : `최근가중 ${HORIZON_WEEKS}주예측 필요재고 ${fRound}개`;
               const capTxt = wasCapped ? `·재고상한 ${MAX_STOCK_WEEKS}주캡` : '';
-              const floorTxt = floored ? '·최근14일 실판매 하한' : '';
+              const floorTxt = floored ? '·최근 실판매만큼 상향(품절방지)' : '';
               const hyojaTxt = hyojaCapped ? '·효자 2주 상한' : '';
               const totalTxt = totalCapped ? `·총재고 리드+2주 상한(${leadDays + 14}일치)` : '';
               reason = `${methodTxt}${floorTxt}${seasonTxt}${capTxt}${hyojaTxt}${totalTxt} → 사이클 ${cycleDays}일(리드 ${leadDays})＋안전 ${safetyDays}일 수요 ${demandRound} − 재고 ${totalStock} = ${q}`;
@@ -425,7 +425,7 @@ export default function OrderRecommend() {
               if (leadDays > DEFAULT_LEAD_DAYS) kws.push('리드타임');
               if (wasCapped) kws.push('재고상한');
               if (isCautionRow) kws.push('주의품목');
-              if (floored) kws.push('최근실판매하한');
+              if (floored) kws.push('품절방지 상향');
               if (hyojaCapped) kws.push('효자2주상한');
               if (totalCapped) kws.push('총재고상한');
               tag = mult === PEAK_MULT ? '시즌피크'
@@ -652,7 +652,7 @@ export default function OrderRecommend() {
             표의 <b>재고주수(W)</b> 값이 <b>4 미만</b>이면 셀이 연한 빨강으로 표시(재고 부족 경고)되고, <b>현재 총재고</b> 컬럼에서 O열 총재고를 바로 볼 수 있습니다.</div>
           <div><b>⑨ 품절·판매중지 보정 (신규)</b>
             <div style={{ marginTop: 6, marginLeft: 14, padding: '8px 12px', background: '#fff', border: '1px solid #e8eaed', borderRadius: 8, color: '#5f6368', fontSize: 12 }}>
-              <div style={{ marginBottom: 4 }}>• <b>최근 실판매 하한(품절 방어)</b> : 예측이 <u>최근 14일 실판매율</u>보다 낮으면 그 수준까지 끌어올립니다(급성장 상품 언더오더 방지). 단 <u>우하향 상품은 제외</u>.</div>
+              <div style={{ marginBottom: 4 }}>• <b>품절방지 상향(최근 실판매 반영)</b> : 예측이 <u>최근 14일 실판매율</u>보다 낮으면 그 수준까지 끌어올립니다(급성장 상품 언더오더 방지). 단 <u>우하향 상품은 제외</u>.</div>
               <div style={{ marginBottom: 4 }}>• <b>효자 2주 상한(판매중지 대비)</b> : <u>효자(고회전)</u> 상품은 1회 발주량을 <u>2주치(일수요×14)</u>로 제한. 판매중지 시 묶이는 재고를 줄이고, 부족분은 다음 발주(월·금)로 커버합니다.</div>
               <div style={{ marginBottom: 4 }}>• <b>총재고 리드+2주 상한(과잉 차단)</b> : 현재고＋발주 합이 <u>(리드타임＋2주)치</u>를 넘으면 그만큼만 발주. 상한이 리드타임 위에 있어 <u>도착 전 품절은 나지 않고</u>, 그 위로 쌓이는 과잉 비축만 막습니다.</div>
               <div style={{ marginBottom: 4 }}>• <b>시즌 끝물 안전재고 축소</b> : 시즌 끝물(×0.7)·시즌밖(×0.2) 상품은 안전재고를 15일 → 7일로 줄여 시즌 종료 직전 과잉 비축을 막습니다.</div>
