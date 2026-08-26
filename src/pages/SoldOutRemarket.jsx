@@ -3,6 +3,23 @@ import { dbStoreGet, dbStoreSet } from '../utils/dbApi';
 
 const REMARKET_KEY = 'soldout_remarket_events';
 
+const SHEET_ID = '1NXhW_gG0b-gXuVqrhbY9ErWi8uO_7pXIy-NTo4FbE1I';
+const TSV_CALC = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=tsv&gid=1349677364`; // 재고 계산기
+
+function safeNum(v) {
+  if (!v || v === '-') return 0;
+  const n = Number(String(v).replace(/,/g, ''));
+  return isNaN(n) ? 0 : n;
+}
+
+function fmtStockTime(iso) {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (isNaN(d)) return null;
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
 function keyToDisplay(k) {
   if (!k || k.length < 8) return k || '-';
   return `${k.slice(0, 4)}-${k.slice(4, 6)}-${k.slice(6, 8)}`;
@@ -37,6 +54,8 @@ export default function SoldOutRemarket() {
   const [selected, setSelected] = useState(new Set());
   const [toast, setToast] = useState(null);
   const [sort, setSort] = useState({ key: null, dir: 'asc' });
+  const [updating, setUpdating] = useState(false);
+  const [stockUpdatedAt, setStockUpdatedAt] = useState(null);
   const dragRef = useRef({ active: false, mode: 'select' });
 
   const showToast = (type, title, msg) => { setToast({ type, title, message: msg }); setTimeout(() => setToast(null), 3000); };
@@ -45,7 +64,13 @@ export default function SoldOutRemarket() {
     let alive = true;
     (async () => {
       const data = await dbStoreGet(REMARKET_KEY).catch(() => null);
-      if (alive) { setEvents(Array.isArray(data) ? data : []); setLoading(false); }
+      if (alive) {
+        const arr = Array.isArray(data) ? data : [];
+        setEvents(arr);
+        const lastAt = arr.map(e => e.stockAt).filter(Boolean).sort().pop();
+        setStockUpdatedAt(lastAt || null);
+        setLoading(false);
+      }
     })();
     return () => { alive = false; };
   }, []);
@@ -75,7 +100,7 @@ export default function SoldOutRemarket() {
       );
     }
     if (sort.key) {
-      const numCols = { days: true, avg3d: true };
+      const numCols = { days: true, avg3d: true, gross: true, incheon: true, orderDone: true };
       const mul = sort.dir === 'asc' ? 1 : -1;
       return [...list].sort((a, b) => {
         let cmp;
@@ -109,6 +134,41 @@ export default function SoldOutRemarket() {
     showToast('success', '처리 완료', `${keySet.size}건 ${label}`);
   };
   const updateStatus = (key, status) => applyStatus([key], status);
+
+  // 재고업데이트: 버튼 클릭 시 1회만 재고계산기 시트를 읽어 그로스/인천/발주완료 계산·저장
+  const updateStock = async () => {
+    if (updating) return;
+    setUpdating(true);
+    try {
+      const res = await fetch(TSV_CALC);
+      if (!res.ok) throw new Error('시트 응답 오류');
+      const tsv = await res.text();
+      const lines = tsv.split('\n').filter(l => l.trim());
+      const map = {}; // barcode → { gross, incheon, orderDone }
+      for (let i = 1; i < lines.length; i++) {
+        const cols = lines[i].split('\t');
+        const barcode = (cols[2] || '').trim(); // C열 쿠팡바코드
+        if (!barcode) continue;
+        const gross = safeNum(cols[6]) + safeNum(cols[7]) + safeNum(cols[8]); // G+H+I
+        const incheon = safeNum(cols[9]); // J열 박스히어로
+        const total = safeNum(cols[14]); // O열 총재고
+        map[barcode] = { gross, incheon, orderDone: total - gross - incheon };
+      }
+      const now = new Date().toISOString();
+      const next = events.map(e => {
+        const m = map[e.barcode];
+        return m ? { ...e, gross: m.gross, incheon: m.incheon, orderDone: m.orderDone, stockAt: now } : e;
+      });
+      const matched = events.filter(e => map[e.barcode]).length;
+      setEvents(next);
+      setStockUpdatedAt(now);
+      await dbStoreSet(REMARKET_KEY, next, { logDesc: `(NEW)재마케팅 재고업데이트 ${matched}건` }).catch(() => {});
+      showToast('success', '재고 업데이트 완료', `${matched}건 반영`);
+    } catch (err) {
+      showToast('error', '업데이트 실패', err.message || '오류');
+    }
+    setUpdating(false);
+  };
 
   const toggleSelect = (key) => setSelected(prev => {
     const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n;
@@ -172,6 +232,19 @@ export default function SoldOutRemarket() {
               <span style={{ fontSize: 10.5, background: '#1a56db', color: '#fff', borderRadius: 5, padding: '2px 7px', fontWeight: 700, letterSpacing: 0.5 }}>TIP</span>
               체크박스를 누른 채 위·아래로 드래그하면 여러 건을 한 번에 선택할 수 있어요
             </div>
+            <button
+              className="btn btn-primary btn-sm"
+              onClick={updateStock}
+              disabled={updating}
+              style={{ whiteSpace: 'nowrap' }}
+            >
+              {updating ? '재고 업데이트 중...' : '🔄 재고업데이트'}
+            </button>
+            {stockUpdatedAt && (
+              <span style={{ fontSize: 11.5, color: '#5f6368', whiteSpace: 'nowrap' }}>
+                최근 업데이트 {fmtStockTime(stockUpdatedAt)}
+              </span>
+            )}
             {selected.size > 0 && (
               tab === 'pending' ? (
                 <>
@@ -182,9 +255,7 @@ export default function SoldOutRemarket() {
                 <button className="btn btn-outline btn-sm" onClick={() => applyStatus(selected, 'pending')}>선택 {selected.size}건 미조치로</button>
               )
             )}
-            <div style={{ flex: 1, textAlign: 'center', fontSize: 12.5, color: '#5f6368', lineHeight: 1.5, minWidth: 0 }}>
-              {activeTab.desc} · 품절되었다가 재입고된 상품은 판매량 회복이 더디므로 재마케팅 대상으로 관리합니다.
-            </div>
+            <div style={{ flex: 1, minWidth: 0 }} />
             <span style={{ fontSize: 13, color: '#5f6368', whiteSpace: 'nowrap' }}>{rows.length}건</span>
             <input
               className="search-input"
@@ -226,6 +297,9 @@ export default function SoldOutRemarket() {
                 <SortableTh label="해결일" sortKey="resolvedDate" sort={sort} onSort={toggleSort} />
                 <SortableTh label="품절기간" sortKey="days" sort={sort} onSort={toggleSort} />
                 <SortableTh label="평균판매" sortKey="avg3d" sort={sort} onSort={toggleSort} />
+                <SortableTh label="그로스" sortKey="gross" sort={sort} onSort={toggleSort} />
+                <SortableTh label="인천" sortKey="incheon" sort={sort} onSort={toggleSort} />
+                <SortableTh label="발주완료" sortKey="orderDone" sort={sort} onSort={toggleSort} />
                 <SortableTh label="품절사유" sortKey="reason" sort={sort} onSort={toggleSort} />
                 <th style={{ textAlign: 'center', width: 200 }}>조치</th>
               </tr>
@@ -248,6 +322,9 @@ export default function SoldOutRemarket() {
                   <td style={{ textAlign: 'center', fontSize: 12, color: '#1a73e8', fontWeight: 600 }}>{keyToDisplay(e.resolvedDate)}</td>
                   <td style={{ textAlign: 'center', fontWeight: 600, color: (e.days || 0) >= 7 ? '#d93025' : '#333' }}>{e.days || 1}일</td>
                   <td style={{ textAlign: 'center' }}>{e.avg3d > 0 ? fmtDec(e.avg3d) : '-'}</td>
+                  <td style={{ textAlign: 'center' }}>{e.gross != null ? e.gross.toLocaleString() : '-'}</td>
+                  <td style={{ textAlign: 'center' }}>{e.incheon != null ? e.incheon.toLocaleString() : '-'}</td>
+                  <td style={{ textAlign: 'center', fontWeight: 600, color: (e.orderDone || 0) > 0 ? '#1e8e3e' : '#333' }}>{e.orderDone != null ? e.orderDone.toLocaleString() : '-'}</td>
                   <td style={{ textAlign: 'center', fontSize: 12 }}>
                     {e.reason
                       ? <span style={{ background: '#f3eef8', color: '#7c4dbd', borderRadius: 4, padding: '2px 8px' }}>{e.reason}</span>
