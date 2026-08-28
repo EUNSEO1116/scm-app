@@ -111,7 +111,7 @@ export default function IncheonIncoming() {
   const [oneTimeMap, setOneTimeMap] = useState({}); // barcode → 기타(1회성) 존재 여부
   const [qualityCertMap, setQualityCertMap] = useState({}); // barcode → 품질확인서 존재 여부
   const [ipRightMap, setIpRightMap] = useState({}); // barcode → 지재권 존재 여부
-  const [seasonMap, setSeasonMap] = useState({}); // barcode → 상태 정확일치 '시즌' 여부
+  const [seasonMap, setSeasonMap] = useState({}); // barcode → 상태에 '시즌' 포함 토큰(표시 워딩)
   const [vocNames, setVocNames] = useState([]); // VOC 상품명 키워드 목록
   const [orderFile, setOrderFile] = useState(null); // 주문목록 파일명
   const [orderMap, setOrderMap] = useState({}); // key: "상품명||옵션명" → 합산 주문수량
@@ -136,7 +136,7 @@ export default function IncheonIncoming() {
       const dumpingSet = new Set(); // 덤핑 상태 바코드
       const newQualityCertMap = {}; // 품질확인서 상태 바코드
       const newIpRightMap = {}; // 지재권 상태 바코드
-      const newSeasonMap = {}; // 상태 정확일치 '시즌' 바코드
+      const newSeasonMap = {}; // 상태에 '시즌' 포함 토큰(표시 워딩) 바코드
       if (barcodeRes.ok) {
         const csv = await barcodeRes.text();
         const rows = parseCSV(csv);
@@ -151,8 +151,9 @@ export default function IncheonIncoming() {
           if (rowText.includes('반출')) { dumpingSet.add(barcode); continue; }
           if (rowText.includes('품질확인서')) newQualityCertMap[barcode] = true;
           if (rowText.includes('지재권')) newIpRightMap[barcode] = true;
-          // 시즌: 상태 컬럼(col9)이 정확히 '시즌'일 때만
-          if ((cols[9] || '').trim() === '시즌') newSeasonMap[barcode] = true;
+          // 시즌: 상태 컬럼(col9)을 쉼표로 나눠 '시즌' 키워드가 포함된 토큰을 표시
+          const seasonToken = (cols[9] || '').split(',').map((s) => s.trim()).find((s) => s.includes('시즌'));
+          if (seasonToken) newSeasonMap[barcode] = seasonToken;
           centerMap[barcode] = center;
         }
       }
@@ -330,9 +331,9 @@ export default function IncheonIncoming() {
     if (ipRightMap[item.barcode]) {
       remarks.push('지재권');
     }
-    // 시즌 체크 (상태 정확일치)
+    // 시즌 체크 (상태에 '시즌' 포함 토큰이 있으면 그 워딩 표시)
     if (seasonMap[item.barcode]) {
-      remarks.push('시즌');
+      remarks.push(seasonMap[item.barcode]);
     }
     return remarks.join(', ');
   };
@@ -675,7 +676,7 @@ export default function IncheonIncoming() {
                                 background: '#fff8e1', color: '#f57f17', padding: '2px 6px',
                                 borderRadius: 4, fontSize: 11, fontWeight: 600,
                               }}>
-                                시즌
+                                {hasSeason}
                               </span>
                             )}
                             {!remark && '-'}
