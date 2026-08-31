@@ -119,13 +119,14 @@ export default function SoldOutAnalysis() {
     });
     let changed = false;
     for (const [oid, entry] of Object.entries(cached.trackerSnapshot)) {
-      let days = 0;
+      // 업로드 없는 날(주말 등)은 끊지 않고, 확인된 품절일 사이는 품절로 간주해 캘린더 일수로 집계.
+      let lastSoldoutDi = 0;
       for (let di = 0; di < dailyMaps.length; di++) {
         const stock = dailyMaps[di].get(oid);
-        if (stock === undefined || stock > 0) break;
-        days++;
+        if (stock > 0) break;
+        if (stock === 0) lastSoldoutDi = di;
       }
-      const newDays = Math.max(1, days);
+      const newDays = lastSoldoutDi + 1;
       if (entry.days !== newDays) { entry.days = newDays; changed = true; }
     }
     // 과거 날짜: rate_snapshots와 캐시 rate 동기화
@@ -585,13 +586,16 @@ export default function SoldOutAnalysis() {
       });
       const consecDays = {};
       for (const id of soldoutIds) {
-        let days = 0;
+        // 오늘부터 역순 스캔. 재고 확인(>0)되면 품절 구간 종료.
+        // 업로드 없는 날(undefined, 주말 등)은 끊지 않고 계속 — 양쪽이 품절이면 그 사이도 품절로 간주.
+        // 품절기간 = 가장 이른 '확인된 품절일'부터 오늘까지 캘린더 일수(주말·미업로드일 포함).
+        let lastSoldoutDi = 0;
         for (let di = 0; di < dailyMaps.length; di++) {
           const stock = dailyMaps[di].get(id);
-          if (stock === undefined || stock > 0) break;
-          days++;
+          if (stock > 0) break;
+          if (stock === 0) lastSoldoutDi = di;
         }
-        consecDays[id] = Math.max(1, days);
+        consecDays[id] = lastSoldoutDi + 1;
       }
 
       // 추적기

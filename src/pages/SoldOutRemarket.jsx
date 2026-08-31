@@ -65,7 +65,20 @@ export default function SoldOutRemarket() {
     (async () => {
       const data = await dbStoreGet(REMARKET_KEY).catch(() => null);
       if (alive) {
-        const arr = Array.isArray(data) ? data : [];
+        let arr = Array.isArray(data) ? data : [];
+        // 품절기간(days) 정규화: 품절시작~해제일 캘린더 일수(주말·미업로드일 포함)로 재계산.
+        // 과거 스캔 방식이 주말 등 데이터 없는 날에 끊겨 일수를 낮게 저장한 기록을 자동 보정.
+        const toDate = (k) => (k && k.length >= 8 ? new Date(+k.slice(0, 4), +k.slice(4, 6) - 1, +k.slice(6, 8)) : null);
+        let changed = false;
+        arr = arr.map(e => {
+          const s = toDate(e.soldoutStart), r = toDate(e.resolvedDate);
+          if (s && r) {
+            const d = Math.max(1, Math.round((r - s) / 86400000));
+            if (e.days !== d) { changed = true; return { ...e, days: d }; }
+          }
+          return e;
+        });
+        if (changed) await dbStoreSet(REMARKET_KEY, arr).catch(() => {});
         setEvents(arr);
         const lastAt = arr.map(e => e.stockAt).filter(Boolean).sort().pop();
         setStockUpdatedAt(lastAt || null);
