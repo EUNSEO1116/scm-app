@@ -381,8 +381,9 @@ export default function OrderRecommend() {
             }
             // 총재고 상한: 현재고＋발주가 (리드타임＋2주)치를 넘지 않게 — 진짜 과잉 비축만 차단.
             // 상한을 리드타임 위에 두므로 도착 전 품절은 나지 않음(파이프라인은 항상 보장).
+            // 단, '효자' 상태 상품에만 적용 — 효자 아닌 상품은 총재고상한으로 추천 수량을 낮추지 않는다.
             let totalCapped = false;
-            if (q > 0) {
+            if (q > 0 && status.includes(HYOJA_KEYWORD)) {
               const totalCapUnits = Math.floor(dailyBase * (leadDays + 14));
               if (totalStock + q > totalCapUnits) { q = Math.max(0, totalCapUnits - totalStock); totalCapped = true; }
             }
