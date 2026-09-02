@@ -8,6 +8,7 @@ const PORT = 3100;
 
 const db = new Database(path.join(__dirname, 'scm.db'));
 db.pragma('journal_mode = WAL');
+db.pragma('busy_timeout = 5000'); // 쓰기 잠금 시 즉시 실패 대신 최대 5초 대기 (동시쓰기 SQLITE_BUSY 방지)
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS soldout_reasons (
@@ -256,26 +257,35 @@ app.post('/api/store/:name', (req, res) => {
   const { name } = req.params;
   if (!isValidStore(name)) return res.status(400).json({ error: 'invalid store name' });
   const { data } = req.body;
-  // 변경 전 데이터 읽기 (로그용)
-  let beforeData = null;
   try {
-    const currentRow = db.prepare(`SELECT data FROM ${name} ORDER BY id DESC LIMIT 1`).get();
-    beforeData = currentRow ? JSON.parse(currentRow.data) : null;
-  } catch { /* 테이블 미존재 */ }
-  try {
-    db.prepare(`DELETE FROM ${name}`).run();
-  } catch {
-    db.exec(`CREATE TABLE IF NOT EXISTS ${name} (id INTEGER PRIMARY KEY AUTOINCREMENT, data TEXT NOT NULL, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)`);
-    db.prepare(`DELETE FROM ${name}`).run();
+    // 변경 전 데이터 읽기 (로그용)
+    let beforeData = null;
+    try {
+      const currentRow = db.prepare(`SELECT data FROM ${name} ORDER BY id DESC LIMIT 1`).get();
+      beforeData = currentRow ? JSON.parse(currentRow.data) : null;
+    } catch { /* 테이블 미존재 */ }
+    // DELETE+INSERT를 하나의 트랜잭션으로 → 중간에 실패해도 스토어가 비는 일 없음(전부 아니면 전무)
+    const saveTx = db.transaction((payload) => {
+      try {
+        db.prepare(`DELETE FROM ${name}`).run();
+      } catch {
+        db.exec(`CREATE TABLE IF NOT EXISTS ${name} (id INTEGER PRIMARY KEY AUTOINCREMENT, data TEXT NOT NULL, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)`);
+        db.prepare(`DELETE FROM ${name}`).run();
+      }
+      db.prepare(`INSERT INTO ${name} (data) VALUES (?)`).run(JSON.stringify(payload));
+    });
+    saveTx(data);
+    const skipLog = req.query.skipLog === '1';
+    if (!skipLog && !shouldSkipLog(name)) {
+      const krName = STORE_NAMES_KR[name] || name;
+      const desc = req.query.logDesc || `${krName} 저장`;
+      logActivity('store_set', desc, name, beforeData, data);
+    }
+    res.json({ ok: true });
+  } catch (e) {
+    // 실패 시에도 항상 JSON으로 응답(HTML 500 방지) → 클라가 실패를 정확히 인지하고 재시도
+    res.status(500).json({ ok: false, error: e.message });
   }
-  db.prepare(`INSERT INTO ${name} (data) VALUES (?)`).run(JSON.stringify(data));
-  const skipLog = req.query.skipLog === '1';
-  if (!skipLog && !shouldSkipLog(name)) {
-    const krName = STORE_NAMES_KR[name] || name;
-    const desc = req.query.logDesc || `${krName} 저장`;
-    logActivity('store_set', desc, name, beforeData, data);
-  }
-  res.json({ ok: true });
 });
 
 app.get('/api/store/:name', (req, res) => {

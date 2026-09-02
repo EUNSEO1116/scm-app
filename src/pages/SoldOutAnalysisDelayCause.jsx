@@ -14,6 +14,7 @@ const OB_INCHEON_COL = 11;
 const STORE_KEY = 'delay_cause_items';
 const SOLDOUT_CACHE_PREFIX = 'soldout_analysis_cached_'; // 품절현황 일자별 캐시 (YYYYMMDD)
 const AUTORUN_KEY = 'delay_cause_autorun'; // { date: 'YYYY-MM-DD', count: N } (KST 11시 1회 자동감지)
+const PENDING_KEY = 'delay_cause_pending'; // 서버 미동기화 스냅샷(아웃박스). 값 있으면 아직 DB에 못 올린 변경이 있음
 
 const REASON_STATUSES = ['작업지연', '업체발송지연', '판매량 증가', '운송지연', '재수배지연', '조치지연'];
 const REASON_COLORS = {
@@ -169,9 +170,9 @@ const classifyAutoClose = (it) => {
   if (it.reasonStatus) return { progressStatus: '품절됨' };
   // 2b. 확인일 공백 → 조치지연 + 품절됨
   if (!it.confirmDate) return { reasonStatus: '조치지연', progressStatus: '품절됨' };
-  // 2c. 발주일~확인일 5일 이상 → 조치지연 우선
+  // 2c. 발주일~확인일 6일 이상 → 조치지연 우선
   const co = daysDiff(it.orderDate, it.confirmDate);
-  if (co !== null && co >= 5) return { reasonStatus: '조치지연', progressStatus: '품절됨' };
+  if (co !== null && co >= 6) return { reasonStatus: '조치지연', progressStatus: '품절됨' };
   const oi = daysDiff(it.orderDate, it.incheonArriveDate); // 발주일~인천도착일 총기간
   // 2d. 출고요청일 공백 → 총기간<10이면 판매량 증가, 아니면 조치지연
   if (!it.releaseReqDate) {
@@ -232,7 +233,7 @@ const emptyForm = {
   optionName: '',
   orderNo: '',
   orderDate: '',
-  confirmDate: new Date().toISOString().slice(0, 10),
+  confirmDate: kstToday(),
   shipEtaDate: '',
   releaseReqDate: '',
   incheonArriveDate: '',
@@ -335,6 +336,33 @@ export default function SoldOutAnalysisDelayCause() {
 
   const fileInputRef = useRef(null);
 
+  // === 아웃박스(서버 미동기화 스냅샷) 플러시 ===
+  // 저장이 실패해도 로컬(STORE_KEY)에는 남고 PENDING_KEY로 "아직 서버에 못 올림"을 표시한다.
+  // 서버가 받을 때까지(ack) 계속 재시도 → "화면엔 저장됐는데 서버엔 안 들어가고 다음날 되돌아가는" 문제를 막는 핵심 장치.
+  // 전체 배열을 통째로 밀어넣으므로 여러 번 재전송해도 결과가 같다(멱등) → 중복 저장 없음.
+  const flushingRef = useRef(false);
+  const flushOutbox = useCallback(async () => {
+    if (!localStorage.getItem(PENDING_KEY)) { setDbSyncFailed(false); return true; }
+    if (flushingRef.current) return false; // 동시 flush 방지
+    flushingRef.current = true;
+    try {
+      let meta = {};
+      try { meta = JSON.parse(localStorage.getItem(PENDING_KEY)) || {}; } catch { /* ignore */ }
+      let data = null;
+      try { data = JSON.parse(localStorage.getItem(STORE_KEY) || 'null'); } catch { /* ignore */ }
+      if (!Array.isArray(data)) { localStorage.removeItem(PENDING_KEY); setDbSyncFailed(false); return true; }
+      for (let i = 0; i < 3; i++) {
+        const ok = await dbStoreSet(STORE_KEY, data, { logDesc: meta.logDesc || '보충 지연 원인 관리 수정' });
+        if (ok) { localStorage.removeItem(PENDING_KEY); setDbSyncFailed(false); return true; }
+        await new Promise(r => setTimeout(r, 1000));
+      }
+      setDbSyncFailed(true); // 3회 실패 → 배너 유지 + 인터벌/재시도 버튼으로 계속 시도
+      return false;
+    } finally {
+      flushingRef.current = false;
+    }
+  }, []);
+
   // localStorage + DB 이중 저장/로드
   useEffect(() => {
     let localItems = null;
@@ -342,7 +370,7 @@ export default function SoldOutAnalysisDelayCause() {
       localItems = migrateReasonStatus(JSON.parse(localStorage.getItem(STORE_KEY) || 'null'));
       if (Array.isArray(localItems) && localItems.length > 0) setItems(localItems);
     } catch { /* ignore */ }
-    dbStoreGet(STORE_KEY).then((rawDbItems) => {
+    const loadFromDb = () => dbStoreGet(STORE_KEY).then((rawDbItems) => {
       const dbItems = migrateReasonStatus(rawDbItems);
       // DB를 기준(source of truth)으로 삼는다: DB에 데이터가 있으면 항상 DB를 사용하고
       // localStorage는 캐시로만 갱신한다. (기존 '길이가 긴 쪽이 이김' 병합은
@@ -351,28 +379,38 @@ export default function SoldOutAnalysisDelayCause() {
         setItems(dbItems);
         localStorage.setItem(STORE_KEY, JSON.stringify(dbItems));
       } else if (Array.isArray(localItems) && localItems.length > 0) {
-        // DB가 비어있으면(최초 사용 등) 로컬로 최초 시드
-        dbStoreSet(STORE_KEY, localItems, { skipLog: true });
+        // DB가 비어있으면(최초 사용 등) 로컬로 최초 시드 — 아웃박스 경유로 유실 방지
+        localStorage.setItem(PENDING_KEY, JSON.stringify({ logDesc: '보충 지연 원인 관리 수정', ts: Date.now() }));
+        flushOutbox();
       }
       setLoaded(true);
     }).catch(() => setLoaded(true));
-  }, []);
 
-  const dbSaveWithRetry = useCallback(async (data) => {
-    for (let i = 0; i < 3; i++) {
-      const ok = await dbStoreSet(STORE_KEY, data, { logDesc: '보충 지연 원인 관리 수정' });
-      if (ok) { setDbSyncFailed(false); return true; }
-      await new Promise(r => setTimeout(r, 1000));
+    if (localStorage.getItem(PENDING_KEY)) {
+      // 미동기화 변경이 남아있으면: 로컬을 먼저 서버로 flush하고, 성공해야 DB 기준으로 다시 로드한다.
+      // 실패하면 로컬을 유지 + 배너 + 재시도 (DB가 로컬을 덮어쓰지 못하게) → '다음날 되돌림' 차단.
+      setDbSyncFailed(true);
+      flushOutbox().then((ok) => { if (ok) loadFromDb(); else setLoaded(true); });
+    } else {
+      loadFromDb();
     }
-    setDbSyncFailed(true);
-    return false;
-  }, []);
+  }, [flushOutbox]);
 
-  const saveItems = useCallback((updated) => {
+  // 미동기화 스냅샷이 남아있으면 주기적으로 재시도 (네트워크 복구/서버 재기동 대비)
+  useEffect(() => {
+    const t = setInterval(() => { if (localStorage.getItem(PENDING_KEY)) flushOutbox(); }, 15000);
+    const onOnline = () => { if (localStorage.getItem(PENDING_KEY)) flushOutbox(); };
+    window.addEventListener('online', onOnline);
+    return () => { clearInterval(t); window.removeEventListener('online', onOnline); };
+  }, [flushOutbox]);
+
+  const saveItems = useCallback((updated, logDesc) => {
     setItems(updated);
     localStorage.setItem(STORE_KEY, JSON.stringify(updated));
-    dbSaveWithRetry(updated);
-  }, [dbSaveWithRetry]);
+    // 저장 의도를 먼저 아웃박스에 기록(페이지 닫혀도/다음날에도 남음) → 그다음 서버로 flush
+    localStorage.setItem(PENDING_KEY, JSON.stringify({ logDesc: logDesc || '보충 지연 원인 관리 수정', ts: Date.now() }));
+    flushOutbox();
+  }, [flushOutbox]);
 
   // 발주장부를 읽어 '조치안됨' 자동 감지 (항목당 1회) — KST today 문자열을 인자로 받음
   const runAutoUnactioned = useCallback(async (todayStr) => {
@@ -812,7 +850,7 @@ export default function SoldOutAnalysisDelayCause() {
       setUrgeResult({ matched: [], unmatched: [], updated: 0 });
       return;
     }
-    const today = new Date().toISOString().slice(0, 10);
+    const today = kstToday();
     const activeSet = new Set(items.filter(i => !i.closed).map(i => normOrderNo(i.orderNo)));
     const matched = uniq.filter(o => activeSet.has(o));
     const unmatched = uniq.filter(o => !activeSet.has(o));
@@ -825,7 +863,7 @@ export default function SoldOutAnalysisDelayCause() {
       }
       return i;
     });
-    if (updated > 0) saveItems(next);
+    if (updated > 0) saveItems(next, `독촉완료 일괄 처리 ${updated}건`);
     setUrgeResult({ matched, unmatched, updated });
   };
 
@@ -876,9 +914,12 @@ export default function SoldOutAnalysisDelayCause() {
   const handleAddTimeline = (id) => {
     const text = (timelineInput[id] || '').trim();
     if (!text) return;
+    const d = kstNow();
+    const p = (n) => String(n).padStart(2, '0');
+    const stamp = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
     const updated = items.map(i => {
       if (i.id !== id) return i;
-      return { ...i, timeline: [...(i.timeline || []), { date: new Date().toISOString().slice(0, 16).replace('T', ' '), text }] };
+      return { ...i, timeline: [...(i.timeline || []), { date: stamp, text }] };
     });
     saveItems(updated);
     setTimelineInput(prev => ({ ...prev, [id]: '' }));
@@ -1053,10 +1094,10 @@ export default function SoldOutAnalysisDelayCause() {
       {dbSyncFailed && (
         <div style={{ marginBottom: 16, background: '#fdedeb', border: '1px solid #ef5350', borderRadius: 12, padding: 16, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <span style={{ fontWeight: 600, fontSize: 14, color: '#c62828' }}>
-            DB 저장 실패 — 현재 로컬에만 저장됨. 다른 컴퓨터에서 보이지 않을 수 있습니다.
+            DB 저장 대기 중 — 아직 서버에 반영 안 됨(로컬 임시 저장). 자동으로 계속 재시도합니다. 이 상태로 두면 다음날 변경이 되돌아갈 수 있으니, 반드시 반영될 때까지 두세요.
           </span>
           <button className="btn btn-sm" style={{ fontSize: 12, background: '#c62828', color: '#fff', border: 'none', borderRadius: 6, padding: '4px 12px' }}
-            onClick={() => dbSaveWithRetry(items)}>재시도</button>
+            onClick={() => flushOutbox()}>지금 재시도</button>
         </div>
       )}
 
