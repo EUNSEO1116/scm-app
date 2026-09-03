@@ -246,27 +246,33 @@ const emptyForm = {
 export default function SoldOutAnalysisDelayCause() {
   // 상품 자동완성 (특별 관리 상품 시트 — 상품개선과 동일)
   const [productList, setProductList] = useState([]);
+  const [prodSheetStatus, setProdSheetStatus] = useState('loading'); // 'loading' | 'ok' | 'failed'
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const res = await fetch(TSV_URL);
-        if (!res.ok) throw new Error();
-        const text = await res.text();
-        const lines = parseCSV(text);
-        const results = [];
-        for (let i = 1; i < lines.length; i++) {
-          const cols = lines[i];
-          const barcode = (cols[0] || '').trim();
-          const productName = (cols[1] || '').trim();
-          const optionName = (cols[2] || '').trim();
-          if (!barcode && !productName) continue;
-          results.push({ barcode, productName, optionName });
-        }
-        setProductList(results);
-      } catch { /* 실패해도 수동 입력 가능 */ }
-    })();
+  const loadProductSheet = useCallback(async () => {
+    setProdSheetStatus('loading');
+    try {
+      const res = await fetch(TSV_URL);
+      if (!res.ok) throw new Error();
+      const text = await res.text();
+      const lines = parseCSV(text);
+      const results = [];
+      for (let i = 1; i < lines.length; i++) {
+        const cols = lines[i];
+        const barcode = (cols[0] || '').trim();
+        const productName = (cols[1] || '').trim();
+        const optionName = (cols[2] || '').trim();
+        if (!barcode && !productName) continue;
+        results.push({ barcode, productName, optionName });
+      }
+      setProductList(results);
+      setProdSheetStatus('ok');
+    } catch {
+      // 실패해도 수동 입력은 가능. 다만 상태를 남겨 화면에 표시·재시도할 수 있게 한다.
+      setProdSheetStatus('failed');
+    }
   }, []);
+
+  useEffect(() => { loadProductSheet(); }, [loadProductSheet]);
 
   const [items, setItems] = useState([]);
   const [loaded, setLoaded] = useState(false);
@@ -1158,6 +1164,29 @@ export default function SoldOutAnalysisDelayCause() {
             )}
             <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
               {refreshMsg && <span style={{ fontSize: 12, color: '#5f6368', fontWeight: 600 }}>{refreshMsg}</span>}
+              {/* 상품시트(특별 관리 상품) 로딩 상태 + 다시 불러오기 */}
+              {prodSheetStatus === 'loading' && (
+                <span style={{ fontSize: 12, color: '#5f6368', fontWeight: 600 }} title="구글시트 '특별 관리 상품'을 불러오는 중">
+                  상품시트 로딩중…
+                </span>
+              )}
+              {prodSheetStatus === 'ok' && (
+                <span style={{ fontSize: 12, color: '#1e8e3e', fontWeight: 600 }} title="상품명·옵션명 자동 채움에 사용됩니다.">
+                  상품시트 {productList.length}건
+                </span>
+              )}
+              {prodSheetStatus === 'failed' && (
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                  <span style={{ fontSize: 12, color: '#c62828', fontWeight: 700 }} title="이대로 일괄 업로드하면 상품명·옵션명이 공란으로 등록됩니다.">
+                    ⚠ 상품시트 로딩 실패
+                  </span>
+                  <button className="btn" onClick={loadProductSheet}
+                    style={{ background: '#c62828', color: '#fff', border: 'none', fontWeight: 600, fontSize: 12, padding: '5px 10px' }}
+                    title="구글시트 '특별 관리 상품'을 다시 불러옵니다(새로고침 불필요).">
+                    다시 불러오기
+                  </button>
+                </span>
+              )}
               <button className="btn" onClick={() => setShowShipReqPanel(v => !v)}
                 style={{ background: showShipReqPanel ? '#fff' : '#6a1b9a', color: showShipReqPanel ? '#6a1b9a' : '#fff', border: showShipReqPanel ? '1.5px solid #6a1b9a' : 'none', fontWeight: 600 }}>
                 {showShipReqPanel ? '닫기' : '출고요청 업로드'}
