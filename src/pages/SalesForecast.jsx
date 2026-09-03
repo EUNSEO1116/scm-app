@@ -8,9 +8,9 @@ const STREAK_MIN = 20; // 30일 기준: 우상향·우하향 20일 이상부터 
 const SHEET_ID = '1NXhW_gG0b-gXuVqrhbY9ErWi8uO_7pXIy-NTo4FbE1I';
 const CSV_BARCODE = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent('쿠팡바코드')}`;
 const TSV_CALC = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=tsv&gid=1349677364`; // 재고 계산기 (B:옵션ID, C:바코드, O(14):총재고)
+const CSV_BOXHERO = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent('박스히어로')}`; // 박스히어로 재고 (B:바코드, K(10):수량)
 
-const OVERSTOCK_MIN_DAYS = 60;  // 소진 예상 일수 이 이상이면 과재고
-const OVERSTOCK_MIN_STOCK = 10; // 총재고 최소치 (잡음 제거)
+const OVERSTOCK_MIN_DAYS = 42;  // 소진 예상 일수 이 이상이면 과재고 (6주)
 
 const STORE_PREFIX = 'soldout_analysis_';
 const SEASONS_STORE = 'sales_forecast_seasons';      // { [optionId]: { period, tags:[] } }
@@ -230,9 +230,10 @@ export default function SalesForecast() {
       const dayList = [];
       for (let i = days - 1; i >= 0; i--) { const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - i); dayList.push(d); }
 
-      const [barcodeRes, calcRes, dbSeasons, dbTags, dbImprove, dbTracker, ...stores] = await Promise.all([
+      const [barcodeRes, calcRes, boxheroRes, dbSeasons, dbTags, dbImprove, dbTracker, ...stores] = await Promise.all([
         fetch(CSV_BARCODE),
         fetch(TSV_CALC),
+        fetch(CSV_BOXHERO),
         dbStoreGet(SEASONS_STORE),
         dbStoreGet(SEASON_TAGS_STORE),
         dbStoreGet(IMPROVE_STORE).catch(() => null),
@@ -257,6 +258,18 @@ export default function SalesForecast() {
           };
         }
       } catch { /* 재고 시트 실패 시 과재고 분석만 비활성 */ }
+
+      // 박스히어로 시트: 바코드(B,1) → 수량(K,10). 과재고 모수(재고량) 출처.
+      const boxheroByBarcode = {};
+      try {
+        const boxheroCsv = await boxheroRes.text();
+        const boxheroLines = boxheroCsv.split('\n').filter(l => l.trim());
+        for (let i = 1; i < boxheroLines.length; i++) {
+          const c = parseCsvRow(boxheroLines[i]);
+          const bc = (c[1] || '').trim();       // B열 바코드
+          if (bc) boxheroByBarcode[bc] = safeNum(c[10]); // K열 수량
+        }
+      } catch { /* 박스히어로 시트 실패 시 과재고 분석만 비활성 */ }
 
       // 상품개선: 바코드 → 진행 상태(처리중/시작전만 = 상품개선중)
       const improveMap = {};
@@ -403,40 +416,31 @@ export default function SalesForecast() {
         });
       }
 
-      // 과재고 분석 (엑셀 전용·독립 계산): 총재고(O) ÷ 일평균 판매 = 소진 예상 일수.
+      // 과재고 분석 (엑셀 전용·독립 계산): 박스히어로 재고 ÷ 일평균 판매 = 소진 예상 일수.
+      //  - 모수(재고량)는 박스히어로 시트(바코드 매칭) 수량. 그로스재고·총재고는 모수에서 제외.
       //  - 상태 무관: 과재고 조건(재고·소진일수)만 충족하면 '품질확인서'·'최종마감' 등 모두 포함.
-      //  - 판매량 음수(반품 등)는 0으로 치환하여 일평균·소진일수·추세 계산.
+      //  - 판매량 음수(반품 등)는 0으로 치환하여 일평균·소진일수 계산.
       //  - 판매 전무(일평균 0)인데 재고 있는 건 데드스톡 → 소진 ∞ 로 최상단.
-      //  - 루프 대상은 재고 시트 전체(calcMap): 판매 0건이라도 재고가 있으면 과재고로 포착.
+      //  - 루프 대상은 쿠팡바코드 전체(bcMap): 바코드→박스히어로 재고, 옵션ID→DB 판매로 연결.
+      //  - 박스히어로 수량 0만 제외(하한 없음): 판매 없고 재고 1개여도 과재고.
       const overstockList = [];
-      for (const oid of Object.keys(calcMap)) {
-        const bc = bcMap[oid];
-        if (!bc) continue;
-        const calc = calcMap[oid];
-        if (!calc) continue;
-        const fStatus = calc.status || '';
-        const totalStock = calc.totalStock || 0;
-        if (totalStock < OVERSTOCK_MIN_STOCK) continue;
+      for (const [oid, bc] of Object.entries(bcMap)) {
+        const barcode = bc.barcode || '';
+        if (!barcode) continue;
+        const boxhero = boxheroByBarcode[barcode] || 0;
+        if (boxhero <= 0) continue;
         let sum = 0;
         for (const k of availKeys) sum += Math.max(0, itemsByKey[k].get(oid) || 0);
         const dailyAvg = availKeys.length ? sum / availKeys.length : 0;
-        const daysOfStock = dailyAvg > 0 ? totalStock / dailyAvg : Infinity;
+        const daysOfStock = dailyAvg > 0 ? boxhero / dailyAvg : Infinity;
         if (daysOfStock < OVERSTOCK_MIN_DAYS) continue;
-        const ovVals = buckets.filter(b => b.hasData).map(b => b.keys.reduce((s, k) => s + Math.max(0, itemsByKey[k].get(oid) || 0), 0));
-        let dir;
-        if (range === '30') dir = computeTrend(ovVals, 7).dir;
-        else {
-          let mSum = 0, mCnt = 0, aSum = 0, aCnt = 0;
-          for (const k of availKeys) { const q = Math.max(0, itemsByKey[k].get(oid) || 0); aSum += q; aCnt++; if (k.slice(4, 6) === curMonth) { mSum += q; mCnt++; } }
-          const allAvg = aCnt ? aSum / aCnt : 0, monthAvg = mCnt ? mSum / mCnt : allAvg, eps = Math.max(0.3, allAvg * 0.1), diff = monthAvg - allAvg;
-          dir = Math.abs(diff) < eps ? 'flat' : (diff > 0 ? 'up' : 'down');
-        }
         const season = merged[oid] || { period: '', tags: [] };
         overstockList.push({
-          optionId: oid, barcode: bc.barcode || calc.barcode || '',
+          optionId: oid, barcode,
           productName: bc.productName, optionName: bc.optionName, brand: bc.brand,
-          season, fStatus, totalStock, grossStock: calc.grossStock || 0, boxhero: calc.boxhero || 0,
-          dailyAvg, daysOfStock, trendDir: dir,
+          season, fStatus: bc.status || '',
+          grossStock: calcMap[oid]?.grossStock || 0, boxhero,
+          dailyAvg, daysOfStock,
         });
       }
       overstockList.sort((a, b) => b.daysOfStock - a.daysOfStock);
@@ -784,12 +788,19 @@ export default function SalesForecast() {
     const dropAoa = [['바코드', '옵션ID', '상품명', '옵션명', '브랜드', '시즌', '기존평균', '최근평균', '품절', '품절사유', '상품개선']];
     for (const r of drop) dropAoa.push([r.barcode, r.optionId, r.productName, r.optionName, r.brand, seasonTxt(r), dec(r.mag.baseAvg), dec(r.mag.recentAvg), r.soldOut ? '품절됨' : '', r.soldOutReason || '', r.improving || '']);
 
-    const overAoa = [['바코드', '옵션ID', '상품명', '옵션명', '브랜드', '시즌', '시즌기간', '상태', '총재고', '그로스재고', '박스히어로', '일평균판매', '소진예상일수', '소진예상주차', '추세', '원가']];
-    for (const r of overstockRows) overAoa.push([r.barcode, r.optionId, r.productName, r.optionName, r.brand, seasonTxt(r), r.season.period || '', r.fStatus, r.totalStock, r.grossStock, r.boxhero, dec(r.dailyAvg), !Number.isFinite(r.daysOfStock) ? '판매없음' : Math.round(r.daysOfStock), !Number.isFinite(r.daysOfStock) ? '판매없음' : dec(r.daysOfStock / 7), TREND_LABEL[r.trendDir], r.fStatus === '신규' ? '' : r.totalStock * (costByBarcode[r.barcode] || 0)]);
+    // 과재고: 모수는 박스히어로 재고. 원가 = (박스히어로+그로스)×단가, 신규는 공란.
+    const overAoa = [['바코드', '옵션ID', '상품명', '옵션명', '브랜드', '시즌', '시즌기간', '상태', '박스히어로', '일평균판매', '소진예상일수', '소진예상주차', '원가']];
+    let overCostTotal = 0;
+    for (const r of overstockRows) {
+      const cost = r.fStatus === '신규' ? '' : (r.boxhero + r.grossStock) * (costByBarcode[r.barcode] || 0);
+      if (typeof cost === 'number') overCostTotal += cost;
+      overAoa.push([r.barcode, r.optionId, r.productName, r.optionName, r.brand, seasonTxt(r), r.season.period || '', r.fStatus, r.boxhero, dec(r.dailyAvg), !Number.isFinite(r.daysOfStock) ? '판매없음' : Math.round(r.daysOfStock), !Number.isFinite(r.daysOfStock) ? '판매없음' : dec(r.daysOfStock / 7), cost]);
+    }
+    overAoa.push(['합계', '', '', '', '', '', '', '', '', '', '', '', overCostTotal]);
 
     addSheet(surgeAoa, '급상승', [{ wch: 16 }, { wch: 16 }, { wch: 40 }, { wch: 24 }, { wch: 14 }, { wch: 18 }, { wch: 10 }, { wch: 10 }, { wch: 8 }, { wch: 10 }]);
     addSheet(dropAoa, '급하락', [{ wch: 16 }, { wch: 16 }, { wch: 40 }, { wch: 24 }, { wch: 14 }, { wch: 18 }, { wch: 10 }, { wch: 10 }, { wch: 8 }, { wch: 24 }, { wch: 10 }]);
-    addSheet(overAoa, '과재고', [{ wch: 16 }, { wch: 16 }, { wch: 40 }, { wch: 24 }, { wch: 14 }, { wch: 18 }, { wch: 16 }, { wch: 12 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 8 }, { wch: 12 }]);
+    addSheet(overAoa, '과재고', [{ wch: 16 }, { wch: 16 }, { wch: 40 }, { wch: 24 }, { wch: 14 }, { wch: 18 }, { wch: 16 }, { wch: 12 }, { wch: 10 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 14 }]);
 
     XLSX.writeFile(wb, `수요예측_분석_${dateToKey(new Date())}.xlsx`);
     showToast('success', `분석 다운로드 (급상승 ${surge.length} · 급하락 ${drop.length} · 과재고 ${overstockRows.length})`);
