@@ -3,6 +3,7 @@ import * as XLSX from 'xlsx';
 import { dbStoreSet, dbStoreGet } from '../utils/dbApi';
 import { ensureUploadSoldoutCache, SOLDOUT_CORRECTIONS_KEY } from '../utils/soldoutCache';
 import { recordSurgeSnapshot } from '../utils/salesSurge';
+import { syncImprovementFromSheet } from '../utils/improvementSync';
 
 const todayKey = () => new Date().toISOString().slice(0, 10).replace(/-/g, '');
 
@@ -186,6 +187,8 @@ export default function SoldOutAnalysisUpload() {
         // 오늘자 업로드 시에만 신규 판매 급증 스냅샷을 1회 계산·저장 (배지/매출카드 공용 소스)
         if (isToday) {
           await recordSurgeSnapshot().catch(() => null);
+          // 오늘자 업로드를 트리거로 상품개선 시트 → DB 동기화 (연동 메뉴 신호 최신화)
+          await syncImprovementFromSheet({ logDesc: '상품개선 시트 동기화 (오늘자 업로드 트리거)' }).catch(() => null);
         }
         setLastResult({ date: label, count: items.length });
         showToast('success', '업로드 완료', `${label} - ${items.length.toLocaleString()}개 품목 저장`);

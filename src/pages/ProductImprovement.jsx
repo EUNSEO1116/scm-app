@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { dbStoreGet, dbStoreSet } from '../utils/dbApi';
+import { syncImprovementFromSheet } from '../utils/improvementSync';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
 import * as XLSX from 'xlsx';
@@ -67,6 +68,27 @@ const TYPE_COLORS = { '재등록': '#1565c0', '재수배': '#6a1b9a', '업체문
 const SUPPLY_TYPES = ['재수배', '업체문제'];
 const IMPROVE_TYPES = ['상품문제', 'CSV·VOC'];
 
+const URL_RE = /(https?:\/\/[^\s]+)/g;
+
+// 문자열 안의 URL을 클릭 링크로 렌더
+function linkify(text) {
+  const parts = String(text).split(URL_RE);
+  return parts.map((part, i) => {
+    if (URL_RE.test(part)) {
+      URL_RE.lastIndex = 0;
+      return <a key={i} href={part} target="_blank" rel="noopener noreferrer" style={{ color: '#1a73e8', wordBreak: 'break-all' }}>{part}</a>;
+    }
+    return <span key={i}>{part}</span>;
+  });
+}
+
+// 적용중(I) 또는 뷰어에서 선택한 업체 블록 반환
+function pickVendor(item, selectedName) {
+  if (!Array.isArray(item.vendors) || item.vendors.length === 0) return null;
+  const name = selectedName || item.appliedVendor;
+  return item.vendors.find(v => v.name === name) || item.vendors[0];
+}
+
 // 감시 목록: 등록 시 시트에 없던 바코드 (시트에 나타나면 알림)
 const IMP_WATCH_KEY = 'imp_watch_barcodes';
 const IMP_PENDING_ALERTS_KEY = 'imp_pending_sync_alerts';
@@ -106,7 +128,7 @@ function saveImpPendingAlerts(alerts) {
 }
 
 export default function ProductImprovement() {
-  // 특별관리 품목 목록 (자동완성용)
+  // 특별관리 품목 목록 (알림 비교용)
   const [productList, setProductList] = useState([]);
   const [productLoading, setProductLoading] = useState(true);
   const [syncAlerts, setSyncAlerts] = useState([]);
@@ -128,34 +150,21 @@ export default function ProductImprovement() {
           results.push({ barcode, productName, optionName });
         }
         setProductList(results);
-
-        // 상품개선 항목 중 특별관리 시트에 미등록인 바코드 감지
-        const sheetBarcodes = new Set(results.map(r => r.barcode));
         const savedAlerts = await loadImpPendingAlertsFromDB();
         setSyncAlerts(savedAlerts);
-      } catch { /* 실패해도 수동 입력 가능 */ }
+      } catch { /* 실패해도 목록만 없을 뿐 */ }
       setProductLoading(false);
     })();
   }, []);
 
   const [items, setItems] = useState([]);
   const [loaded, setLoaded] = useState(false);
-  const [showForm, setShowForm] = useState(false);
   const [filterStatus, setFilterStatus] = useState('active');
   const [filterType, setFilterType] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [cardFilter, setCardFilter] = useState(null);
-
-  const emptyForm = { status: '시작전', type: '재등록', productName: '', barcode: '', issue: '', startDate: new Date().toISOString().slice(0, 10), endDate: '', urls: ['', '', ''] };
-  const [form, setForm] = useState(emptyForm);
-  const [productSearch, setProductSearch] = useState('');
-  const [showSuggestions, setShowSuggestions] = useState(false);
   const [expandedId, setExpandedId] = useState(null);
-  const [editingId, setEditingId] = useState(null);
-  const [formImages, setFormImages] = useState([]);
-  const formFileRef = useRef(null);
-
-  const [timelineInput, setTimelineInput] = useState({});
+  const [vendorView, setVendorView] = useState({}); // itemId → 선택 업체명(뷰어)
 
   const [impImages, setImpImages] = useState({});
   const [impImgModal, setImpImgModal] = useState(null);
@@ -165,12 +174,13 @@ export default function ProductImprovement() {
 
   const [excelDownloading, setExcelDownloading] = useState(false);
   const [zipDownloading, setZipDownloading] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [syncMsg, setSyncMsg] = useState('');
 
   const [dbSyncFailed, setDbSyncFailed] = useState(false);
 
-  // localStorage + DB 이중 저장
+  // localStorage + DB 이중 로드
   useEffect(() => {
-    // localStorage에서 먼저 로드
     let localItems = null;
     let localImgs = null;
     try {
@@ -179,13 +189,11 @@ export default function ProductImprovement() {
       localImgs = JSON.parse(localStorage.getItem('improvement_images') || 'null');
       if (localImgs && typeof localImgs === 'object') setImpImages(localImgs);
     } catch { /* ignore */ }
-    // DB에서도 시도 (로컬과 비교 후 더 많은 쪽 사용)
     Promise.all([
       dbStoreGet('improvement_items'),
-      dbStoreGet('improvement_images'),   // 레거시 단일 블롭 (마이그레이션용)
-      dbStoreGet('imp_img_migrated'),     // 마이그레이션 완료 플래그
+      dbStoreGet('improvement_images'),
+      dbStoreGet('imp_img_migrated'),
     ]).then(async ([dbItems, legacyImgs, migrated]) => {
-      // items: 로컬이 더 많으면 로컬 유지 + DB에 동기화
       let finalItems = [];
       if (Array.isArray(dbItems) && Array.isArray(localItems)) {
         if (localItems.length > dbItems.length) {
@@ -206,22 +214,17 @@ export default function ProductImprovement() {
         dbStoreSet('improvement_items', localItems, { skipLog: true });
       }
 
-      // 항목 먼저 표시 — 항목당 개별 이미지 요청(N+1)을 기다리느라 화면이 막히던 문제 해소.
-      // (impImages는 위에서 localStorage 캐시로 이미 초기화되어 📷 개수 배지는 즉시 표시됨)
       setLoaded(true);
 
-      // 이미지: 백그라운드로 항목별 저장소에서 재구성 → 완료되면 개수/ZIP 데이터 갱신 (페이지는 이미 표시됨)
+      // 이미지: 항목별 개별 저장소에서 백그라운드 재구성
       (async () => {
-        // images: 항목별 개별 저장소 방식 (4.5MB 단일 블롭 한도 회피)
         const hasLegacy = legacyImgs && typeof legacyImgs === 'object' && Object.keys(legacyImgs).length > 0;
-        // 1) 레거시 블롭 → 항목별 저장소로 일회성 마이그레이션 (블롭은 백업으로 보존)
         if (!migrated && hasLegacy) {
           await Promise.all(Object.entries(legacyImgs).map(([id, imgs]) =>
             (Array.isArray(imgs) && imgs.length > 0) ? dbStoreSet(`imp_img_${id}`, imgs, { skipLog: true }) : null
           ));
           dbStoreSet('imp_img_migrated', true, { skipLog: true });
         }
-        // 2) 항목별 저장소에서 메모리 맵 재구성
         const ids = finalItems.map(i => i.id).filter(Boolean);
         const entries = await Promise.all(ids.map(async (id) => {
           try { const imgs = await dbStoreGet(`imp_img_${id}`); return [id, Array.isArray(imgs) ? imgs : []]; }
@@ -229,8 +232,6 @@ export default function ProductImprovement() {
         }));
         const map = {};
         entries.forEach(([id, imgs]) => { if (imgs.length > 0) map[id] = imgs; });
-        // 항목별 저장소가 권위 소스. DB가 완전히 비어 받아온 게 하나도 없을 때만(전송 장애 등)
-        // 로컬 백업으로 폴백 — 삭제된 사진을 부활시키지 않기 위해 평소엔 폴백하지 않음
         const dbHadAny = entries.some(([, imgs]) => imgs.length > 0);
         if (!dbHadAny && localImgs && typeof localImgs === 'object' && Object.keys(localImgs).length > 0) {
           Object.entries(localImgs).forEach(([id, imgs]) => {
@@ -249,9 +250,7 @@ export default function ProductImprovement() {
     (async () => {
       const sheetBarcodes = new Set(productList.map(p => p.barcode));
       const watch = await loadWatchFromDB();
-      // 감시 목록 중 시트에 등록된 것 → 알림
       const newAlerts = watch.filter(w => sheetBarcodes.has(w.barcode));
-      // 기존 영구 알림에 새로 감지된 것 추가
       const saved = await loadImpPendingAlertsFromDB();
       const savedSet = new Set(saved.map(a => a.barcode));
       let updated = [...saved];
@@ -266,7 +265,6 @@ export default function ProductImprovement() {
   }, [loaded, productLoading, productList]);
 
   const dismissAlert = (barcode) => {
-    // 적용완료: 영구 알림에서 제거 + 감시 목록에서도 제거
     const updatedAlerts = syncAlerts.filter(a => a.barcode !== barcode);
     saveImpPendingAlerts(updatedAlerts);
     setSyncAlerts(updatedAlerts);
@@ -283,33 +281,46 @@ export default function ProductImprovement() {
     return false;
   }, []);
 
-  const saveItems = useCallback((updated, logDesc) => {
-    setItems(updated);
-    localStorage.setItem('improvement_items', JSON.stringify(updated));
-    dbSaveWithRetry('improvement_items', updated, { logDesc: logDesc || '상품개선 항목 수정' });
-  }, [dbSaveWithRetry]);
-
-  // 항목별 개별 저장 (4.5MB 단일 블롭 한도 회피). fullMap은 메모리/로컬 동기화용
+  // 항목별 개별 저장 (4.5MB 단일 블롭 한도 회피)
   const persistImpImages = useCallback((itemId, images, fullMap, logDesc) => {
     setImpImages(fullMap);
     localStorage.setItem('improvement_images', JSON.stringify(fullMap));
     dbSaveWithRetry(`imp_img_${itemId}`, images || [], { logDesc: logDesc || '상품개선 이미지 수정' });
   }, [dbSaveWithRetry]);
 
-  // 전체 맵을 항목별 저장소로 일괄 재저장 (재시도 버튼용)
   const dbSaveAllImpImages = useCallback((map) => {
     Object.entries(map || {}).forEach(([id, imgs]) => {
       if (Array.isArray(imgs) && imgs.length > 0) dbSaveWithRetry(`imp_img_${id}`, imgs, { skipLog: true });
     });
   }, [dbSaveWithRetry]);
 
-  const suggestions = useMemo(() => {
-    if (!productSearch || productSearch.length < 1) return [];
-    const q = productSearch.toLowerCase();
-    return productList.filter(p =>
-      p.productName.toLowerCase().includes(q) || p.barcode.toLowerCase().includes(q)
-    ).slice(0, 15);
-  }, [productSearch, productList]);
+  // 시트에서 수동 업데이트
+  const handleSync = async () => {
+    if (syncing) return;
+    setSyncing(true);
+    setSyncMsg('');
+    try {
+      const result = await syncImprovementFromSheet({ logDesc: '상품개선 시트 동기화 (수동)' });
+      if (Array.isArray(result.items)) {
+        setItems(result.items);
+        // 새 항목의 이미지 재구성
+        const ids = result.items.map(i => i.id).filter(Boolean);
+        const entries = await Promise.all(ids.map(async (id) => {
+          try { const imgs = await dbStoreGet(`imp_img_${id}`); return [id, Array.isArray(imgs) ? imgs : []]; }
+          catch { return [id, []]; }
+        }));
+        const map = {};
+        entries.forEach(([id, imgs]) => { if (imgs.length > 0) map[id] = imgs; });
+        setImpImages(map);
+        localStorage.setItem('improvement_images', JSON.stringify(map));
+      }
+      setSyncMsg(result.ok ? `동기화 완료 · 시트 ${result.count}건 반영` : `시트 ${result.count}건 읽음 (DB 저장 실패 — 재시도 필요)`);
+    } catch (e) {
+      console.error('상품개선 동기화 실패:', e);
+      setSyncMsg('동기화 실패 — 시트를 읽는 중 오류가 발생했습니다.');
+    }
+    setSyncing(false);
+  };
 
   const filtered = useMemo(() => {
     let rows = items;
@@ -326,155 +337,11 @@ export default function ProductImprovement() {
       rows = rows.filter(r =>
         (r.productName || '').toLowerCase().includes(q) ||
         (r.barcode || '').toLowerCase().includes(q) ||
-        (r.issue || '').toLowerCase().includes(q)
+        (r.optionName || '').toLowerCase().includes(q)
       );
     }
     return rows;
   }, [items, cardFilter, filterStatus, filterType, searchQuery]);
-
-  const handleAdd = async () => {
-    if (!form.productName.trim() && !form.barcode.trim()) return;
-    const itemId = Date.now().toString();
-    const newItem = {
-      ...form,
-      id: itemId,
-      urls: (form.urls || []).filter(u => u.trim()),
-      timeline: form.issue ? [{ date: new Date().toISOString().slice(0, 16).replace('T', ' '), text: form.issue }] : [],
-      createdAt: new Date().toISOString(),
-    };
-    saveItems([newItem, ...items]);
-
-    // 바코드가 시트에 없으면 감시 목록에 추가
-    if (newItem.barcode) {
-      const sheetBarcodes = new Set(productList.map(p => p.barcode));
-      if (!sheetBarcodes.has(newItem.barcode)) {
-        const watch = loadWatch();
-        if (!watch.some(w => w.barcode === newItem.barcode)) {
-          saveWatch([...watch, { barcode: newItem.barcode, productName: newItem.productName, type: newItem.type }]);
-        }
-      }
-    }
-
-    if (formImages.length > 0) {
-      persistImpImages(itemId, formImages, { ...impImages, [itemId]: formImages });
-    }
-
-    setForm(emptyForm);
-    setFormImages([]);
-    setProductSearch('');
-    setShowForm(false);
-  };
-
-  const handleEdit = (item) => {
-    setEditingId(item.id);
-    setForm({
-      status: item.status,
-      type: item.type,
-      productName: item.productName || '',
-      barcode: item.barcode || '',
-      issue: '',
-      startDate: item.startDate || '',
-      endDate: item.endDate || '',
-      urls: [...(item.urls || []), '', '', ''].slice(0, 3),
-    });
-    setProductSearch(item.productName || '');
-    setFormImages(impImages[item.id] || []);
-    setShowForm(true);
-  };
-
-  const handleUpdate = async () => {
-    if (!editingId) return;
-    if (!form.productName.trim() && !form.barcode.trim()) return;
-    const updated = items.map(i => {
-      if (i.id !== editingId) return i;
-      return {
-        ...i,
-        status: form.status,
-        type: form.type,
-        productName: form.productName,
-        barcode: form.barcode,
-        startDate: form.startDate,
-        endDate: form.endDate,
-        urls: (form.urls || []).filter(u => u.trim()),
-      };
-    });
-    saveItems(updated);
-
-    // 이미지 업데이트
-    const updatedImg = { ...impImages };
-    if (formImages.length > 0) {
-      updatedImg[editingId] = formImages;
-    } else {
-      delete updatedImg[editingId];
-    }
-    persistImpImages(editingId, formImages.length > 0 ? formImages : [], updatedImg);
-
-    setEditingId(null);
-    setForm(emptyForm);
-    setFormImages([]);
-    setProductSearch('');
-    setShowForm(false);
-  };
-
-  const handleFormImgAdd = async (e) => {
-    const files = Array.from(e.target.files || []);
-    if (!files.length) return;
-    const remaining = 5 - formImages.length;
-    if (remaining <= 0) return;
-    const toAdd = files.slice(0, remaining);
-    const resized = await Promise.all(toAdd.map(f => resizeImage(f)));
-    setFormImages(prev => [...prev, ...resized]);
-    if (formFileRef.current) formFileRef.current.value = '';
-  };
-
-  const handleFormImgPaste = async (e) => {
-    const pasteItems = Array.from(e.clipboardData?.items || []);
-    const imageFiles = pasteItems.filter(i => i.type.startsWith('image/')).map(i => i.getAsFile()).filter(Boolean);
-    if (!imageFiles.length) return;
-    e.preventDefault();
-    const remaining = 5 - formImages.length;
-    if (remaining <= 0) return;
-    const toAdd = imageFiles.slice(0, remaining);
-    const resized = await Promise.all(toAdd.map(f => resizeImage(f)));
-    setFormImages(prev => [...prev, ...resized]);
-  };
-
-  const handleDelete = (id) => {
-    if (!confirm('삭제하시겠습니까?')) return;
-    saveItems(items.filter(i => i.id !== id));
-    const updatedImg = { ...impImages };
-    delete updatedImg[id];
-    persistImpImages(id, [], updatedImg);
-  };
-
-  const handleStatusChange = (id, status) => {
-    const updated = items.map(i => {
-      if (i.id !== id) return i;
-      const upd = { ...i, status };
-      if (status === '완료' && !upd.endDate) upd.endDate = new Date().toISOString().slice(0, 10);
-      return upd;
-    });
-    saveItems(updated);
-  };
-
-  const handleAddTimeline = (id) => {
-    const text = (timelineInput[id] || '').trim();
-    if (!text) return;
-    const updated = items.map(i => {
-      if (i.id !== id) return i;
-      return { ...i, timeline: [...(i.timeline || []), { date: new Date().toISOString().slice(0, 16).replace('T', ' '), text }] };
-    });
-    saveItems(updated);
-    setTimelineInput(prev => ({ ...prev, [id]: '' }));
-  };
-
-  const handleDeleteTimeline = (itemId, timelineIdx) => {
-    const updated = items.map(i => {
-      if (i.id !== itemId) return i;
-      return { ...i, timeline: i.timeline.filter((_, idx) => idx !== timelineIdx) };
-    });
-    saveItems(updated);
-  };
 
   const openImpImgModal = async (itemId) => {
     setImpImgModal(itemId);
@@ -527,21 +394,29 @@ export default function ProductImprovement() {
     if (excelDownloading || !items.length) return;
     setExcelDownloading(true);
     try {
-      const rows = items.map((item, i) => ({
-        '번호': i + 1,
-        '상태': item.status,
-        '유형': item.type,
-        '상품명': item.productName,
-        '바코드': item.barcode,
-        '발생일': item.startDate,
-        '종료일': item.endDate || '',
-        '이슈/진행상황': (item.timeline || []).map(t => `[${t.date}] ${t.text}`).join('\n'),
-        '첨부파일수': (impImages[item.id] || []).length,
-      }));
+      const rows = items.map((item, i) => {
+        let progress;
+        if (item.source === 'sheet') {
+          const v = pickVendor(item, vendorView[item.id]);
+          progress = v?.issue || '';
+        } else {
+          progress = (item.timeline || []).map(t => `[${t.date}] ${t.text}`).join('\n');
+        }
+        return {
+          '번호': i + 1,
+          '상태': item.status,
+          '유형': item.type,
+          '상품명': item.productName,
+          '옵션명': item.optionName || '',
+          '바코드': item.barcode,
+          '진행상황': progress,
+          '첨부파일수': (impImages[item.id] || []).length,
+        };
+      });
       const ws = XLSX.utils.json_to_sheet(rows);
       ws['!cols'] = [
-        { wch: 5 }, { wch: 8 }, { wch: 10 }, { wch: 30 }, { wch: 16 },
-        { wch: 12 }, { wch: 12 }, { wch: 60 }, { wch: 10 },
+        { wch: 5 }, { wch: 8 }, { wch: 10 }, { wch: 30 }, { wch: 18 },
+        { wch: 16 }, { wch: 60 }, { wch: 10 },
       ];
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, '상품개선');
@@ -557,7 +432,6 @@ export default function ProductImprovement() {
     if (zipDownloading) return;
     setZipDownloading(true);
     try {
-      // 메모리 전체 맵 사용 (항목별 저장소가 로드 시 이미 반영됨)
       const allImg = impImages;
       if (!allImg || Object.keys(allImg).length === 0) {
         alert('다운로드할 사진이 없습니다.');
@@ -569,7 +443,6 @@ export default function ProductImprovement() {
 
       const zip = new JSZip();
       const usedNames = {};
-
       for (const [itemId, images] of Object.entries(allImg)) {
         if (!Array.isArray(images) || images.length === 0) continue;
         let folderName = (idToName[itemId] || itemId).replace(/[\\/:*?"<>|]/g, '_').trim();
@@ -591,12 +464,6 @@ export default function ProductImprovement() {
       alert('다운로드 중 오류가 발생했습니다.');
     }
     setZipDownloading(false);
-  };
-
-  const selectProduct = (product) => {
-    setForm(prev => ({ ...prev, productName: product.productName, barcode: product.barcode }));
-    setProductSearch(product.productName);
-    setShowSuggestions(false);
   };
 
   const imgCount = useMemo(() => {
@@ -631,7 +498,7 @@ export default function ProductImprovement() {
   return (
     <div>
       <div style={{ textAlign: 'center', fontSize: 10, color: '#bbb', letterSpacing: '0.3px', marginBottom: 12, lineHeight: 1 }}>
-        CS=입고요청 시 출력 / 상품문제 &amp; 재수배 발주시 출력 / 특별관리 = 발주,홈대시보드알림용
+        입력은 상품개선 스프레드시트에서 · 이 화면은 뷰어(읽기전용) / 유형·상태·바코드·상품명만 연동에 사용
       </div>
       {/* DB 저장 실패 알림 */}
       {dbSyncFailed && (
@@ -690,7 +557,7 @@ export default function ProductImprovement() {
       <div className="card" style={{ marginBottom: 16 }}>
         <div className="card-body">
           <div className="filter-bar" style={{ flexWrap: 'wrap', gap: 8 }}>
-            <input className="search-input" placeholder="상품명, 바코드, 이슈 검색..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} style={{ maxWidth: 240 }} />
+            <input className="search-input" placeholder="상품명, 바코드, 옵션 검색..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} style={{ maxWidth: 240 }} />
             <select className="filter-select" value={filterType} onChange={e => setFilterType(e.target.value)}>
               <option value="all">전체 유형</option>
               {IMP_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
@@ -701,125 +568,27 @@ export default function ProductImprovement() {
               {IMP_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
             </select>
             <button className="btn btn-outline" onClick={() => { setSearchQuery(''); setFilterStatus('active'); setFilterType('all'); setCardFilter(null); }}>초기화</button>
-            <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+            <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
+              {syncMsg && <span style={{ fontSize: 12, color: '#1a73e8' }}>{syncMsg}</span>}
               <button className="btn btn-outline" onClick={handleExcelDownload} disabled={excelDownloading || !items.length} style={{ fontSize: 13 }}>
                 {excelDownloading ? '다운로드 중...' : `엑셀 다운로드 (${items.length})`}
               </button>
               <button className="btn btn-outline" onClick={handlePhotoZipDownload} disabled={zipDownloading || imgCount === 0} style={{ fontSize: 13 }}>
                 {zipDownloading ? '다운로드 중...' : `사진 다운로드 (${imgCount})`}
               </button>
-              <button className="btn btn-primary" onClick={() => { setShowForm(!showForm); setForm(emptyForm); setProductSearch(''); setEditingId(null); setFormImages([]); }}>
-                {showForm ? '닫기' : '+ 새 항목'}
+              <button className="btn btn-primary" onClick={handleSync} disabled={syncing} style={{ fontSize: 13 }}>
+                {syncing ? '동기화 중...' : '🔄 시트에서 업데이트'}
               </button>
             </div>
           </div>
         </div>
       </div>
 
-      {/* 신규 등록 폼 */}
-      {showForm && (
-        <div className="card" style={{ marginBottom: 16, border: `2px solid ${editingId ? '#fb8c00' : '#1a73e8'}` }}>
-          <div className="card-header"><h2 style={{ fontSize: 14, fontWeight: 600 }}>{editingId ? '상품개선 항목 수정' : '새 상품개선 항목 등록'}</h2></div>
-          <div className="card-body">
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 12, marginBottom: 12 }}>
-              <div>
-                <label style={{ fontSize: 11, color: '#666', display: 'block', marginBottom: 4 }}>유형 *</label>
-                <select className="filter-select" value={form.type} onChange={e => setForm(p => ({ ...p, type: e.target.value }))} style={{ width: '100%' }}>
-                  {IMP_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-                </select>
-              </div>
-              <div>
-                <label style={{ fontSize: 11, color: '#666', display: 'block', marginBottom: 4 }}>상태</label>
-                <select className="filter-select" value={form.status} onChange={e => setForm(p => ({ ...p, status: e.target.value }))} style={{ width: '100%' }}>
-                  {IMP_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
-                </select>
-              </div>
-              <div>
-                <label style={{ fontSize: 11, color: '#666', display: 'block', marginBottom: 4 }}>발생일</label>
-                <input type="date" className="search-input" value={form.startDate} onChange={e => setForm(p => ({ ...p, startDate: e.target.value }))} style={{ width: '100%', minWidth: 'auto' }} />
-              </div>
-              <div>
-                <label style={{ fontSize: 11, color: '#666', display: 'block', marginBottom: 4 }}>종료일</label>
-                <input type="date" className="search-input" value={form.endDate} onChange={e => setForm(p => ({ ...p, endDate: e.target.value }))} style={{ width: '100%', minWidth: 'auto' }} />
-              </div>
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 12, marginBottom: 12 }}>
-              <div style={{ position: 'relative' }}>
-                <label style={{ fontSize: 11, color: '#666', display: 'block', marginBottom: 4 }}>상품명 * (검색하여 선택)</label>
-                <input className="search-input" placeholder="상품명 또는 바코드로 검색..." value={productSearch}
-                  onChange={e => { setProductSearch(e.target.value); setShowSuggestions(true); setForm(p => ({ ...p, productName: e.target.value, barcode: '' })); }}
-                  onFocus={() => setShowSuggestions(true)}
-                  onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
-                  style={{ width: '100%', minWidth: 'auto' }} />
-                {showSuggestions && suggestions.length > 0 && (
-                  <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, background: '#fff', border: '1px solid #ddd', borderRadius: 8, maxHeight: 200, overflow: 'auto', zIndex: 100, boxShadow: '0 4px 12px rgba(0,0,0,0.15)' }}>
-                    {suggestions.map((p, idx) => (
-                      <div key={idx} style={{ padding: '8px 12px', cursor: 'pointer', borderBottom: '1px solid #f0f0f0', fontSize: 12 }}
-                        onMouseDown={() => selectProduct(p)}>
-                        <div style={{ fontWeight: 500 }}>{p.productName}</div>
-                        <div style={{ color: '#999', fontSize: 11, fontFamily: 'monospace' }}>{p.barcode}{p.optionName ? ` · ${p.optionName}` : ''}</div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-              <div>
-                <label style={{ fontSize: 11, color: '#666', display: 'block', marginBottom: 4 }}>바코드</label>
-                <input className="search-input" value={form.barcode} onChange={e => setForm(p => ({ ...p, barcode: e.target.value }))} style={{ width: '100%', minWidth: 'auto' }} placeholder="자동 입력 또는 직접 입력" />
-              </div>
-            </div>
-            {!editingId && (
-              <div style={{ marginBottom: 12 }}>
-                <label style={{ fontSize: 11, color: '#666', display: 'block', marginBottom: 4 }}>초기 이슈 내용</label>
-                <textarea className="search-input" value={form.issue} onChange={e => setForm(p => ({ ...p, issue: e.target.value }))}
-                  placeholder="이슈 내용을 입력하세요..." rows={3}
-                  style={{ width: '100%', minWidth: 'auto', resize: 'vertical', fontFamily: 'inherit', lineHeight: 1.5 }} />
-              </div>
-            )}
-            <div style={{ marginBottom: 12 }}>
-              <label style={{ fontSize: 11, color: '#666', display: 'block', marginBottom: 4 }}>참고 URL (최대 3개)</label>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                {(form.urls || ['', '', '']).map((url, idx) => (
-                  <input key={idx} className="search-input" value={url} placeholder={`URL ${idx + 1}`}
-                    onChange={e => { const u = [...(form.urls || ['', '', ''])]; u[idx] = e.target.value; setForm(p => ({ ...p, urls: u })); }}
-                    style={{ width: '100%', minWidth: 'auto', fontSize: 12 }} />
-                ))}
-              </div>
-            </div>
-            <div style={{ marginBottom: 12 }} onPaste={handleFormImgPaste}>
-              <label style={{ fontSize: 11, color: '#666', display: 'block', marginBottom: 4 }}>첨부 사진 (최대 5장)</label>
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-                {formImages.map((src, idx) => (
-                  <div key={idx} style={{ position: 'relative', border: '1px solid #e0e0e0', borderRadius: 6, overflow: 'hidden' }}>
-                    <img src={src} alt={`첨부 ${idx + 1}`} style={{ width: 80, height: 80, objectFit: 'cover', display: 'block' }} />
-                    <span onClick={() => setFormImages(prev => prev.filter((_, i) => i !== idx))}
-                      style={{ position: 'absolute', top: 2, right: 2, background: 'rgba(0,0,0,0.6)', color: '#fff', borderRadius: '50%', width: 18, height: 18, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', fontSize: 11 }}>✕</span>
-                  </div>
-                ))}
-                {formImages.length < 5 && (
-                  <div>
-                    <input ref={formFileRef} type="file" accept="image/*" multiple onChange={handleFormImgAdd} style={{ display: 'none' }} />
-                    <button type="button" className="btn btn-outline btn-sm" onClick={() => formFileRef.current?.click()} style={{ fontSize: 11, padding: '4px 10px' }}>
-                      + 사진 ({formImages.length}/5)
-                    </button>
-                  </div>
-                )}
-              </div>
-              {formImages.length < 5 && <div style={{ fontSize: 10, color: '#aaa', marginTop: 4 }}>이 영역에서 Ctrl+V로 붙여넣기 가능</div>}
-            </div>
-            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-              <button className="btn btn-outline" onClick={() => { setShowForm(false); setForm(emptyForm); setFormImages([]); setProductSearch(''); setEditingId(null); }}>취소</button>
-              <button className="btn btn-primary" onClick={editingId ? handleUpdate : handleAdd} disabled={!form.productName.trim() && !form.barcode.trim()}>{editingId ? '수정 완료' : '등록'}</button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* 항목 리스트 */}
       {filtered.length === 0 ? (
         <div className="card">
           <div className="card-body" style={{ textAlign: 'center', padding: 48, color: '#999' }}>
-            {items.length === 0 ? '등록된 상품개선 항목이 없습니다. [+ 새 항목] 버튼으로 추가하세요.' : '필터 조건에 맞는 항목이 없습니다.'}
+            {items.length === 0 ? '상품개선 항목이 없습니다. 시트에 유형·상태를 입력한 뒤 [🔄 시트에서 업데이트]를 누르세요.' : '필터 조건에 맞는 항목이 없습니다.'}
           </div>
         </div>
       ) : (
@@ -827,74 +596,136 @@ export default function ProductImprovement() {
           {filtered.map((item) => {
             const imgArr = impImages[item.id] || [];
             const isOpen = expandedId === item.id;
+            const isSheet = item.source === 'sheet';
+            const vendors = Array.isArray(item.vendors) ? item.vendors : [];
+            const selName = vendorView[item.id] || item.appliedVendor || (vendors[0] && vendors[0].name);
+            const selVendor = pickVendor(item, selName);
+            const timelineLines = isSheet && selVendor && selVendor.issue
+              ? selVendor.issue.split('\n').map(s => s.trim()).filter(Boolean)
+              : [];
             return (
-              <div key={item.id} className="card" style={{ borderLeft: `4px solid ${STATUS_COLORS[item.status]}` }}>
-                {/* 접힌 헤더 - 항상 표시 */}
+              <div key={item.id} className="card" style={{ borderLeft: `4px solid ${STATUS_COLORS[item.status] || '#ccc'}` }}>
+                {/* 접힌 헤더 */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 16px', cursor: 'pointer', flexWrap: 'wrap' }}
                   onClick={() => setExpandedId(prev => prev === item.id ? null : item.id)}>
                   <span style={{ fontSize: 14, color: '#999', transition: 'transform 0.2s', transform: isOpen ? 'rotate(90deg)' : 'rotate(0deg)' }}>&#9654;</span>
-                  <select value={item.status} onChange={e => { e.stopPropagation(); handleStatusChange(item.id, e.target.value); }}
-                    onClick={e => e.stopPropagation()}
-                    style={{ padding: '2px 6px', fontSize: 11, fontWeight: 600, border: `2px solid ${STATUS_COLORS[item.status]}`, borderRadius: 5, color: STATUS_COLORS[item.status], background: '#fff', cursor: 'pointer' }}>
-                    {IMP_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
-                  </select>
+                  <span style={{ padding: '2px 8px', fontSize: 11, fontWeight: 600, border: `2px solid ${STATUS_COLORS[item.status] || '#ccc'}`, borderRadius: 5, color: STATUS_COLORS[item.status] || '#666', background: '#fff' }}>{item.status}</span>
                   <span style={{ padding: '2px 8px', fontSize: 10, fontWeight: 600, borderRadius: 10, color: '#fff', background: TYPE_COLORS[item.type] || '#666' }}>{item.type}</span>
-                  <span style={{ fontSize: 14, fontWeight: 600, flex: 1 }}>{item.productName || '-'}</span>
-                  <span style={{ fontSize: 11, color: '#999' }}>{item.startDate}</span>
-                  {(item.timeline || []).length > 0 && <span style={{ fontSize: 10, color: '#aaa', background: '#f0f0f0', padding: '1px 6px', borderRadius: 8 }}>{item.timeline.length}건</span>}
+                  <span style={{ fontSize: 14, fontWeight: 600, flex: 1 }}>
+                    {item.productName || '-'}
+                    {item.optionName && <span style={{ fontSize: 12, color: '#999', fontWeight: 400 }}> · {item.optionName}</span>}
+                  </span>
+                  {isSheet && vendors.length > 0 && <span style={{ fontSize: 10, color: '#aaa', background: '#f0f0f0', padding: '1px 6px', borderRadius: 8 }}>🏭 {vendors.length}곳</span>}
+                  {!isSheet && (item.timeline || []).length > 0 && <span style={{ fontSize: 10, color: '#aaa', background: '#f0f0f0', padding: '1px 6px', borderRadius: 8 }}>{item.timeline.length}건</span>}
                   {imgArr.length > 0 && <span style={{ fontSize: 12 }}>📷{imgArr.length}</span>}
-                  {(item.urls || []).length > 0 && <span style={{ fontSize: 12 }}>🔗{item.urls.length}</span>}
                 </div>
 
                 {/* 펼친 상세 */}
                 {isOpen && (
                   <div className="card-body" style={{ padding: '0 16px 16px', borderTop: '1px solid #f0f0f0' }}>
-                    {/* 상세 정보 */}
                     <div style={{ display: 'flex', gap: 12, alignItems: 'center', padding: '10px 0', flexWrap: 'wrap' }}>
                       {item.barcode && <span style={{ fontSize: 11, fontFamily: 'monospace', color: '#888', background: '#f5f5f5', padding: '2px 8px', borderRadius: 4 }}>{item.barcode}</span>}
-                      {item.endDate && <span style={{ fontSize: 11, color: '#999' }}>종료: {item.endDate}</span>}
-                      <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+                      {item.cost && <span style={{ fontSize: 11, color: '#999' }}>원가 {item.cost}</span>}
+                      {item.sellStatus && <span style={{ fontSize: 11, color: '#999' }}>판매: {item.sellStatus}</span>}
+                      <div style={{ marginLeft: 'auto' }}>
                         <button className="btn btn-outline btn-sm" onClick={() => openImpImgModal(item.id)} style={{ fontSize: 11, padding: '3px 10px' }}>
                           📷 사진 ({imgArr.length}/5)
                         </button>
-                        <span style={{ cursor: 'pointer', fontSize: 13, color: '#1a73e8', padding: '3px 6px' }} onClick={() => handleEdit(item)} title="수정">수정</span>
-                        <span style={{ cursor: 'pointer', fontSize: 13, color: '#d93025', padding: '3px 6px' }} onClick={() => handleDelete(item.id)} title="삭제">삭제</span>
                       </div>
                     </div>
 
-                    {/* URL 목록 */}
-                    {(item.urls || []).length > 0 && (
-                      <div style={{ marginBottom: 12 }}>
-                        {item.urls.map((url, idx) => (
-                          <div key={idx} style={{ fontSize: 12, marginBottom: 2 }}>
-                            <a href={url} target="_blank" rel="noopener noreferrer" style={{ color: '#1a73e8', wordBreak: 'break-all' }}>{url}</a>
-                          </div>
-                        ))}
+                    {item.commonIssue && (
+                      <div style={{ marginBottom: 12, fontSize: 12, color: '#e65100', background: '#fff8f0', border: '1px solid #ffe0b2', borderRadius: 6, padding: '8px 12px' }}>
+                        💬 공통이슈: {linkify(item.commonIssue)}
                       </div>
                     )}
 
-                    {/* 타임라인 */}
-                    <div style={{ marginLeft: 8, borderLeft: '2px solid #e0e0e0', paddingLeft: 16 }}>
-                      {(item.timeline || []).map((entry, tIdx) => (
-                        <div key={tIdx} style={{ position: 'relative', marginBottom: 10 }}>
-                          <div style={{ position: 'absolute', left: -22, top: 4, width: 10, height: 10, borderRadius: '50%', background: tIdx === (item.timeline.length - 1) ? '#1a73e8' : '#bdbdbd' }} />
-                          <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-                            <span style={{ fontSize: 11, color: '#999', whiteSpace: 'nowrap', minWidth: 100 }}>{entry.date}</span>
-                            <span style={{ fontSize: 13, color: '#333', lineHeight: 1.5, whiteSpace: 'pre-wrap', wordBreak: 'break-word', flex: 1 }}>{entry.text}</span>
-                            <span style={{ fontSize: 11, color: '#ccc', cursor: 'pointer', whiteSpace: 'nowrap' }} onClick={() => handleDeleteTimeline(item.id, tIdx)}>삭제</span>
-                          </div>
+                    {isSheet ? (
+                      <>
+                        {/* 수배처 뷰어 탭 */}
+                        {vendors.length > 0 && (
+                          <>
+                            <div style={{ display: 'flex', gap: 6, marginBottom: 10, flexWrap: 'wrap' }}>
+                              {vendors.map(v => {
+                                const active = v.name === selName;
+                                const applied = v.name === item.appliedVendor;
+                                return (
+                                  <button key={v.name}
+                                    onClick={() => setVendorView(prev => ({ ...prev, [item.id]: v.name }))}
+                                    style={{
+                                      fontSize: 11, fontWeight: 600, padding: '4px 10px', borderRadius: 6, cursor: 'pointer',
+                                      border: `1px solid ${active ? '#43a047' : '#ddd'}`,
+                                      background: active ? '#e8f5e9' : '#fff',
+                                      color: active ? '#2e7d32' : '#666',
+                                    }}>
+                                    {v.name}{applied ? ' ✅적용중' : ''}
+                                  </button>
+                                );
+                              })}
+                            </div>
+
+                            {/* 선택 업체 블록 */}
+                            {selVendor && (
+                              <div style={{ border: `1px solid ${selVendor.name === item.appliedVendor ? '#a5d6a7' : '#e0e0e0'}`, borderRadius: 8, padding: '10px 14px', marginBottom: 12, background: '#fafafa' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6, flexWrap: 'wrap' }}>
+                                  <span style={{ fontSize: 12, fontWeight: 700 }}>{selVendor.name}{selVendor.name === item.appliedVendor ? ' ✅적용중' : ''}</span>
+                                  {selVendor.leadTime && <span style={{ fontSize: 11, color: '#555', background: '#eef', padding: '1px 8px', borderRadius: 8 }}>리드타임 {selVendor.leadTime}일</span>}
+                                  {selVendor.url && <a href={selVendor.url} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: '#1a73e8' }}>🔗 1688 소싱링크</a>}
+                                </div>
+                                {(selVendor.opt1 || selVendor.opt2) && (
+                                  <div style={{ fontSize: 12, color: '#333', marginBottom: 4, whiteSpace: 'pre-wrap' }}>
+                                    <span style={{ color: '#999' }}>옵션: </span>{[selVendor.opt1, selVendor.opt2].filter(Boolean).join('  |  ')}
+                                  </div>
+                                )}
+                                {selVendor.note && (
+                                  <div style={{ fontSize: 12, color: '#333', whiteSpace: 'pre-wrap' }}>
+                                    <span style={{ color: '#999' }}>📝 비고: </span>{selVendor.note}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </>
+                        )}
+
+                        {/* 진행상황 타임라인 (선택 업체 이슈열) */}
+                        <div style={{ marginLeft: 8, borderLeft: '2px solid #e0e0e0', paddingLeft: 16 }}>
+                          <div style={{ fontSize: 11, color: '#999', marginBottom: 8 }}>진행상황 {selVendor ? `(${selVendor.name})` : ''}</div>
+                          {timelineLines.length > 0 ? timelineLines.map((line, idx) => (
+                            <div key={idx} style={{ position: 'relative', marginBottom: 10 }}>
+                              <div style={{ position: 'absolute', left: -22, top: 4, width: 10, height: 10, borderRadius: '50%', background: idx === (timelineLines.length - 1) ? '#1a73e8' : '#bdbdbd' }} />
+                              <span style={{ fontSize: 13, color: '#333', lineHeight: 1.5, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{linkify(line)}</span>
+                            </div>
+                          )) : (
+                            <div style={{ fontSize: 12, color: '#bbb' }}>기록된 진행상황이 없습니다.</div>
+                          )}
                         </div>
-                      ))}
-                      <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', position: 'relative' }}>
-                        <div style={{ position: 'absolute', left: -22, top: 8, width: 10, height: 10, borderRadius: '50%', border: '2px solid #bdbdbd', background: '#fff' }} />
-                        <textarea className="search-input" placeholder="진행 상황 추가..."
-                          value={timelineInput[item.id] || ''}
-                          onChange={e => setTimelineInput(prev => ({ ...prev, [item.id]: e.target.value }))}
-                          onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleAddTimeline(item.id); } }}
-                          rows={1} style={{ flex: 1, minWidth: 'auto', resize: 'vertical', fontFamily: 'inherit', fontSize: 12, lineHeight: 1.5 }} />
-                        <button className="btn btn-primary btn-sm" onClick={() => handleAddTimeline(item.id)} style={{ fontSize: 11, padding: '4px 12px', whiteSpace: 'nowrap', marginTop: 2 }}>추가</button>
-                      </div>
-                    </div>
+                      </>
+                    ) : (
+                      /* 레거시(수기) 항목 — 읽기전용 */
+                      <>
+                        {(item.urls || []).length > 0 && (
+                          <div style={{ marginBottom: 12 }}>
+                            {item.urls.map((url, idx) => (
+                              <div key={idx} style={{ fontSize: 12, marginBottom: 2 }}>
+                                <a href={url} target="_blank" rel="noopener noreferrer" style={{ color: '#1a73e8', wordBreak: 'break-all' }}>{url}</a>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        <div style={{ marginLeft: 8, borderLeft: '2px solid #e0e0e0', paddingLeft: 16 }}>
+                          {(item.timeline || []).map((entry, tIdx) => (
+                            <div key={tIdx} style={{ position: 'relative', marginBottom: 10 }}>
+                              <div style={{ position: 'absolute', left: -22, top: 4, width: 10, height: 10, borderRadius: '50%', background: tIdx === (item.timeline.length - 1) ? '#1a73e8' : '#bdbdbd' }} />
+                              <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+                                <span style={{ fontSize: 11, color: '#999', whiteSpace: 'nowrap', minWidth: 100 }}>{entry.date}</span>
+                                <span style={{ fontSize: 13, color: '#333', lineHeight: 1.5, whiteSpace: 'pre-wrap', wordBreak: 'break-word', flex: 1 }}>{entry.text}</span>
+                              </div>
+                            </div>
+                          ))}
+                          {(item.timeline || []).length === 0 && <div style={{ fontSize: 12, color: '#bbb' }}>기록된 진행상황이 없습니다.</div>}
+                        </div>
+                      </>
+                    )}
                   </div>
                 )}
               </div>
