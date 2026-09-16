@@ -322,6 +322,32 @@ export default function ProductImprovement() {
     setSyncing(false);
   };
 
+  // 레거시(수기) 항목 완료 처리 — 연동 알림에서 빠지도록 상태를 완료로 내림
+  const handleLegacyComplete = async (itemId) => {
+    const next = items.map(it => it.id === itemId && it.source !== 'sheet' ? { ...it, status: '완료' } : it);
+    setItems(next);
+    localStorage.setItem('improvement_items', JSON.stringify(next));
+    await dbSaveWithRetry('improvement_items', next, { logDesc: '상품개선 레거시 항목 완료 처리' });
+  };
+
+  // 레거시(수기) 항목 삭제 — 시트 항목은 대상 아님
+  const handleLegacyDelete = async (itemId) => {
+    const target = items.find(it => it.id === itemId);
+    if (!target || target.source === 'sheet') return;
+    if (!window.confirm(`"${target.productName || target.barcode || itemId}" 항목을 삭제할까요? (되돌릴 수 없습니다)`)) return;
+    const next = items.filter(it => it.id !== itemId);
+    setItems(next);
+    localStorage.setItem('improvement_items', JSON.stringify(next));
+    // 첨부 이미지 저장소도 정리
+    const nextImgs = { ...impImages };
+    delete nextImgs[itemId];
+    setImpImages(nextImgs);
+    localStorage.setItem('improvement_images', JSON.stringify(nextImgs));
+    await dbSaveWithRetry('improvement_items', next, { logDesc: '상품개선 레거시 항목 삭제' });
+    dbStoreSet(`imp_img_${itemId}`, [], { skipLog: true }).catch(() => {});
+    if (expandedId === itemId) setExpandedId(null);
+  };
+
   const filtered = useMemo(() => {
     let rows = items;
     if (cardFilter === 'supply_wait') rows = rows.filter(r => SUPPLY_TYPES.includes(r.type) && r.status === '시작전');
@@ -701,8 +727,23 @@ export default function ProductImprovement() {
                         </div>
                       </>
                     ) : (
-                      /* 레거시(수기) 항목 — 읽기전용 */
+                      /* 레거시(수기) 항목 — 시트에 없어 처리 창구가 없으므로 완료/삭제만 제공 */
                       <>
+                        <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap' }}>
+                          <span style={{ fontSize: 11, color: '#aaa', background: '#f5f5f5', padding: '2px 8px', borderRadius: 4 }}>수기 등록 항목 (시트 미연동)</span>
+                          <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+                            {item.status !== '완료' && (
+                              <button className="btn btn-sm" onClick={() => handleLegacyComplete(item.id)}
+                                style={{ fontSize: 11, padding: '3px 12px', background: '#43a047', color: '#fff', border: 'none', borderRadius: 6 }}>
+                                완료 처리
+                              </button>
+                            )}
+                            <button className="btn btn-sm" onClick={() => handleLegacyDelete(item.id)}
+                              style={{ fontSize: 11, padding: '3px 12px', background: '#fff', color: '#c62828', border: '1px solid #ef9a9a', borderRadius: 6 }}>
+                              삭제
+                            </button>
+                          </div>
+                        </div>
                         {(item.urls || []).length > 0 && (
                           <div style={{ marginBottom: 12 }}>
                             {item.urls.map((url, idx) => (
