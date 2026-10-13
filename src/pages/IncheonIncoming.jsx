@@ -2,6 +2,7 @@ import { useState, useCallback, useRef, useMemo } from 'react';
 import * as XLSX from 'xlsx';
 import XLSX_STYLE from 'xlsx-js-style';
 import { dbStoreGet } from '../utils/dbApi';
+import { fetchImprovementSheet } from '../utils/improvementSync';
 import { findBestMatch, buildCandidates } from '../utils/fuzzyMatch';
 
 const SHEET_ID = '1NXhW_gG0b-gXuVqrhbY9ErWi8uO_7pXIy-NTo4FbE1I';
@@ -113,6 +114,7 @@ export default function IncheonIncoming() {
   const [ipRightMap, setIpRightMap] = useState({}); // barcode → 지재권 존재 여부
   const [seasonMap, setSeasonMap] = useState({}); // barcode → 상태에 '시즌' 포함 토큰(표시 워딩)
   const [vocNames, setVocNames] = useState([]); // VOC 상품명 키워드 목록
+  const [vocBarcodes, setVocBarcodes] = useState(new Set()); // VOC 바코드 집합 (정확 매칭용)
   const [orderFile, setOrderFile] = useState(null); // 주문목록 파일명
   const [orderMap, setOrderMap] = useState({}); // key: "상품명||옵션명" → 합산 주문수량
   const [waitBarcodes, setWaitBarcodes] = useState(new Set()); // 대기필요 바코드 목록
@@ -127,7 +129,16 @@ export default function IncheonIncoming() {
     try {
       const [calcRes, barcodeRes, specialRes, impData, salesData] = await Promise.all([
         fetch(TSV_CALC), fetch(CSV_BARCODE), fetch(CSV_SPECIAL),
-        dbStoreGet('improvement_items').catch(() => null),
+        // 상품개선 시트를 직접 읽어 항상 최신 VOC 반영(읽기 전용, DB 미기록).
+        //   네트워크·HTTP 오류뿐 아니라 시트가 200으로 빈/깨진 응답을 줄 때(함수 오류 등)도
+        //   결과가 비면 마지막 동기화본(DB)으로 폴백해 VOC가 통째로 빠지지 않게 한다.
+        (async () => {
+          try {
+            const s = await fetchImprovementSheet();
+            if (Array.isArray(s) && s.length > 0) return s;
+          } catch { /* 네트워크/HTTP 오류 → 아래 DB 폴백 */ }
+          return await dbStoreGet('improvement_items').catch(() => null);
+        })(),
         loadRecent7DaySales().catch(() => null),
       ]);
 
@@ -178,15 +189,20 @@ export default function IncheonIncoming() {
       setOneTimeMap(specialOneTimeMap);
 
       // VOC: 상품개선 DB에서 CSV·VOC 유형 + 시작전/처리중
+      //   바코드 우선 매칭(정확) + 상품명 매칭 보조(바코드 미등록 옵션 커버)
       const newVocNames = [];
+      const newVocBarcodes = new Set();
       if (Array.isArray(impData)) {
         for (const item of impData) {
-          if (item.type === 'CSV·VOC' && (item.status === '시작전' || item.status === '처리중') && item.productName) {
-            newVocNames.push(item.productName);
+          if (item.type === 'CSV·VOC' && (item.status === '시작전' || item.status === '처리중')) {
+            const bc = (item.barcode || '').trim();
+            if (bc) newVocBarcodes.add(bc);
+            if (item.productName) newVocNames.push(item.productName);
           }
         }
       }
       setVocNames(newVocNames);
+      setVocBarcodes(newVocBarcodes);
 
       // 재고 계산기 시트: P열(cols[15]) = (1) 재고 입고
       const items = [];
@@ -298,9 +314,14 @@ export default function IncheonIncoming() {
   }, [orderMap, orderCandidates]);
 
   // VOC 체크 (상품명 키워드 매칭)
-  const isVoc = (productName) => {
-    if (!productName || vocNames.length === 0) return false;
-    return vocNames.some(keyword => productName.includes(keyword));
+  const isVoc = (item) => {
+    // 1차: 바코드 정확 매칭 (상품명 글자 불일치와 무관하게 확실히 잡음)
+    if (item.barcode && vocBarcodes.has(item.barcode)) return true;
+    // 2차: 상품명 키워드 매칭 (바코드 미등록 옵션까지 보조 커버)
+    if (item.productName && vocNames.length > 0) {
+      return vocNames.some(keyword => item.productName.includes(keyword));
+    }
+    return false;
   };
 
   // 비고 생성
@@ -312,7 +333,7 @@ export default function IncheonIncoming() {
       remarks.push(`${wingQty}개 윙 발송`);
     }
     // VOC 체크
-    if (isVoc(item.productName)) {
+    if (isVoc(item)) {
       remarks.push('VOC');
     }
     // 특별관리 체크
@@ -607,7 +628,7 @@ export default function IncheonIncoming() {
                     {data.items.map((item, i) => {
                       const remark = getRemark(item);
                       const hasWing = getOrderQty(item.productName, item.optionName);
-                      const hasVoc = isVoc(item.productName);
+                      const hasVoc = isVoc(item);
                       const hasOneTime = oneTimeMap[item.barcode];
                       const hasWait = waitBarcodes.has(item.barcode);
                       const hasQuality = qualityCertMap[item.barcode];
