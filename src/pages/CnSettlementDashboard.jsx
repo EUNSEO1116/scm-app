@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import * as XLSX from 'xlsx';
 import { dbStoreGet } from '../utils/dbApi';
 
 const DB_KEY = 'cn_settlement_data';
@@ -52,6 +53,31 @@ function aggregateByBrand(record, brandMap) {
     }
   }
   return result;
+}
+
+// BS(바디스윗) 전용 집계: 대시보드 브랜드 계산법과 동일(환율 적용, 환불 차감, 기존/신규 구분)
+function aggregateBS(record) {
+  const rate = record.exchangeRate;
+  const result = { existing: 0, new: 0, extraCost: 0 };
+  for (const tx of record.transactions) {
+    const code = extractBrandCode(tx.orderNo);
+    if (code !== 'BS') continue;
+    const krw = Math.round(tx.amount * rate);
+    if (tx.type === '추가비용') result.extraCost += krw;
+    else if (tx.type === '오더 지불') {
+      if (isNewProduct(tx.orderNo)) result.new += krw;
+      else result.existing += krw;
+    } else if (tx.type === '환불') {
+      if (isNewProduct(tx.orderNo)) result.new -= krw;
+      else result.existing -= krw;
+    }
+  }
+  return result;
+}
+
+function monthLabel(mk) {
+  const [y, m] = mk.split('-');
+  return `${y}년 ${parseInt(m, 10)}월`;
 }
 
 function getEndDate(record) {
@@ -138,7 +164,7 @@ export default function CnSettlementDashboard() {
   const brandMap = {};
   for (const b of brandMappings) brandMap[b.code.toUpperCase()] = b.name;
 
-  const { monthGroups, allBrands, currentMonthKey, lastSummary, weekOverWeek } = useMemo(() => {
+  const { monthGroups, allBrands, currentMonthKey, lastSummary, weekOverWeek, monthlyBrand, monthlyBS } = useMemo(() => {
     const carryOver = {};
     const processed = uploads.map(record => {
       const agg = aggregateByBrand(record, brandMap);
@@ -232,7 +258,42 @@ export default function CnSettlementDashboard() {
       };
     }
 
-    return { monthGroups: groups, allBrands, currentMonthKey: getMonthKey(now), lastSummary, weekOverWeek };
+    // 엑셀용 월별 브랜드 합계 (계산법은 위 processed와 동일, 주차를 월로 합산)
+    const monthlyBrand = {};
+    processed.forEach(({ record, agg }) => {
+      const endDate = getEndDate(record);
+      if (!endDate) return;
+      const mk = getMonthKey(endDate);
+      if (!monthlyBrand[mk]) {
+        monthlyBrand[mk] = {};
+        allBrands.forEach(b => { monthlyBrand[mk][b] = { existing: 0, new: 0 }; });
+      }
+      allBrands.forEach(b => {
+        if (agg[b]) {
+          monthlyBrand[mk][b].existing += agg[b].existing;
+          monthlyBrand[mk][b].new += agg[b].new;
+        }
+      });
+    });
+
+    // 엑셀용 BS(바디스윗) 월별 합계 (환불 이월 포함, 브랜드 carryOver 로직과 동일)
+    const bsCarry = { existing: 0, new: 0 };
+    const monthlyBS = {};
+    uploads.forEach(record => {
+      const agg = aggregateBS(record);
+      if (bsCarry.existing < 0) { agg.existing += bsCarry.existing; bsCarry.existing = 0; }
+      if (bsCarry.new < 0) { agg.new += bsCarry.new; bsCarry.new = 0; }
+      if (agg.existing < 0) bsCarry.existing += agg.existing;
+      if (agg.new < 0) bsCarry.new += agg.new;
+      const endDate = getEndDate(record);
+      if (!endDate) return;
+      const mk = getMonthKey(endDate);
+      if (!monthlyBS[mk]) monthlyBS[mk] = { existing: 0, new: 0 };
+      monthlyBS[mk].existing += agg.existing;
+      monthlyBS[mk].new += agg.new;
+    });
+
+    return { monthGroups: groups, allBrands, currentMonthKey: getMonthKey(now), lastSummary, weekOverWeek, monthlyBrand, monthlyBS };
   }, [uploads, brandMappings]);
 
   const sortedMonthKeys = Object.keys(monthGroups).sort((a, b) => b.localeCompare(a));
@@ -266,6 +327,87 @@ export default function CnSettlementDashboard() {
       sortedMonthKeys.forEach(mk => { reset[mk] = mk === currentMonthKey; });
       setExpandedMonths(reset);
     }
+  };
+
+  const handleExport = () => {
+    const monthKeysAsc = [...new Set([
+      ...Object.keys(monthlyBrand),
+      ...Object.keys(monthlyBS),
+    ])].sort();
+    if (monthKeysAsc.length === 0) return;
+
+    const wb = XLSX.utils.book_new();
+
+    // 시트 1: 브랜드별 (월=행, 브랜드=열 기존/신규 + 합계)
+    const h1 = ['월'];
+    allBrands.forEach(b => h1.push(`${b} 기존`, `${b} 신규`));
+    h1.push('합계 기존', '합계 신규');
+    const aoa1 = [h1];
+    const brandTotals = {};
+    allBrands.forEach(b => { brandTotals[b] = { existing: 0, new: 0 }; });
+    let gExist = 0, gNew = 0;
+    monthKeysAsc.forEach(mk => {
+      const row = [monthLabel(mk)];
+      let rExist = 0, rNew = 0;
+      allBrands.forEach(b => {
+        const d = (monthlyBrand[mk] && monthlyBrand[mk][b]) || { existing: 0, new: 0 };
+        row.push(d.existing, d.new);
+        rExist += d.existing; rNew += d.new;
+        brandTotals[b].existing += d.existing; brandTotals[b].new += d.new;
+      });
+      row.push(rExist, rNew);
+      gExist += rExist; gNew += rNew;
+      aoa1.push(row);
+    });
+    const totalRow1 = ['합계'];
+    allBrands.forEach(b => totalRow1.push(brandTotals[b].existing, brandTotals[b].new));
+    totalRow1.push(gExist, gNew);
+    aoa1.push(totalRow1);
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa1), '브랜드별');
+
+    // 시트 2: BS(바디스윗)
+    const aoa2 = [['월', '기존', '신규', '합계']];
+    let bE = 0, bN = 0;
+    monthKeysAsc.forEach(mk => {
+      const d = monthlyBS[mk] || { existing: 0, new: 0 };
+      aoa2.push([monthLabel(mk), d.existing, d.new, d.existing + d.new]);
+      bE += d.existing; bN += d.new;
+    });
+    aoa2.push(['합계', bE, bN, bE + bN]);
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa2), 'BS(바디스윗)');
+
+    // 시트 3: 구매비용 (연도별 피벗 — 월=열 1~12월, 행=유통팀/바디스윗 기존·신규)
+    const pad2m = (n) => String(n).padStart(2, '0');
+    const years = [...new Set(monthKeysAsc.map(mk => mk.split('-')[0]))].sort((a, b) => b.localeCompare(a));
+    const aoa3 = [];
+    years.forEach(year => {
+      aoa3.push([`${year}년`]);
+      const header = ['구매비용'];
+      for (let m = 1; m <= 12; m++) header.push(`${m}월`);
+      aoa3.push(header);
+      const rowDE = ['유통팀 기존'];
+      const rowDN = ['유통팀 신규'];
+      const rowBE = ['바디스윗 기존'];
+      const rowBN = ['바디스윗 신규'];
+      for (let m = 1; m <= 12; m++) {
+        const key = `${year}-${pad2m(m)}`;
+        const mb = monthlyBrand[key];
+        if (mb) {
+          let ex = 0, nw = 0;
+          allBrands.forEach(b => { ex += mb[b].existing; nw += mb[b].new; });
+          rowDE.push(ex); rowDN.push(nw);
+        } else { rowDE.push(''); rowDN.push(''); }
+        const bs = monthlyBS[key];
+        if (bs) { rowBE.push(bs.existing); rowBN.push(bs.new); }
+        else { rowBE.push(''); rowBN.push(''); }
+      }
+      aoa3.push(rowDE, rowDN, rowBE, rowBN);
+      aoa3.push([]);
+      aoa3.push([]);
+    });
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa3), '구매비용');
+
+    XLSX.writeFile(wb, `CN결산_월별_${new Date().toISOString().slice(0, 10)}.xlsx`);
   };
 
   const renderTable = (rows, monthNum) => {
@@ -463,13 +605,23 @@ export default function CnSettlementDashboard() {
           onFocus={(e) => e.target.style.borderColor = 'var(--primary)'}
           onBlur={(e) => e.target.style.borderColor = 'var(--border)'}
         />
-        <button
-          className="btn btn-outline btn-sm"
-          onClick={toggleAll}
-          style={{ fontSize: 12 }}
-        >
-          {allExpanded ? '전체 접기' : '전체 펼치기'}
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <button
+            className="btn btn-primary btn-sm"
+            onClick={handleExport}
+            disabled={uploads.length === 0}
+            style={{ fontSize: 12 }}
+          >
+            월별 엑셀 다운로드
+          </button>
+          <button
+            className="btn btn-outline btn-sm"
+            onClick={toggleAll}
+            style={{ fontSize: 12 }}
+          >
+            {allExpanded ? '전체 접기' : '전체 펼치기'}
+          </button>
+        </div>
       </div>
 
       {filteredKeys.length === 0 ? (
