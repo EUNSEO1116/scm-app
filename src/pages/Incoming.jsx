@@ -71,6 +71,7 @@ export default function Incoming() {
   const orderFileRef = useRef();
   const [vocNames, setVocNames] = useState([]);
   const [specialMap, setSpecialMap] = useState({}); // barcode → 기타(1회성) 존재 여부
+  const [seasonMap, setSeasonMap] = useState({}); // barcode → 상태에 포함된 계절 키워드(봄/여름/겨울, 복수 ', ' 결합)
 
   const processFile = useCallback(async (file) => {
     if (!file) return;
@@ -87,6 +88,7 @@ export default function Incoming() {
       // 쿠팡바코드: barcode(col6) → center(col12), status(col9)
       const centerMap = {};
       const excludeSet = new Set(); // 덤핑·품질확인서·지재권 상태 바코드
+      const newSeasonMap = {}; // 상태에 포함된 계절 키워드(봄/여름/겨울) 바코드
       if (barcodeRes.ok) {
         const csv = await barcodeRes.text();
         const lines = csv.split('\n').filter(l => l.trim());
@@ -101,9 +103,13 @@ export default function Incoming() {
           if (rowText.includes('반출')) { excludeSet.add(barcode); continue; }
           if (rowText.includes('품질확인서')) { excludeSet.add(barcode); continue; }
           if (rowText.includes('지재권')) { excludeSet.add(barcode); continue; }
+          // 계절: 상태 컬럼(col9)에 봄/여름/겨울 키워드가 있으면 해당 키워드만 표시(복수 가능)
+          const seasons = ['봄', '여름', '겨울'].filter((kw) => status.includes(kw));
+          if (seasons.length) newSeasonMap[barcode] = seasons.join(', ');
           if (barcode) centerMap[barcode] = center;
         }
       }
+      setSeasonMap(newSeasonMap);
 
       // 특별 관리 상품: barcode(col0) → 기타(1회성)(col8) 존재 여부
       const newSpecialMap = {};
@@ -387,6 +393,10 @@ export default function Incoming() {
     }
     if (waitBarcodes.has(sku)) {
       remarks.push('대기필요');
+    }
+    // 계절 체크 (상태에 봄/여름/겨울 키워드가 있으면 해당 키워드 표시)
+    if (seasonMap[sku]) {
+      remarks.push(seasonMap[sku]);
     }
     return remarks.join(', ');
   };
@@ -755,10 +765,16 @@ export default function Incoming() {
                               {waitBarcodes.has(r.sku) && (
                                 <span style={{
                                   background: '#fff3e0', color: '#e65100', padding: '2px 6px',
-                                  borderRadius: 4, fontSize: 11, fontWeight: 600,
+                                  borderRadius: 4, fontSize: 11, fontWeight: 600, marginRight: 4,
                                 }}>대기필요</span>
                               )}
-                              {!orderMap[r.sku] && !isVoc(r.label) && !specialMap[r.sku] && !waitBarcodes.has(r.sku) && '-'}
+                              {seasonMap[r.sku] && (
+                                <span style={{
+                                  background: '#e8f5e9', color: '#2e7d32', padding: '2px 6px',
+                                  borderRadius: 4, fontSize: 11, fontWeight: 600,
+                                }}>{seasonMap[r.sku]}</span>
+                              )}
+                              {!orderMap[r.sku] && !isVoc(r.label) && !specialMap[r.sku] && !waitBarcodes.has(r.sku) && !seasonMap[r.sku] && '-'}
                             </td>
                           </tr>
                         );

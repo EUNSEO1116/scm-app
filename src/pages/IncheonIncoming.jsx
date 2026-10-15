@@ -112,7 +112,7 @@ export default function IncheonIncoming() {
   const [oneTimeMap, setOneTimeMap] = useState({}); // barcode → 기타(1회성) 존재 여부
   const [qualityCertMap, setQualityCertMap] = useState({}); // barcode → 품질확인서 존재 여부
   const [ipRightMap, setIpRightMap] = useState({}); // barcode → 지재권 존재 여부
-  const [seasonMap, setSeasonMap] = useState({}); // barcode → 상태에 '시즌' 포함 토큰(표시 워딩)
+  const [seasonMap, setSeasonMap] = useState({}); // barcode → 상태에 포함된 계절 키워드(봄/여름/겨울, 복수 ', ' 결합)
   const [vocNames, setVocNames] = useState([]); // VOC 상품명 키워드 목록
   const [vocBarcodes, setVocBarcodes] = useState(new Set()); // VOC 바코드 집합 (정확 매칭용)
   const [orderFile, setOrderFile] = useState(null); // 주문목록 파일명
@@ -147,7 +147,7 @@ export default function IncheonIncoming() {
       const dumpingSet = new Set(); // 덤핑 상태 바코드
       const newQualityCertMap = {}; // 품질확인서 상태 바코드
       const newIpRightMap = {}; // 지재권 상태 바코드
-      const newSeasonMap = {}; // 상태에 '시즌' 포함 토큰(표시 워딩) 바코드
+      const newSeasonMap = {}; // 상태에 포함된 계절 키워드(봄/여름/겨울) 바코드
       if (barcodeRes.ok) {
         const csv = await barcodeRes.text();
         const rows = parseCSV(csv);
@@ -162,9 +162,9 @@ export default function IncheonIncoming() {
           if (rowText.includes('반출')) { dumpingSet.add(barcode); continue; }
           if (rowText.includes('품질확인서')) newQualityCertMap[barcode] = true;
           if (rowText.includes('지재권')) newIpRightMap[barcode] = true;
-          // 시즌: 상태 컬럼(col9)을 쉼표로 나눠 '시즌' 키워드가 포함된 토큰을 표시
-          const seasonToken = (cols[9] || '').split(',').map((s) => s.trim()).find((s) => s.includes('시즌'));
-          if (seasonToken) newSeasonMap[barcode] = seasonToken;
+          // 계절: 상태 컬럼(col9)에 봄/여름/겨울 키워드가 있으면 해당 키워드만 표시(복수 가능)
+          const seasons = ['봄', '여름', '겨울'].filter((kw) => (cols[9] || '').includes(kw));
+          if (seasons.length) newSeasonMap[barcode] = seasons.join(', ');
           centerMap[barcode] = center;
         }
       }
@@ -352,7 +352,7 @@ export default function IncheonIncoming() {
     if (ipRightMap[item.barcode]) {
       remarks.push('지재권');
     }
-    // 시즌 체크 (상태에 '시즌' 포함 토큰이 있으면 그 워딩 표시)
+    // 계절 체크 (상태에 봄/여름/겨울 키워드가 있으면 해당 키워드 표시)
     if (seasonMap[item.barcode]) {
       remarks.push(seasonMap[item.barcode]);
     }
