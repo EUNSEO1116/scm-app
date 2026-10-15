@@ -353,7 +353,13 @@ export default function OrderRecommend() {
             const arrivalDate = new Date(now);
             arrivalDate.setDate(arrivalDate.getDate() + leadDays);
             const seasonPeriod = periodOf(optionId);
-            const mult = seasonMult(seasonPeriod, arrivalDate);
+            let mult = seasonMult(seasonPeriod, arrivalDate);
+            // 상태 키워드가 DB 시즌기간보다 우선: '시즌ON' → 무조건 피크(×1.2), '시즌OFF' → 무조건 발주제외(×0).
+            // 예) 지금 10월·DB는 8~9월이라 날짜상 시즌이 지났어도, 상태에 '시즌ON'이면 ×1.2로 추천.
+            const seasonKwOn = status.includes('시즌ON');
+            const seasonKwOff = !seasonKwOn && status.includes('시즌OFF');
+            if (seasonKwOn) mult = PEAK_MULT;
+            else if (seasonKwOff) mult = SEASON_OVER_MULT;
             // 사이클재고(리드+발주주기, 시즌보정) + 안전재고(가산항, 시즌·리드타임 미연동)로 분리 계산.
             // '효자' 상태 상품은 기존 안전 7일, 그 외는 15일.
             let safetyDays = status.includes(HYOJA_KEYWORD) ? SAFETY_BUFFER_DAYS_HYOJA : SAFETY_BUFFER_DAYS;
@@ -427,7 +433,7 @@ export default function OrderRecommend() {
               if ((mult === ENDING_MULT || mult === SEASON_OVER_MULT) && qPeak > 0) {
                 const arrLabel = `${arrivalDate.getFullYear()}-${pad2(arrivalDate.getMonth() + 1)}-${pad2(arrivalDate.getDate())}`;
                 const adjTxt = mult === SEASON_OVER_MULT
-                  ? `시즌(${periodOf(optionId)}) 종료 후 도착 → 발주 제외`
+                  ? (seasonKwOff ? `상태 '시즌OFF' → 발주 제외` : `시즌(${periodOf(optionId)}) 종료 후 도착 → 발주 제외`)
                   : `시즌(${periodOf(optionId)}) 끝물 도착 ×0.7`;
                 reason = `원래 ${qPeak}개 발주 대상이나, 입고예정 ${arrLabel} ${adjTxt}로 보정 → 보정수요 ${demandRound} ≤ 재고 ${totalStock}, 발주안함`;
                 tag = '시즌마감보류';
@@ -604,7 +610,8 @@ export default function OrderRecommend() {
               <div>• 입고가 <b>시즌 끝난 뒤</b> → <b style={{ color: '#9a6700' }}>×0.2</b> (시즌밖 소량분만)</div>
               <div>• <b>현재 시즌이 아님(전·후)·상시 상품</b> → 보정 없음 (×1.0)</div>
             </div>
-            <div style={{ marginTop: 4 }}>→ 리드타임이 길어 물건이 시즌 끝난 뒤 도착하면 발주가 자동으로 확 줄어 <b>끝물 과발주</b>를 막습니다.</div></div>
+            <div style={{ marginTop: 4 }}>→ 리드타임이 길어 물건이 시즌 끝난 뒤 도착하면 발주가 자동으로 확 줄어 <b>끝물 과발주</b>를 막습니다.</div>
+            <div style={{ marginTop: 4, color: '#5f6368' }}>※ <b>상태 키워드 우선</b>: 상태에 <b style={{ color: '#c5221f' }}>'시즌ON'</b>이 있으면 DB 시즌기간과 무관하게 무조건 <b>×1.2(피크)</b>, <b>'시즌OFF'</b>면 무조건 <b>발주 제외(×0)</b>로 처리합니다. (시즌기간이 DB에 없어도 상태만으로 판정)</div></div>
           <div style={{ marginBottom: 6 }}><b>④ 리드타임 · 커버기간 — 사이클재고와 안전재고 분리</b>
             <div style={{ marginTop: 2 }}>• <b>사이클재고</b> = 일수요 × (<b>리드타임(AF열) + 발주주기 {REVIEW_DAYS}일</b>) × <b>시즌계수</b> — 다음 입고 전까지 팔릴 양(시즌 보정 적용).</div>
             <div style={{ marginTop: 2 }}>• <b>안전재고</b> = 일수요 × <b>{SAFETY_BUFFER_DAYS}일</b> — 변동 대비 완충(<u>시즌계수·리드타임에 곱해지지 않는 가산항</u>). 시즌피크라도 안전분이 부풀지 않습니다.</div>
