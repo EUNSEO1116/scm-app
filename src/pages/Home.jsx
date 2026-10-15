@@ -2,6 +2,7 @@ import { useState, useMemo, useEffect, useCallback, Fragment } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { dbSaveCalendar, dbGetCalendar, dbStoreGet, dbStoreSet } from '../utils/dbApi';
 import { ensureDailyRateSnapshots } from '../utils/soldoutCache';
+import { classifyGroup } from '../utils/productStatus';
 
 const SHEET_ID = '1NXhW_gG0b-gXuVqrhbY9ErWi8uO_7pXIy-NTo4FbE1I';
 const CSV_ORDER = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent('발주장부')}`;
@@ -409,7 +410,7 @@ export default function Home() {
         if (availDays > 0) {
           for (const r of calcRows) {
             if (r.totalStock < OVERSTOCK_MIN_STOCK) continue;
-            if (r.status === '신규') continue;
+            if (classifyGroup(r.status) === '신규') continue;
             if ((salesSum[r.oid] || 0) > 0) continue; // 판매 있음 → 제외
             longTermCount += r.totalStock;
             longTermCost += r.totalStock * r.unitCost;
@@ -456,7 +457,7 @@ export default function Home() {
         if (availDays > 0) {
           for (const r of calcRows) {
             if (r.totalStock < OVERSTOCK_MIN_STOCK) continue;
-            if (r.status === '신규') continue;
+            if (classifyGroup(r.status) === '신규') continue;
             if ((salesSum[r.oid] || 0) > 0) continue;
             const nm = nameMap[r.oid] || {};
             longtermList.push({ productName: nm.productName || r.oid, optionName: nm.optionName || '', status: r.status || '', stock: r.totalStock, cost: r.totalStock * r.unitCost });

@@ -3,6 +3,7 @@ import { useLocation } from 'react-router-dom';
 import { fetchCautionItems, saveCautionItem, deleteCautionItem } from '../sheetSync.js';
 import { dbStoreGet, dbStoreSet } from '../utils/dbApi.js';
 import { getSurgeForDisplay } from '../utils/salesSurge.js';
+import { statusBadgeStyle } from '../utils/productStatus.js';
 
 const SHEET_ID = '1NXhW_gG0b-gXuVqrhbY9ErWi8uO_7pXIy-NTo4FbE1I';
 const CSV_DAILY = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent('일일 판매량')}`;
@@ -635,11 +636,7 @@ export default function Sales() {
                     <tr key={`${r.barcode}_${i}`}>
                       <td style={{ padding: '8px 6px' }}>
                         <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap' }}>
-                          <span className={`status-badge ${r.status}`} style={
-                            !['효자', '기준미달', '최종마감', '신규'].includes(r.status)
-                              ? { background: '#f1f3f4', color: '#5f6368' }
-                              : undefined
-                          }>
+                          <span className="status-badge" style={statusBadgeStyle(r.status)}>
                             {r.status || '—'}
                           </span>
                           {cautionSet.has(r.barcode) && (

@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { dbStoreGet, dbStoreSet } from '../utils/dbApi';
+import { statusBadgeStyle } from '../utils/productStatus';
 
 export default function SoldOutAnalysisExclude() {
   const [items, setItems] = useState([]);
@@ -91,8 +92,8 @@ export default function SoldOutAnalysisExclude() {
                 <td>{item.productName}</td>
                 <td>{item.optionName}</td>
                 <td>
-                  <span className={`alert-badge ${item.status === '효자' ? 'normal' : item.status?.includes('신규') ? 'excess' : 'no-sales'}`}
-                    style={{ fontSize: 10, padding: '1px 6px' }}>
+                  <span className="alert-badge"
+                    style={{ ...statusBadgeStyle(item.status), fontSize: 10, padding: '1px 6px' }}>
                     {item.status || '-'}
                   </span>
                 </td>

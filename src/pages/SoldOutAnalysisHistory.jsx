@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { dbStoreGet } from '../utils/dbApi';
+import { classifyGroup, statusBadgeStyle } from '../utils/productStatus';
 
 const EXCLUDE_KEYWORDS = ['최종마감', '품질확인서', '마감대상', '덤핑', '반출'];
 function shouldExclude(s) { return s ? EXCLUDE_KEYWORDS.some(kw => s.includes(kw)) : false; }
@@ -75,8 +76,8 @@ export default function SoldOutAnalysisHistory() {
   const filteredItems = useMemo(() => {
     if (!data?.items) return [];
     let items = data.items.filter(it => !shouldExclude(it.status) && !(it.optionName || '').includes('반품') && !(it.productName || '').includes('바디스윗'));
-    if (statusFilter === '신규') items = items.filter(it => (it.status || '').includes('신규'));
-    else if (statusFilter === '효자') items = items.filter(it => it.status === '효자');
+    if (statusFilter === '신규') items = items.filter(it => classifyGroup(it.status) === '신규');
+    else if (statusFilter === '효자') items = items.filter(it => classifyGroup(it.status) === '효자');
     if (search.trim()) {
       const q = search.trim().toLowerCase();
       items = items.filter(it =>
@@ -103,8 +104,8 @@ export default function SoldOutAnalysisHistory() {
   const totalNetProfit = useMemo(() => {
     if (!data?.items) return 0;
     let items = data.items.filter(it => !(it.productName || '').includes('바디스윗'));
-    if (statusFilter === '신규') items = items.filter(it => (it.status || '').includes('신규'));
-    else if (statusFilter === '효자') items = items.filter(it => it.status === '효자');
+    if (statusFilter === '신규') items = items.filter(it => classifyGroup(it.status) === '신규');
+    else if (statusFilter === '효자') items = items.filter(it => classifyGroup(it.status) === '효자');
     if (search.trim()) {
       const q = search.trim().toLowerCase();
       items = items.filter(it => it.productName?.toLowerCase().includes(q) || it.optionName?.toLowerCase().includes(q) || it.optionId?.toLowerCase().includes(q) || it.barcode?.toLowerCase().includes(q));
@@ -253,8 +254,7 @@ export default function SoldOutAnalysisHistory() {
                       {r.status ? (
                         <span style={{
                           fontSize: 10, padding: '1px 5px', borderRadius: 4, fontWeight: 600,
-                          background: r.status === '효자' ? '#e6f4ea' : r.status?.includes('신규') ? '#fff3e0' : '#f5f5f5',
-                          color: r.status === '효자' ? '#1e8e3e' : r.status?.includes('신규') ? '#e65100' : '#888',
+                          ...statusBadgeStyle(r.status),
                         }}>{r.status}</span>
                       ) : <span style={{ color: '#ddd', fontSize: 10 }}>-</span>}
                     </td>

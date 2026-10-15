@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useCallback, useRef, Fragment } from 'rea
 import { LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, ResponsiveContainer, ReferenceLine } from 'recharts';
 import XLSX from 'xlsx-js-style';
 import { dbStoreGet, dbStoreSet } from '../utils/dbApi';
+import { classifyGroup } from '../utils/productStatus';
 
 const STREAK_MIN = 20; // 30일 기준: 우상향·우하향 20일 이상부터 'N일째' 딱지 + 자동 펼침
 
@@ -792,7 +793,7 @@ export default function SalesForecast() {
     const overAoa = [['바코드', '옵션ID', '상품명', '옵션명', '브랜드', '시즌', '시즌기간', '상태', '박스히어로', '일평균판매', '소진예상일수', '소진예상주차', '원가']];
     let overCostTotal = 0;
     for (const r of overstockRows) {
-      const cost = r.fStatus === '신규' ? '' : (r.boxhero + r.grossStock) * (costByBarcode[r.barcode] || 0);
+      const cost = classifyGroup(r.fStatus) === '신규' ? '' : (r.boxhero + r.grossStock) * (costByBarcode[r.barcode] || 0);
       if (typeof cost === 'number') overCostTotal += cost;
       overAoa.push([r.barcode, r.optionId, r.productName, r.optionName, r.brand, seasonTxt(r), r.season.period || '', r.fStatus, r.boxhero, dec(r.dailyAvg), !Number.isFinite(r.daysOfStock) ? '판매없음' : Math.round(r.daysOfStock), !Number.isFinite(r.daysOfStock) ? '판매없음' : dec(r.daysOfStock / 7), cost]);
     }

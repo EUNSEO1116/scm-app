@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, Fragment } from 'react';
 import XLSX from 'xlsx-js-style';
 import { dbStoreGet, dbStoreSet } from '../utils/dbApi';
 import { ensureUploadSoldoutCache, computeDaySnapshotFromCache, SOLDOUT_CORRECTIONS_KEY } from '../utils/soldoutCache';
+import { statusBadgeStyle } from '../utils/productStatus';
 
 const SHEET_ID = '1NXhW_gG0b-gXuVqrhbY9ErWi8uO_7pXIy-NTo4FbE1I';
 const CSV_BARCODE = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent('쿠팡바코드')}`;
@@ -1266,7 +1267,7 @@ export default function SoldOutAnalysis() {
                       <tr onClick={() => toggleSpell(sp.key)} style={{ cursor: 'pointer', background: open ? '#e8f0fe' : '' }}>
                         <td className="center" style={{ color: '#1a73e8', fontWeight: 700 }}>{open ? '▼' : '▶'}</td>
                         <td style={{ width: 30, fontSize: 11, color: '#888', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={sp.optionId}>{sp.optionId}</td>
-                        <td><span className={`alert-badge ${sp.status === '효자' ? 'normal' : sp.status?.includes('신규') ? 'excess' : 'no-sales'}`} style={{ fontSize: 10, padding: '1px 6px' }}>{sp.status || '-'}</span></td>
+                        <td><span className="alert-badge" style={{ ...statusBadgeStyle(sp.status), fontSize: 10, padding: '1px 6px' }}>{sp.status || '-'}</span></td>
                         <td style={{ width: 220, maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={sp.productName}>{sp.productName}</td>
                         <td style={{ width: 110, maxWidth: 110, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={sp.optionName}>{sp.optionName}</td>
                         <td style={{ fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap' }}>{keyToDisplay(sp.startDate)}</td>
@@ -1354,7 +1355,7 @@ export default function SoldOutAnalysis() {
                   <tr key={r.optionId} className={r.riskLevel === '품절' ? 'row-emergency' : ''} style={{ ...(displayExcludeSet.has(r.optionId) ? { opacity: 0.45 } : {}), ...(selected.has(r.optionId) ? { background: '#e8f0fe' } : {}) }}>
                     <td className="center">{r.riskLevel === '품절' && <input type="checkbox" checked={selected.has(r.optionId)} onChange={() => toggleSelect(r.optionId)} style={{ cursor: 'pointer' }} />}</td>
                     <td><span className={`alert-badge ${rc.cls}`} style={{ fontSize: 10, padding: '1px 6px' }}>{rc.emoji} {rc.label}</span></td>
-                    <td><span className={`alert-badge ${r.status === '효자' ? 'normal' : r.status?.includes('신규') ? 'excess' : 'no-sales'}`} style={{ fontSize: 10, padding: '1px 6px' }}>{r.status || '-'}</span></td>
+                    <td><span className="alert-badge" style={{ ...statusBadgeStyle(r.status), fontSize: 10, padding: '1px 6px' }}>{r.status || '-'}</span></td>
                     <td style={{ fontSize: 11, color: '#888' }} title={r.optionId}>{r.barcode || '-'}</td>
                     <td style={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis' }} title={r.productName}>{r.productName}</td>
                     <td>{r.optionName}</td>
