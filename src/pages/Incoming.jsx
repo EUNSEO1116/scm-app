@@ -104,8 +104,11 @@ export default function Incoming() {
           if (rowText.includes('품질확인서')) { excludeSet.add(barcode); continue; }
           if (rowText.includes('지재권')) { excludeSet.add(barcode); continue; }
           // 계절: 상태 컬럼(col9)에 봄/여름/겨울 키워드가 있으면 해당 키워드만 표시(복수 가능)
+          // + 시즌ON/시즌OFF 키워드가 있으면 '계절/시즌상태'(예: 여름/시즌ON)로 함께 표시
           const seasons = ['봄', '여름', '겨울'].filter((kw) => status.includes(kw));
-          if (seasons.length) newSeasonMap[barcode] = seasons.join(', ');
+          const seasonState = status.includes('시즌ON') ? '시즌ON' : (status.includes('시즌OFF') ? '시즌OFF' : '');
+          const seasonLabel = [seasons.join(', '), seasonState].filter(Boolean).join('/');
+          if (seasonLabel) newSeasonMap[barcode] = seasonLabel;
           if (barcode) centerMap[barcode] = center;
         }
       }

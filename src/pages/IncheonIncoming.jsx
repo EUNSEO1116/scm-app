@@ -163,8 +163,12 @@ export default function IncheonIncoming() {
           if (rowText.includes('품질확인서')) newQualityCertMap[barcode] = true;
           if (rowText.includes('지재권')) newIpRightMap[barcode] = true;
           // 계절: 상태 컬럼(col9)에 봄/여름/겨울 키워드가 있으면 해당 키워드만 표시(복수 가능)
-          const seasons = ['봄', '여름', '겨울'].filter((kw) => (cols[9] || '').includes(kw));
-          if (seasons.length) newSeasonMap[barcode] = seasons.join(', ');
+          // + 시즌ON/시즌OFF 키워드가 있으면 '계절/시즌상태'(예: 여름/시즌ON)로 함께 표시
+          const seasonStatus = (cols[9] || '');
+          const seasons = ['봄', '여름', '겨울'].filter((kw) => seasonStatus.includes(kw));
+          const seasonState = seasonStatus.includes('시즌ON') ? '시즌ON' : (seasonStatus.includes('시즌OFF') ? '시즌OFF' : '');
+          const seasonLabel = [seasons.join(', '), seasonState].filter(Boolean).join('/');
+          if (seasonLabel) newSeasonMap[barcode] = seasonLabel;
           centerMap[barcode] = center;
         }
       }
