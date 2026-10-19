@@ -37,6 +37,13 @@ function parseOrderDateSort(dateStr) { const m = (dateStr||'').match(/(\d+)월\s
 function parseShipDate(str) { if (!str) return null; const m = str.match(/(\d+)\/(\d+)/); return m ? new Date(new Date().getFullYear(), parseInt(m[1],10)-1, parseInt(m[2],10)) : null; }
 function addDays(date, days) { const d = new Date(date); d.setDate(d.getDate()+days); return d; }
 function fmtDate(d) { return `${d.getMonth()+1}/${d.getDate()}`; }
+// 확인 요일(오늘) 기준 입고예상일: 일·월·화 → 다음주 월 / 수·목 → 다음주 화 / 금·토 → 다음주 수
+function nextWeekArrival(today) {
+  const dow = today.getDay(); // 0=일 ~ 6=토
+  const daysToNextMon = dow === 0 ? 1 : (8 - dow); // 다음주 월요일까지 일수
+  const targetOffset = (dow === 3 || dow === 4) ? 1 : (dow === 5 || dow === 6) ? 2 : 0; // 월(0)/화(1)/수(2)
+  return addDays(today, daysToNextMon + targetOffset);
+}
 
 function parseOrderBook(csv) {
   const skuMap = new Map(), skuArrival = new Map();
@@ -44,20 +51,20 @@ function parseOrderBook(csv) {
   const lines = csv.split('\n').filter(l => l.trim()), skuOrders = {};
   for (let i = 1; i < lines.length; i++) {
     const cols = parseCsvRow(lines[i]), sku = (cols[2]||'').trim(), cnStatus = (cols[8]||'').trim();
-    const shipDate = (cols[10]||'').trim(), orderDate = (cols[16]||'').trim();
+    const arrivalDate = (cols[11]||'').trim(), orderDate = (cols[16]||'').trim(); // L열=도착일
     if (!sku) continue;
     const isWingOn = WING_ON_STATUSES.some(s => cnStatus.includes(s));
     const prev = skuMap.get(sku);
     if (!prev || (isWingOn && prev !== 'wing_on')) skuMap.set(sku, isWingOn ? 'wing_on' : 'check');
     if (!skuOrders[sku]) skuOrders[sku] = [];
-    skuOrders[sku].push({ cnStatus, shipDate, orderDate });
+    skuOrders[sku].push({ cnStatus, arrivalDate, orderDate });
   }
   const today = new Date();
   for (const [sku, orders] of Object.entries(skuOrders)) {
     orders.sort((a, b) => parseOrderDateSort(a.orderDate) - parseOrderDateSort(b.orderDate));
     const cn = orders[0].cnStatus; let arrival = null;
-    if (cn.includes('출고 완료') || cn.includes('출고완료')) { const sd = parseShipDate(orders[0].shipDate); if (sd) arrival = addDays(sd, 3); }
-    else if (cn.includes('CN 창고도착') || cn.includes('작업 대기') || cn.includes('출고 대기') || (cn.includes('내륙') && cn.includes('운송'))) arrival = addDays(today, 4);
+    if (cn.includes('출고 완료') || cn.includes('출고완료')) { const ad = parseShipDate(orders[0].arrivalDate); if (ad) arrival = addDays(ad, 1); } // L열 도착일 +1일
+    else if (cn.includes('CN 창고도착') || cn.includes('작업 대기') || cn.includes('출고 대기') || (cn.includes('내륙') && cn.includes('운송'))) arrival = nextWeekArrival(today); // 확인 요일 기준 다음주
     else if (cn === '업체발송대기') arrival = addDays(today, 8);
     if (arrival) skuArrival.set(sku, fmtDate(arrival));
   }
