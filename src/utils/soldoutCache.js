@@ -14,13 +14,18 @@ import { dbStoreGet, dbStoreSet } from './dbApi';
 const SHEET_ID = '1NXhW_gG0b-gXuVqrhbY9ErWi8uO_7pXIy-NTo4FbE1I';
 const CSV_BARCODE = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent('쿠팡바코드')}`;
 const TSV_CALC = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=tsv&gid=1349677364`;
-const EXCLUDE_KEYWORDS = ['최종마감', '품질확인서', '마감대상', '덤핑', '반출', '지재권'];
+// 품절 집계에서 제외하는 상태 키워드(부분일치) — 정식 분석(SoldOutAnalysis.jsx)과 공유하는 단일 소스
+export const EXCLUDE_KEYWORDS = ['최종마감', '품질확인서', '마감대상', '덤핑', '반출', '지재권', '시즌OFF'];
+// 정확히 일치할 때만 제외
+export const EXCLUDE_EXACT = ['시즌'];
+// 제외 규칙 버전 — 규칙이 바뀌면 숫자를 올려, 과거 자동캐시를 조회 시 1회 재계산하게 한다
+export const EXCLUDE_RULE_VERSION = 2;
 const STORE_KEY_PREFIX = 'soldout_analysis_';
 const SOLDOUT_TRACKER_KEY = 'soldout_analysis_tracker';
 // 재고 수정(엑셀 품절이지만 실제 재고 있는 항목) 영구 저장 전역 키 — 두 페이지에서 공유
 export const SOLDOUT_CORRECTIONS_KEY = 'soldout_analysis_corrections';
 
-function shouldExclude(s) { return s ? EXCLUDE_KEYWORDS.some(kw => s.includes(kw)) : false; }
+export function shouldExclude(s) { if (!s) return false; if (EXCLUDE_EXACT.includes(s.trim())) return true; return EXCLUDE_KEYWORDS.some(kw => s.includes(kw)); }
 function safeNum(v) { if (v === '' || v === '-' || v == null) return 0; const n = Number(v); return isNaN(n) ? 0 : n; }
 function parseCsvRow(line) {
   const result = []; let current = ''; let inQuotes = false;
@@ -147,18 +152,34 @@ export async function ensureUploadSoldoutCache(dateKey, { force = false } = {}) 
 
   // 정식 분석 캐시는 원천 기반으로 절대 덮어쓰지 않는다
   if (existing?.items && existing.source !== 'upload') return await ensureOppFields(dateKey, existing, cacheKey);
-  // 이미 원천 캐시가 있고 강제 재계산이 아니면 그대로 사용 (집계 속도 유지)
-  if (existing?.items && existing.source === 'upload' && !force) return await ensureOppFields(dateKey, existing, cacheKey);
+  // 이미 원천 캐시가 있고 강제 재계산이 아니며 제외규칙 버전이 최신이면 그대로 사용 (집계 속도 유지)
+  // 규칙 버전이 바뀐(=시즌OFF 등 제외규칙 변경) 과거 캐시는 조회 시 1회 재계산한다
+  const ruleStale = existing?.ruleVersion !== EXCLUDE_RULE_VERSION;
+  if (existing?.items && existing.source === 'upload' && !force && !ruleStale) return await ensureOppFields(dateKey, existing, cacheKey);
 
   const raw = await dbStoreGet(`${STORE_KEY_PREFIX}${dateKey}`).catch(() => null);
   if (!raw?.items) return existing?.items ? existing : null;
 
-  const [{ bcMap, cMap }, exSet, trk] = await Promise.all([
+  const [{ bcMap, cMap }, exSet, trk, delayItems] = await Promise.all([
     loadSheets(),
     resolveExcludeSet(dateKey),
     dbStoreGet(SOLDOUT_TRACKER_KEY).catch(() => null),
+    dbStoreGet('delay_cause_items').catch(() => null),
   ]);
   const tracker = trk || {};
+  // 보충지연관리(delay_cause_items) 자동 사유 맵: 바코드 → 최신 '사유상태 · 자세한사유'
+  // (정식 분석의 진입 시 자동 사유 채움과 동일 규칙을 과거 날짜에도 적용)
+  const delayReasonByBarcode = new Map();
+  if (Array.isArray(delayItems)) {
+    for (const it of delayItems) {
+      const bc = (it.barcode || '').trim();
+      if (!bc || !it.soldoutDate) continue;
+      const combo = [it.reasonStatus, it.reasonDetail].filter(Boolean).join(' · ').trim();
+      if (!combo) continue;
+      const prev = delayReasonByBarcode.get(bc);
+      if (!prev || it.soldoutDate > prev.date) delayReasonByBarcode.set(bc, { reason: combo, date: it.soldoutDate });
+    }
+  }
   // 재계산(재업로드) 시 그 날짜 화면에서 직접 제외한 항목이 사라지지 않도록 기존 캐시의 제외목록을 합친다
   if (Array.isArray(existing?.excludeSnapshot)) {
     for (const oid of existing.excludeSnapshot) if (oid) exSet.add(oid);
@@ -210,12 +231,15 @@ export async function ensureUploadSoldoutCache(dateKey, { force = false } = {}) 
     if (item.coupangStock !== 0) continue; // 품절만
     if (exSet.has(item.optionId)) excludeSnapshot.push(item.optionId); // 수동 제외 표시
     const calc = cMap[item.optionId];
-    // 재계산(재업로드) 시 화면에서 직접 입력한 사유가 날아가지 않도록 기존 캐시 사유를 우선 보존
+    const barcode = bc.barcode || calc.barcode || '';
+    // 재계산(재업로드) 시 화면에서 직접 입력한 사유가 날아가지 않도록 기존 캐시 사유를 우선 보존.
+    // 수동/기존 사유가 없으면 보충지연관리 자동 사유(바코드 기준)로 채운다.
     const prevReason = existing?.trackerSnapshot?.[item.optionId]?.reason;
-    trackerSnapshot[item.optionId] = { days: 1, startDate: dateKey, reason: prevReason || tracker[item.optionId]?.reason || '' };
+    const autoReason = barcode ? (delayReasonByBarcode.get(barcode)?.reason || '') : '';
+    trackerSnapshot[item.optionId] = { days: 1, startDate: dateKey, reason: prevReason || tracker[item.optionId]?.reason || autoReason || '' };
     results.push({
       optionId: item.optionId,
-      barcode: bc.barcode || calc.barcode || '',
+      barcode,
       productName: item.productName || '',
       optionName: item.optionName || '',
       status: bc.status || '',
@@ -244,6 +268,7 @@ export async function ensureUploadSoldoutCache(dateKey, { force = false } = {}) 
     excludeSnapshot,
     correctionsSnapshot: {},
     source: 'upload', // 원천 업로드 기반 자동 생성 표시
+    ruleVersion: EXCLUDE_RULE_VERSION, // 제외규칙 버전 — 조회 시 최신과 다르면 재계산
   };
   await dbStoreSet(cacheKey, cache, { skipLog: true });
   return cache;
