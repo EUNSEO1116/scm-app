@@ -105,6 +105,10 @@ export default function SoldOutAnalysis() {
   const [searching, setSearching] = useState(false);
   const [searchResult, setSearchResult] = useState(null); // { term, spells } | null
   const [expandedSpell, setExpandedSpell] = useState(new Set());
+  const [showReport, setShowReport] = useState(false);       // 기간 분석 리포트 모달
+  const [reportBuilding, setReportBuilding] = useState(false);
+  const [reportData, setReportData] = useState(null);        // 자동 집계 결과 (숫자·표)
+  const [reportDraft, setReportDraft] = useState({ memo: '', freeAnalysis: '', conclusion: '' }); // 편집 텍스트
 
   const showToast = (type, title, msg) => { setToast({ type, title, message: msg }); setTimeout(() => setToast(null), 3500); };
 
@@ -1090,6 +1094,124 @@ export default function SoldOutAnalysis() {
     setRangeResult({ items: [...byOption.values()], avgRate, periodDays: dayKeys.length, daysWithData, startKey, endKey, excludeSet: rangeExclude });
   };
 
+  // === 기간 분석 리포트 ===
+  const isWeekendKey = (k) => { const dow = keyToDate(k).getDay(); return dow === 0 || dow === 6; };
+  const mondayKeyOf = (k) => { const d = keyToDate(k); const dow = d.getDay(); d.setDate(d.getDate() + (dow === 0 ? -6 : 1 - dow)); return dateToKey(d); };
+  // 사유 키워드 분류 (당일 입력 사유 기준)
+  const classifyReason = (reason) => {
+    const r = (reason || '').trim();
+    if (!r) return '기타';
+    if (/급증|증가|배|폭증|수요/.test(r)) return '판매급증';
+    if (/지연|연휴|출고|배송/.test(r)) return '출고지연';
+    if (/신규|초도|런칭|론칭/.test(r)) return '신규·초도';
+    return '기타';
+  };
+  // 평일 날짜들의 일별 스냅샷(화면과 동일 경로) 로드 → 평균
+  const loadWeekdaySnaps = async (keys) => {
+    const weekdayKeys = keys.filter(k => !isWeekendKey(k));
+    const snaps = await Promise.all(weekdayKeys.map(async (k) => {
+      const cache = await ensureUploadSoldoutCache(k).catch(() => null);
+      if (!cache?.validItems) return null;
+      const s = await computeDaySnapshotFromCache(k, cache).catch(() => null);
+      return s ? { ...s, cache } : null;
+    }));
+    return snaps.filter(Boolean);
+  };
+  const avgOf = (days) => {
+    if (!days.length) return { rate: 0, oppRate: 0, loss: 0, count: 0 };
+    const rate = days.reduce((s, d) => s + (d.rate || 0), 0) / days.length;
+    const oppRate = days.reduce((s, d) => s + (d.oppRate || 0), 0) / days.length;
+    const loss = days.reduce((s, d) => s + (d.dailyLoss || 0), 0);
+    return { rate: Math.round(rate * 100) / 100, oppRate: Math.round(oppRate * 100) / 100, loss: Math.round(loss), count: days.length };
+  };
+
+  const buildReport = async (startKey, endKey) => {
+    const allKeys = rangeDayKeys(startKey, endKey);
+    const days = await loadWeekdaySnaps(allKeys);
+
+    // 주차(월~일)별 묶기
+    const weekMap = new Map();
+    for (const d of days) {
+      const mk = mondayKeyOf(d.date);
+      if (!weekMap.has(mk)) weekMap.set(mk, []);
+      weekMap.get(mk).push(d);
+    }
+    const weeks = [...weekMap.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([mk, ds], i) => {
+      const sorted = [...ds].sort((a, b) => a.date.localeCompare(b.date));
+      const a = avgOf(sorted);
+      return { label: `W${i + 1}`, mondayKey: mk, range: `${keyToDisplay(sorted[0].date).slice(5)} ~ ${keyToDisplay(sorted[sorted.length - 1].date).slice(5)}`, ...a, days: sorted };
+    });
+
+    const overall = avgOf(days);
+    const worst = days.length ? [...days].sort((a, b) => b.rate - a.rate)[0] : null;
+
+    // 직전 4주 추세 (startKey가 속한 주의 이전 주들)
+    const baseMon = keyToDate(mondayKeyOf(startKey));
+    const trend = [];
+    for (let w = 4; w >= 1; w--) {
+      const monday = new Date(baseMon); monday.setDate(monday.getDate() - 7 * w);
+      const wk = []; for (let i = 0; i < 7; i++) { const d = new Date(monday); d.setDate(d.getDate() + i); wk.push(dateToKey(d)); }
+      const ds = await loadWeekdaySnaps(wk);
+      if (ds.length) { const a = avgOf(ds); trend.push({ range: `${keyToDisplay(wk[0]).slice(5)}~${keyToDisplay(wk[4]).slice(5)}`, rate: a.rate }); }
+    }
+
+    // 사유 집계 + 대표 품목 (기간 내 품절 품목 optionId별, 최신일 값)
+    const byOid = new Map();
+    for (const d of days) {
+      const cache = d.cache; const daySnap = new Set(cache.excludeSnapshot || []);
+      const trk = cache.trackerSnapshot || {};
+      const nameMap = {}; for (const it of (cache.items || [])) nameMap[it.optionId] = it;
+      for (const vi of cache.validItems) {
+        if (daySnap.has(vi.optionId) || vi.coupangStock !== 0) continue;
+        const nm = nameMap[vi.optionId] || {};
+        const reason = trk[vi.optionId]?.reason || '';
+        const prev = byOid.get(vi.optionId);
+        const rec = { optionId: vi.optionId, name: `${nm.productName || ''} ${nm.optionName ? '(' + nm.optionName + ')' : ''}`.trim(), reason, avg30d: vi.avg30d || 0, lossAmount: vi.lossAmount || 0, date: d.date };
+        if (!prev || d.date > prev.date) byOid.set(vi.optionId, { ...rec, days: (prev?.days || 0) + 1 });
+        else prev.days += 1;
+      }
+    }
+    const items = [...byOid.values()];
+    const buckets = { '판매급증': 0, '출고지연': 0, '신규·초도': 0, '기타': 0 };
+    for (const it of items) buckets[classifyReason(it.reason)]++;
+    const surgeItems = items.filter(it => classifyReason(it.reason) === '판매급증').sort((a, b) => b.lossAmount - a.lossAmount);
+    const topLoss = [...items].sort((a, b) => b.lossAmount - a.lossAmount).slice(0, 6);
+    const surgePct = items.length ? Math.round(buckets['판매급증'] / items.length * 100) : 0;
+
+    const result = { startKey, endKey, weeks, overall, worst, trend, buckets, surgeItems, topLoss, itemCount: items.length, surgePct };
+
+    // 편집 초안: localStorage 복원 or 템플릿
+    const dkey = `soldout_report_draft_${startKey}_${endKey}`;
+    let draft = null;
+    try { const raw = localStorage.getItem(dkey); if (raw) draft = JSON.parse(raw); } catch {}
+    if (!draft) {
+      const worstTxt = worst ? `${keyToDisplay(worst.date).slice(5)}(${worst.rate}%)` : '-';
+      draft = {
+        memo: '',
+        freeAnalysis: '',
+        conclusion: `판매 급증(품절 품목의 ${surgePct}%)이 몰리면서 ${worstTxt}에 품절이 집중됐습니다. 아래 외부 요인 메모와 함께 보면 원인이 명확해집니다.`,
+      };
+    }
+    setReportDraft(draft);
+    setReportData(result);
+  };
+
+  const saveReportDraft = (patch) => {
+    setReportDraft(prev => {
+      const next = { ...prev, ...patch };
+      if (reportData) { try { localStorage.setItem(`soldout_report_draft_${reportData.startKey}_${reportData.endKey}`, JSON.stringify(next)); } catch {} }
+      return next;
+    });
+  };
+
+  const openReport = async () => {
+    if (!rangeResult) return;
+    setShowReport(true); setReportBuilding(true); setReportData(null);
+    try { await buildReport(rangeResult.startKey, rangeResult.endKey); }
+    catch (e) { console.error('report error', e); showToast('error', '실패', '리포트 생성 중 오류'); }
+    setReportBuilding(false);
+  };
+
   const handleCalendarDateClick = async (day) => {
     if (!day) return;
     const key = dateToKey(new Date(calYear, calMonth, day));
@@ -1189,6 +1311,11 @@ export default function SoldOutAnalysis() {
             {viewingDate === todayStr() && !cachedResult && !rangeResult && (
               <button onClick={handleUpdate} disabled={updating} data-tut="soldout-update" className="btn btn-primary btn-sm" style={{ whiteSpace: 'nowrap' }}>
                 {updating ? '갱신 중...' : '🔄 업데이트'}
+              </button>
+            )}
+            {rangeResult && (
+              <button onClick={openReport} className="btn btn-primary btn-sm" style={{ whiteSpace: 'nowrap' }}>
+                📝 분석 리포트
               </button>
             )}
             <button onClick={handleExportMonth} disabled={exporting} data-tut="soldout-export" className="btn btn-outline btn-sm" style={{ whiteSpace: 'nowrap' }}>
@@ -1417,6 +1544,122 @@ export default function SoldOutAnalysis() {
 
       {!searchResult && (cachedResult || rangeResult) && <div style={{ fontSize: 11, color: 'var(--text-secondary)', padding: '8px 4px 0' }}>{rangeResult ? '기간 모드: 품절일 = 선택 기간 내 누적 품절일 (시작일 이전 제외) · 평균 품절률 = 데이터 있는 날만 평균' : '최종마감·품질확인서·마감대상 제외 | 쿠팡재고=업로드 엑셀 | 그 외=스프레드시트 | 품절위기=1주 미만 또는 3일내 소진'}</div>}
 
+      {/* 기간 분석 리포트 모달 */}
+      {showReport && (
+        <div className="report-overlay" style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 1100, display: 'flex', justifyContent: 'center', alignItems: 'flex-start', overflowY: 'auto', padding: '24px 12px' }} onClick={() => setShowReport(false)}>
+          <div style={{ background: '#fff', borderRadius: 14, width: '100%', maxWidth: 860, boxShadow: '0 12px 48px rgba(0,0,0,0.25)' }} onClick={e => e.stopPropagation()}>
+            {/* 툴바 (인쇄 제외) */}
+            <div className="report-no-print" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '14px 20px', borderBottom: '1px solid #eee', position: 'sticky', top: 0, background: '#fff', borderRadius: '14px 14px 0 0', zIndex: 2 }}>
+              <b style={{ fontSize: 15 }}>📝 기간 분석 리포트</b>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button className="btn btn-primary btn-sm" disabled={reportBuilding || !reportData} onClick={() => window.print()}>🖨️ 인쇄 / PDF 저장</button>
+                <button className="btn btn-outline btn-sm" onClick={() => setShowReport(false)}>닫기</button>
+              </div>
+            </div>
+
+            {reportBuilding && <div style={{ padding: 60, textAlign: 'center', color: '#888' }}>리포트 생성 중… (평일 데이터 집계)</div>}
+
+            {!reportBuilding && reportData && (
+              <div id="soldout-report-print" style={{ padding: '26px 30px' }}>
+                <div className="rp-head">
+                  <h1 style={{ fontSize: 22, fontWeight: 800, color: '#1f3a5f', margin: 0 }}>품절률 기간 분석 리포트</h1>
+                  <p style={{ fontSize: 13, color: '#667', margin: '6px 0 0' }}>분석 구간 : {keyToDisplay(reportData.startKey)} ~ {keyToDisplay(reportData.endKey)} · 평일(월~금) 기준 · 작성일 {new Date().toISOString().slice(0, 10)}</p>
+                </div>
+
+                {/* 외부 요인 메모 (편집) */}
+                <div className="rp-sec">
+                  <h2 className="rp-h2">외부 요인 메모</h2>
+                  <div key={`memo-${reportData.startKey}`} className="rp-edit" data-ph="예: 9/24~10/3 발주 공백 기간" contentEditable suppressContentEditableWarning
+                    ref={el => { if (el && el.dataset.init !== '1') { el.textContent = reportDraft.memo || ''; el.dataset.init = '1'; } }}
+                    onInput={e => saveReportDraft({ memo: e.currentTarget.textContent })} />
+                </div>
+
+                {/* 품절률·기회손실 주차 요약 */}
+                <div className="rp-sec">
+                  <h2 className="rp-h2">품절률 · 기회손실 요약 (평일 평균)</h2>
+                  <table className="rp-tbl">
+                    <thead><tr><th>주차</th><th>구간</th><th>평일수</th><th>평균 품절률</th><th>평균 기회손실률</th><th>손실금액 합</th></tr></thead>
+                    <tbody>
+                      {reportData.weeks.map(w => (
+                        <tr key={w.mondayKey}><td>{w.label}</td><td>{w.range}</td><td>{w.count}</td><td>{w.rate}%</td><td>{w.oppRate}%</td><td>{fmt(w.loss)}원</td></tr>
+                      ))}
+                      <tr className="rp-total"><td colSpan={3}>전체 평균</td><td>{reportData.overall.rate}%</td><td>{reportData.overall.oppRate}%</td><td>{fmt(reportData.overall.loss)}원</td></tr>
+                    </tbody>
+                  </table>
+                  {reportData.worst && <p className="rp-note">최악일 : <b>{keyToDisplay(reportData.worst.date)}</b> — 품절률 {reportData.worst.rate}% · 기회손실률 {reportData.worst.oppRate}% · 손실 {fmt(reportData.worst.dailyLoss)}원</p>}
+                </div>
+
+                {/* 추세 */}
+                {reportData.trend.length > 0 && (
+                  <div className="rp-sec">
+                    <h2 className="rp-h2">직전 주차 추세 (평일 평균 품절률)</h2>
+                    <table className="rp-tbl">
+                      <thead><tr>{reportData.trend.map(t => <th key={t.range}>{t.range}</th>)}{reportData.weeks.map(w => <th key={w.mondayKey} className="rp-hi">{w.range}</th>)}</tr></thead>
+                      <tbody><tr>{reportData.trend.map(t => <td key={t.range}>{t.rate}%</td>)}{reportData.weeks.map(w => <td key={w.mondayKey} className="rp-hi">{w.rate}%</td>)}</tr></tbody>
+                    </table>
+                  </div>
+                )}
+
+                {/* 사유 패턴 */}
+                <div className="rp-sec">
+                  <h2 className="rp-h2">품절 사유 패턴 (당일 입력 사유 기준)</h2>
+                  <table className="rp-tbl">
+                    <thead><tr><th>분류</th><th>건수</th><th>비중</th></tr></thead>
+                    <tbody>
+                      {Object.entries(reportData.buckets).map(([k, v]) => (
+                        <tr key={k}><td>{k}</td><td>{v}건</td><td>{reportData.itemCount ? Math.round(v / reportData.itemCount * 100) : 0}%</td></tr>
+                      ))}
+                      <tr className="rp-total"><td>합계</td><td>{reportData.itemCount}건</td><td>100%</td></tr>
+                    </tbody>
+                  </table>
+                  {reportData.surgeItems.length > 0 && (
+                    <table className="rp-tbl" style={{ marginTop: 10 }}>
+                      <thead><tr><th>판매 급증 품목</th><th>일평균 판매</th><th>입력 사유</th></tr></thead>
+                      <tbody>
+                        {reportData.surgeItems.slice(0, 12).map(it => (
+                          <tr key={it.optionId}><td className="rp-l">{it.name}</td><td>{fmtDec(it.avg30d)}</td><td className="rp-l">{it.reason}</td></tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+
+                {/* 대표 품절 품목 */}
+                <div className="rp-sec">
+                  <h2 className="rp-h2">대표 품절 품목 (손실 상위)</h2>
+                  <table className="rp-tbl">
+                    <thead><tr><th>품목</th><th>일평균 판매</th><th>일 손실</th><th>품절일수</th><th>입력 사유</th></tr></thead>
+                    <tbody>
+                      {reportData.topLoss.map(it => (
+                        <tr key={it.optionId}><td className="rp-l">{it.name}</td><td>{fmtDec(it.avg30d)}</td><td>{fmt(it.lossAmount)}원</td><td>{it.days}일</td><td className="rp-l">{it.reason || '-'}</td></tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* 자유 분석 (편집) */}
+                <div className="rp-sec">
+                  <h2 className="rp-h2">주간 원인 분석 (직접 작성)</h2>
+                  <div key={`free-${reportData.startKey}`} className="rp-edit rp-multi" data-ph="그 주의 품절 원인으로 직접 파악한 내용을 자유롭게 작성하세요." contentEditable suppressContentEditableWarning
+                    ref={el => { if (el && el.dataset.init !== '1') { el.textContent = reportDraft.freeAnalysis || ''; el.dataset.init = '1'; } }}
+                    onInput={e => saveReportDraft({ freeAnalysis: e.currentTarget.textContent })} />
+                </div>
+
+                {/* 결론 (편집) */}
+                <div className="rp-sec">
+                  <h2 className="rp-h2">결론</h2>
+                  <div key={`concl-${reportData.startKey}`} className="rp-edit rp-multi rp-final" data-ph="결론을 작성하세요." contentEditable suppressContentEditableWarning
+                    ref={el => { if (el && el.dataset.init !== '1') { el.textContent = reportDraft.conclusion || ''; el.dataset.init = '1'; } }}
+                    onInput={e => saveReportDraft({ conclusion: e.currentTarget.textContent })} />
+                </div>
+
+                <div className="rp-foot">· 숫자는 품절현황 화면과 동일 기준(당시 사유·당시 수동제외 보존 + 현재 제외규칙 소급)으로 평일만 집계 · 손실금액 = 품절상품 30일 평균판매 × 개당 순이익</div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* 일괄 사유 입력 모달 */}
       {showBatchInput && (
         <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }} onClick={() => setShowBatchInput(false)}>
@@ -1447,6 +1690,35 @@ export default function SoldOutAnalysis() {
       <style>{`
         @keyframes slideIn { from { opacity: 0; transform: translateX(40px); } to { opacity: 1; transform: translateX(0); } }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
+        /* === 기간 분석 리포트 === */
+        #soldout-report-print .rp-head { border-bottom: 2px solid #1f3a5f; padding-bottom: 12px; margin-bottom: 18px; }
+        #soldout-report-print .rp-sec { margin-bottom: 20px; }
+        #soldout-report-print .rp-h2 { font-size: 16px; color: #1f3a5f; font-weight: 800; margin: 0 0 8px; }
+        #soldout-report-print .rp-tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
+        #soldout-report-print .rp-tbl th, #soldout-report-print .rp-tbl td { border: 1px solid #dde2e9; padding: 7px 9px; text-align: center; }
+        #soldout-report-print .rp-tbl th { background: #eef4ff; color: #1f3a5f; font-weight: 700; }
+        #soldout-report-print .rp-tbl td.rp-l { text-align: left; }
+        #soldout-report-print .rp-tbl .rp-total td { background: #f5f7fa; font-weight: 700; }
+        #soldout-report-print .rp-tbl th.rp-hi, #soldout-report-print .rp-tbl td.rp-hi { background: #fff5f5; color: #c5221f; font-weight: 700; }
+        #soldout-report-print .rp-note { font-size: 12.5px; color: #444; margin: 8px 0 0; }
+        #soldout-report-print .rp-foot { margin-top: 20px; padding-top: 12px; border-top: 1px solid #e3e6eb; font-size: 11px; color: #8a9099; line-height: 1.6; }
+        #soldout-report-print .rp-edit { border: 1px dashed #b9c4d6; border-radius: 8px; padding: 10px 12px; font-size: 13.5px; line-height: 1.6; background: #fcfdff; outline: none; white-space: pre-wrap; }
+        #soldout-report-print .rp-edit:focus { border-color: #2563eb; background: #fff; }
+        #soldout-report-print .rp-multi { min-height: 60px; }
+        #soldout-report-print .rp-final { background: #eafaf0; border-color: #a9d9bf; }
+        #soldout-report-print .rp-edit:empty:before { content: attr(data-ph); color: #aab2bf; }
+        @media print {
+          body * { visibility: hidden !important; }
+          #soldout-report-print, #soldout-report-print * { visibility: visible !important; }
+          #soldout-report-print { position: absolute !important; left: 0; top: 0; width: 100%; padding: 0 !important; }
+          .report-overlay { position: static !important; background: #fff !important; padding: 0 !important; overflow: visible !important; }
+          .report-no-print { display: none !important; }
+          #soldout-report-print .rp-edit { border: none !important; background: #fff !important; padding: 2px 0 !important; }
+          #soldout-report-print .rp-final { background: #eafaf0 !important; padding: 10px 12px !important; border-radius: 8px; }
+          #soldout-report-print .rp-sec { break-inside: avoid; }
+          #soldout-report-print .rp-tbl, #soldout-report-print .rp-tbl tr { break-inside: avoid; }
+          @page { size: A4; margin: 14mm 12mm; }
+        }
       `}</style>
     </div>
   );
