@@ -1004,7 +1004,14 @@ export default function SoldOutAnalysis() {
     return viewingDate === todayStr() ? excludeSet : new Set(cachedResult?.excludeSnapshot || []);
   }, [viewingDate, excludeSet, cachedResult, rangeResult]);
 
-  const statusOptions = useMemo(() => { const s = new Set(analysisData.map(i => i.status).filter(Boolean)); return ['전체', ...Array.from(s).sort()]; }, [analysisData]);
+  const statusOptions = useMemo(() => {
+    const s = new Set();
+    for (const i of analysisData) {
+      if (!i.status) continue;
+      for (const tok of String(i.status).split(',')) { const t = tok.trim(); if (t) s.add(t); }
+    }
+    return ['전체', ...Array.from(s).sort((a, b) => a.localeCompare(b, 'ko'))];
+  }, [analysisData]);
 
   const toggleSort = (key) => {
     if (sortKey === key) { setSortDir(d => d === 'asc' ? 'desc' : 'asc'); }
@@ -1030,7 +1037,7 @@ export default function SoldOutAnalysis() {
     if (riskFilter === '품절') rows = rows.filter(r => r.riskLevel === '품절');
     else if (riskFilter === '품절위기') rows = rows.filter(r => r.riskLevel === '품절위기');
     else if (riskFilter === 'inOrder') rows = rows.filter(r => r.orderStatus === 'wing_on' || r.orderStatus === 'check');
-    if (statusFilter !== '전체') rows = rows.filter(r => r.status === statusFilter);
+    if (statusFilter !== '전체') rows = rows.filter(r => String(r.status || '').split(',').some(t => t.trim() === statusFilter));
     // 품절만 정렬, 품절위기는 하단 고정
     const soldout = rows.filter(r => r.riskLevel === '품절');
     const crisis = rows.filter(r => r.riskLevel === '품절위기');
@@ -1282,7 +1289,9 @@ export default function SoldOutAnalysis() {
               <button className={`filter-btn${riskFilter === '품절위기' ? ' active' : ''}`} style={riskFilter === '품절위기' ? { background: '#e65100', borderColor: '#e65100' } : {}} onClick={() => setRiskFilter(riskFilter === '품절위기' ? 'all' : '품절위기')}>🟠 위기 ({stats.risk})</button>
               <button className={`filter-btn${riskFilter === 'inOrder' ? ' active' : ''}`} style={riskFilter === 'inOrder' ? { background: '#00897b', borderColor: '#00897b' } : {}} onClick={() => setRiskFilter(riskFilter === 'inOrder' ? 'all' : 'inOrder')}>✈️ 발주 ({stats.inOrder})</button>
               <span style={{ margin: '0 4px', color: 'var(--border)' }}>|</span>
-              {statusOptions.map(s => <button key={s} onClick={() => setStatusFilter(s)} className={`filter-btn${statusFilter === s ? ' active' : ''}`}>{s}</button>)}
+              <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} className={`filter-btn${statusFilter !== '전체' ? ' active' : ''}`} style={{ padding: '6px 28px 6px 12px', borderRadius: 8, fontSize: 12, cursor: 'pointer', appearance: 'none', backgroundImage: 'url("data:image/svg+xml;utf8,<svg xmlns=%27http://www.w3.org/2000/svg%27 width=%2710%27 height=%2710%27 viewBox=%270 0 24 24%27 fill=%27none%27 stroke=%27%23888%27 stroke-width=%273%27><path d=%27M6 9l6 6 6-6%27/></svg>")', backgroundRepeat: 'no-repeat', backgroundPosition: 'right 10px center' }}>
+                {statusOptions.map(s => <option key={s} value={s} style={{ color: '#222' }}>{s === '전체' ? '등급 전체' : s}</option>)}
+              </select>
               <div style={{ flex: 1, display: 'flex', gap: 6, alignItems: 'center', margin: '0 8px', minWidth: 180 }}>
                 <input
                   type="text"
@@ -1502,7 +1511,10 @@ export default function SoldOutAnalysis() {
                     <td className="num">{r.avg3d > 0 ? fmtDec(r.avg3d) : '-'}</td>
                     <td className="num" style={{ color: r.weeksStockIncoming > 0 && r.weeksStockIncoming < 1 ? '#e65100' : '' }}>{r.weeksStockIncoming > 0 ? fmtDec(r.weeksStockIncoming) + '주' : '-'}</td>
                     <td className="center">
-                      {r.orderStatus === 'wing_on' ? <span className="alert-badge" style={{ background: '#e8f5e9', color: '#2e7d32', padding: '3px 10px' }}>✈️ 윙ON</span>
+                      {r.orderStatus === 'wing_on'
+                        ? (String(r.status || '').toLowerCase().includes('fbc')
+                          ? <span className="alert-badge" style={{ background: '#ede7f6', color: '#5e35b1', padding: '3px 10px', fontWeight: 700 }}>✈️ 윙ON,FBC</span>
+                          : <span className="alert-badge" style={{ background: '#e8f5e9', color: '#2e7d32', padding: '3px 10px' }}>✈️ 윙ON</span>)
                       : r.orderStatus === 'check' ? <span className="alert-badge" style={{ background: '#fff3e0', color: '#e65100', padding: '3px 10px' }}>📋 장부확인</span>
                       : <span className="alert-badge emergency" style={{ padding: '3px 10px' }}>⚠️ 발주필요</span>}
                     </td>
