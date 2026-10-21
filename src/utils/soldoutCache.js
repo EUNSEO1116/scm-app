@@ -150,23 +150,25 @@ export async function ensureUploadSoldoutCache(dateKey, { force = false } = {}) 
       ? await ensureOppFields(dateKey, existing, cacheKey) : null;
   }
 
-  // 정식 분석 캐시는 원천 기반으로 절대 덮어쓰지 않는다
+  // 정식·원천 캐시는 모두 "불변 사실"이다. 한 번 저장되면 제외규칙이 바뀌어도
+  // 재계산/덮어쓰지 않는다. (제외규칙 변경은 집계 뷰(rate_snapshots)를 사실에서
+  // 재생성할 때 읽기 시점에 반영한다 — computeDaySnapshotFromCache 참조)
+  // force=true(재업로드)일 때만 원천 캐시를 새로 계산한다.
   if (existing?.items && existing.source !== 'upload') return await ensureOppFields(dateKey, existing, cacheKey);
-  // 이미 원천 캐시가 있고 강제 재계산이 아니며 제외규칙 버전이 최신이면 그대로 사용 (집계 속도 유지)
-  // 규칙 버전이 바뀐(=시즌OFF 등 제외규칙 변경) 과거 캐시는 조회 시 1회 재계산한다
-  const ruleStale = existing?.ruleVersion !== EXCLUDE_RULE_VERSION;
-  if (existing?.items && existing.source === 'upload' && !force && !ruleStale) return await ensureOppFields(dateKey, existing, cacheKey);
+  if (existing?.items && existing.source === 'upload' && !force) return await ensureOppFields(dateKey, existing, cacheKey);
 
   const raw = await dbStoreGet(`${STORE_KEY_PREFIX}${dateKey}`).catch(() => null);
   if (!raw?.items) return existing?.items ? existing : null;
 
-  const [{ bcMap, cMap }, exSet, trk, delayItems] = await Promise.all([
+  const [{ bcMap, cMap }, exSet, trk, delayItems, corrData] = await Promise.all([
     loadSheets(),
     resolveExcludeSet(dateKey),
     dbStoreGet(SOLDOUT_TRACKER_KEY).catch(() => null),
     dbStoreGet('delay_cause_items').catch(() => null),
+    dbStoreGet(SOLDOUT_CORRECTIONS_KEY).catch(() => null),
   ]);
   const tracker = trk || {};
+  const corrections = corrData || {}; // 재고수정(실제 재고 있음) — 평일 품절현황과 동일하게 적용
   // 보충지연관리(delay_cause_items) 자동 사유 맵: 바코드 → 최신 '사유상태 · 자세한사유'
   // (정식 분석의 진입 시 자동 사유 채움과 동일 규칙을 과거 날짜에도 적용)
   const delayReasonByBarcode = new Map();
@@ -214,24 +216,40 @@ export async function ensureUploadSoldoutCache(dateKey, { force = false } = {}) 
   const results = [];
   const excludeSnapshot = [];
   const trackerSnapshot = {};
+  const correctionsSnapshot = {};
   const validItems = [];
   for (const item of raw.items) {
-    const bc = bcMap[item.optionId]; if (!bc) continue;      // 쿠팡바코드에 없으면 제외
-    if (!cMap[item.optionId]) continue;                       // 재고계산기에 없으면 제외
-    if (shouldExclude(bc.status)) continue;                   // 제외등급 완전 제외
+    const bc = bcMap[item.optionId];
+    // 6월+ 원천은 업로드 당시 status/barcode가 동결돼 있다(hasFrozen). 이 경우 "당시 모수"를 그대로 쓰기 위해
+    // 현재 시트(쿠팡바코드·재고계산기) 교차를 요구하지 않는다 → 시트가 바뀌어도 과거 모수가 흔들리지 않음(드리프트 방지).
+    // status가 없는 옛 업로드만 종전처럼 현재 시트 멤버십을 요구한다.
+    const hasFrozen = item.status !== undefined;
+    if (!hasFrozen) {
+      if (!bc) continue;                 // 쿠팡바코드에 없으면 제외(옛 업로드)
+      if (!cMap[item.optionId]) continue; // 재고계산기에 없으면 제외(옛 업로드)
+    }
+    // status는 그날 값(raw에 동결된 당시 status) 우선, 없으면(옛 업로드) 현재 시트값으로 폴백.
+    const effStatus = hasFrozen ? (item.status || '') : bc.status;
+    if (shouldExclude(effStatus)) continue;                   // 제외등급 완전 제외(그날 status 기준)
     // 신규 상품: 30일간 한 번도 재고 > 0이 된 적 없으면 제외
-    if (bc.status.includes('신규') && item.coupangStock === 0) {
+    if (effStatus.includes('신규') && item.coupangStock === 0) {
       const entry = stockTracker[item.optionId];
       if (!entry || !entry.records.some(r => r.stock > 0)) continue;
     }
+    // 재고수정(실제 재고 있음): 그 날짜 이하에 등록된 수정만 그 날짜에 적용(읽기 전용 — 전역 store 변경 안 함).
+    // 평일 품절현황과 동일하게 수정된 항목은 품절로 집계하지 않는다.
+    const _corr = corrections[item.optionId];
+    const _corrActive = _corr && (!_corr.correctedAt || dateToKey(new Date(_corr.correctedAt)) <= dateKey);
+    const effStock = _corrActive ? (_corr.calcStock || 1) : item.coupangStock;
+    if (_corrActive) correctionsSnapshot[item.optionId] = _corr;
     const _s = sales30Sum[item.optionId] || 0;
     const _avg30d = Math.round((_s / 30) * 10) / 10;
     const _netMargin = _s > 0 ? (netProfit30Sum[item.optionId] || 0) / _s : 0;
-    validItems.push({ optionId: item.optionId, coupangStock: item.coupangStock, salesQty: item.salesQty || 0, avg30d: _avg30d, netMargin: _netMargin, lossAmount: Math.round(_avg30d * _netMargin), oppV: 3 });
-    if (item.coupangStock !== 0) continue; // 품절만
+    validItems.push({ optionId: item.optionId, status: effStatus || '', coupangStock: effStock, salesQty: item.salesQty || 0, avg30d: _avg30d, netMargin: _netMargin, lossAmount: Math.round(_avg30d * _netMargin), oppV: 3 });
+    if (effStock !== 0) continue; // 품절만 (재고수정 반영된 재고 기준)
     if (exSet.has(item.optionId)) excludeSnapshot.push(item.optionId); // 수동 제외 표시
-    const calc = cMap[item.optionId];
-    const barcode = bc.barcode || calc.barcode || '';
+    const calc = cMap[item.optionId] || {}; // 현재 재고계산기에 없을 수 있음(동결 모수) → 빈 객체로 폴백
+    const barcode = item.barcode || bc?.barcode || calc.barcode || '';
     // 재계산(재업로드) 시 화면에서 직접 입력한 사유가 날아가지 않도록 기존 캐시 사유를 우선 보존.
     // 수동/기존 사유가 없으면 보충지연관리 자동 사유(바코드 기준)로 채운다.
     const prevReason = existing?.trackerSnapshot?.[item.optionId]?.reason;
@@ -242,7 +260,7 @@ export async function ensureUploadSoldoutCache(dateKey, { force = false } = {}) 
       barcode,
       productName: item.productName || '',
       optionName: item.optionName || '',
-      status: bc.status || '',
+      status: effStatus || '',
       coupangStock: 0,
       calcStock: 0, incoming: calc.incoming || 0, ipgo: calc.ipgo || 0, bhStock: 0, totalStock: 0,
       avg3d: 0, weeksStockIncoming: 0,
@@ -266,9 +284,8 @@ export async function ensureUploadSoldoutCache(dateKey, { force = false } = {}) 
     trackerSnapshot,
     validItems,
     excludeSnapshot,
-    correctionsSnapshot: {},
-    source: 'upload', // 원천 업로드 기반 자동 생성 표시
-    ruleVersion: EXCLUDE_RULE_VERSION, // 제외규칙 버전 — 조회 시 최신과 다르면 재계산
+    correctionsSnapshot,
+    source: 'upload', // 원천 업로드 기반 자동 생성 표시 (한 번 쓰면 불변)
   };
   await dbStoreSet(cacheKey, cache, { skipLog: true });
   return cache;
@@ -304,25 +321,28 @@ export async function computeSoldoutRateSnapshots(startKey, endKey, { withItems 
       const c = caches[j];
       if (!c?.validItems) return; // 데이터 없는 날 스킵
       const daySnap = new Set(c.excludeSnapshot || []); // 그 날짜 제외목록 그대로
-      const total = c.validItems.length;
-      const soldoutItems = c.validItems.filter(it => !daySnap.has(it.optionId) && it.coupangStock === 0);
+      // 읽기 시점 제외규칙 적용: 캐시에 구워진 그 날짜 status에 현재 제외규칙(시즌OFF 등)을 적용해
+      // 분자·분모에서 함께 뺀다. status 없는 구캐시는 그대로 통과(= 과거 저장값 보존).
+      const validItems = c.validItems.filter(vi => vi.status === undefined || !shouldExclude(vi.status));
+      const total = validItems.length;
+      const soldoutItems = validItems.filter(it => !daySnap.has(it.optionId) && it.coupangStock === 0);
       const soldout = soldoutItems.length;
       const rate = total > 0 ? Math.round(soldout / total * 10000) / 100 : 0;
       // 기회손실률 = 당일추정손실 / (당일실판매량 + 당일추정손실) × 100
       // 당일추정손실 = Σ 그날 품절 상품의 일평균판매량(avg30d)
       // 당일실판매량 = Σ 유효 품목 전체의 그날 판매량(salesQty)
       const oppLoss = soldoutItems.reduce((s, it) => s + (it.avg30d || 0), 0);
-      const actualSales = c.validItems.reduce((s, it) => s + (it.salesQty || 0), 0);
+      const actualSales = validItems.reduce((s, it) => s + (it.salesQty || 0), 0);
       const denom = actualSales + oppLoss;
       const oppRate = denom > 0 ? Math.round(oppLoss / denom * 10000) / 100 : 0;
       const snap = { date: k, total, soldout, rate, oppLoss: Math.round(oppLoss * 10) / 10, actualSales: Math.round(actualSales), oppRate };
       if (withItems) {
         // 품절수에 실제 집계된 상품 = validItems 중 (수동 제외 아님 & 쿠팡재고 0)인 optionId 집합.
         // c.items(전체 분석 목록)를 이 집합으로 교차 필터해 개수를 품절수와 정확히 일치시킨다.
-        const soldoutValid = c.validItems.filter(it => !daySnap.has(it.optionId) && it.coupangStock === 0);
+        const soldoutValid = validItems.filter(it => !daySnap.has(it.optionId) && it.coupangStock === 0);
         const soldoutIds = new Set(soldoutValid.map(it => it.optionId));
         const viMap = {};
-        for (const it of c.validItems) viMap[it.optionId] = it;
+        for (const it of validItems) viMap[it.optionId] = it;
         snap.items = (c.items || [])
           .filter(it => soldoutIds.has(it.optionId))
           .map(it => {
@@ -350,17 +370,20 @@ export async function computeDaySnapshotFromCache(dateKey, cacheArg) {
   const cache = cacheArg || await ensureUploadSoldoutCache(dateKey).catch(() => null);
   if (!cache?.validItems) return null;
   const daySnap = new Set(cache.excludeSnapshot || []);
-  const total = cache.validItems.length;
-  const soldoutItems = cache.validItems.filter(it => !daySnap.has(it.optionId) && it.coupangStock === 0);
+  // 읽기 시점 제외규칙 적용(월품절률·홈·기회손실률 공통): 구운 status에 현재 제외규칙을 적용해
+  // 분자·분모에서 함께 뺀다. status 없는 구캐시는 그대로 통과.
+  const validItems = cache.validItems.filter(vi => vi.status === undefined || !shouldExclude(vi.status));
+  const total = validItems.length;
+  const soldoutItems = validItems.filter(it => !daySnap.has(it.optionId) && it.coupangStock === 0);
   const soldout = soldoutItems.length;
   const rate = total > 0 ? Math.round(soldout / total * 10000) / 100 : 0;
   const oppLoss = soldoutItems.reduce((s, it) => s + (it.avg30d || 0), 0);
-  const actualSales = cache.validItems.reduce((s, it) => s + (it.salesQty || 0), 0);
+  const actualSales = validItems.reduce((s, it) => s + (it.salesQty || 0), 0);
   const denom = actualSales + oppLoss;
   const oppRate = denom > 0 ? Math.round(oppLoss / denom * 10000) / 100 : 0;
   const soldoutIds = new Set(soldoutItems.map(it => it.optionId));
   const viMap = {};
-  for (const it of cache.validItems) viMap[it.optionId] = it;
+  for (const it of validItems) viMap[it.optionId] = it;
   const items = (cache.items || [])
     .filter(it => soldoutIds.has(it.optionId))
     .map(it => {
@@ -411,13 +434,16 @@ export async function ensureDailyRateSnapshots(startKey, endKey) {
         if (!afterNoon) return;                            // 12시 전이면 오늘은 아직 계산 안 함
         if (existing && existing.computedAt >= noon) return; // 오늘 12시 이후 이미 계산됨
       } else {
-        if (existing && existing.oppRate !== undefined) return; // 과거는 이미 저장돼 있으면 재계산 안 함
+        // 과거: 이미 저장돼 있고 제외규칙 버전도 최신이면 재계산 안 함.
+        // 규칙 버전이 바뀐(시즌OFF 등 로직 변경) 경우에만 1회 소급 재계산한다.
+        // (수동 품절 제외로 인한 변동은 그 날짜 excludeSnapshot을 그대로 쓰므로 소급하지 않는다)
+        if (existing && existing.oppRate !== undefined && existing.ruleVersion === EXCLUDE_RULE_VERSION) return;
       }
       const cache = await ensureUploadSoldoutCache(k).catch(() => null);
       if (!cache?.validItems) return; // 데이터 없는 날 스킵
       const snap = await computeDaySnapshotFromCache(k, cache);
       if (!snap) return;
-      store[k] = { ...(existing || {}), ...snap, computedAt: now.getTime() };
+      store[k] = { ...(existing || {}), ...snap, computedAt: now.getTime(), ruleVersion: EXCLUDE_RULE_VERSION };
       changed = true;
     }));
   }

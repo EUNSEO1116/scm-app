@@ -333,7 +333,7 @@ export default function Home() {
 
         // 캐시 버전: 새 패널(가용/장기/품절률 요약) 데이터 포함 버전.
         // 구버전 캐시면 시각과 무관하게 딱 1회 강제 재계산 → 이후 정상(내일 12시) 스케줄 복귀.
-        const CACHE_VERSION = 7;
+        const CACHE_VERSION = 8;
 
         // DB 캐시 확인
         const cached = await dbStoreGet('dashboard_cache').catch(() => null);

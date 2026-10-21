@@ -567,7 +567,7 @@ export default function SoldOutAnalysis() {
         const _s = sales30Sum[item.optionId] || 0;
         const _avg30d = Math.round((_s / 30) * 10) / 10;
         const _netMargin = _s > 0 ? (netProfit30Sum[item.optionId] || 0) / _s : 0;
-        validItems.push({ optionId: item.optionId, coupangStock: isCorrected ? (corrections[item.optionId].calcStock || 1) : item.coupangStock, salesQty: item.salesQty || 0, avg30d: _avg30d, netMargin: _netMargin, lossAmount: Math.round(_avg30d * _netMargin), oppV: 3 });
+        validItems.push({ optionId: item.optionId, status: bc.status || '', coupangStock: isCorrected ? (corrections[item.optionId].calcStock || 1) : item.coupangStock, salesQty: item.salesQty || 0, avg30d: _avg30d, netMargin: _netMargin, lossAmount: Math.round(_avg30d * _netMargin), oppV: 3 });
 
         // 수정된 항목은 품절/품절위기 판정 스킵
         if (isCorrected) continue;
@@ -976,15 +976,25 @@ export default function SoldOutAnalysis() {
     }));
   }, [cachedResult, tracker, viewingDate, rangeResult]);
 
+  // 화면 표시용 제외 셋 (오늘=실시간, 과거=해당 날짜 스냅샷 그대로)
+  const displayExcludeSet = useMemo(() => {
+    if (rangeResult) return new Set(rangeResult.excludeSet || []);
+    return viewingDate === todayStr() ? excludeSet : new Set(cachedResult?.excludeSnapshot || []);
+  }, [viewingDate, excludeSet, cachedResult, rangeResult]);
+
   // 통계 (품절률 = 전체 유효상품 중 재고0 비율)
   // 오늘 → 현재 excludeSet 실시간 계산 / 과거 → rate_snapshots에 저장된 품절률 그대로 사용
   const stats = useMemo(() => {
-    const soldout = analysisData.filter(r => r.riskLevel === '품절').length;
+    const isToday = viewingDate === todayStr();
+    // 과거 날짜: 월요약과 동일한 단일 스냅샷(soldout·rate)을 그대로 사용 → 품절수·품절률·월요약 완전 일치
+    const snap = (!rangeResult && !isToday) ? cachedResult?.snapshot : null;
+    // 품절수: 과거=스냅샷 값 / 오늘·기간=화면 기준(수동제외·시즌OFF 제외)
+    const soldout = snap ? snap.soldout
+      : analysisData.filter(r => r.riskLevel === '품절' && !displayExcludeSet.has(r.optionId) && !shouldExclude(r.status)).length;
     const risk = analysisData.filter(r => r.riskLevel === '품절위기').length;
     const inOrder = analysisData.filter(r => r.orderStatus === 'wing_on' || r.orderStatus === 'check').length;
     // 기간 모드: 데이터 있는 날만 평균낸 품절률 사용
     if (rangeResult) return { total: analysisData.length, soldout, risk, inOrder, rate: rangeResult.avgRate };
-    const isToday = viewingDate === todayStr();
     let rate;
     if (isToday) {
       const valid = cachedResult?.validItems || [];
@@ -992,17 +1002,11 @@ export default function SoldOutAnalysis() {
       const rateSoldout = valid.filter(it => !excludeSet.has(it.optionId) && it.coupangStock === 0).length;
       rate = rateTotal > 0 ? Math.round(rateSoldout / rateTotal * 10000) / 100 : 0;
     } else {
-      // 과거: 당시 저장된 품절률 스냅샷 그대로 사용
-      rate = cachedResult?.rate ?? 0;
+      // 과거: 스냅샷 품절률(=soldout/validItems). 스냅샷 없으면 폴백.
+      rate = snap ? snap.rate : (cachedResult?.rate ?? 0);
     }
     return { total: analysisData.length, soldout, risk, inOrder, rate };
-  }, [analysisData, cachedResult, excludeSet, viewingDate, rangeResult]);
-
-  // 화면 표시용 제외 셋 (오늘=실시간, 과거=해당 날짜 스냅샷 그대로)
-  const displayExcludeSet = useMemo(() => {
-    if (rangeResult) return new Set(rangeResult.excludeSet || []);
-    return viewingDate === todayStr() ? excludeSet : new Set(cachedResult?.excludeSnapshot || []);
-  }, [viewingDate, excludeSet, cachedResult, rangeResult]);
+  }, [analysisData, cachedResult, excludeSet, viewingDate, rangeResult, displayExcludeSet]);
 
   const statusOptions = useMemo(() => {
     const s = new Set();
@@ -1058,6 +1062,12 @@ export default function SoldOutAnalysis() {
     const cached = await ensureUploadSoldoutCache(key).catch(() => null);
     if (cached) {
       const fixed = await recalcConsecDaysForDate(key, cached);
+      // 과거 날짜: 품절수·품절률을 월요약과 "동일한 단일 함수"로 계산해 실어둔다.
+      // (묵은 cache.rate 대신 → 날짜뷰 품절률 = 월요약 = soldout/validItems 로 일치)
+      if (key !== todayStr()) {
+        const snap = await computeDaySnapshotFromCache(key, fixed).catch(() => null);
+        if (snap) fixed.snapshot = snap;
+      }
       setCachedResult(fixed);
       setLastUpdatedAt(fixed.updatedAt);
     } else {
