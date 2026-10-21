@@ -4,6 +4,7 @@ import { fetchCautionItems, saveCautionItem, deleteCautionItem } from '../sheetS
 import { dbStoreGet, dbStoreSet } from '../utils/dbApi.js';
 import { getSurgeForDisplay } from '../utils/salesSurge.js';
 import { statusBadgeStyle } from '../utils/productStatus.js';
+import { sortStatusText } from '../utils/statusPolicy';
 
 const SHEET_ID = '1NXhW_gG0b-gXuVqrhbY9ErWi8uO_7pXIy-NTo4FbE1I';
 const CSV_DAILY = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent('일일 판매량')}`;
@@ -637,7 +638,7 @@ export default function Sales() {
                       <td style={{ padding: '8px 6px' }}>
                         <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap' }}>
                           <span className="status-badge" style={statusBadgeStyle(r.status)}>
-                            {r.status || '—'}
+                            {sortStatusText(r.status) || '—'}
                           </span>
                           {cautionSet.has(r.barcode) && (
                             <span style={{

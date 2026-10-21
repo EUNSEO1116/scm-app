@@ -3,6 +3,7 @@ import { LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, ResponsiveContai
 import XLSX from 'xlsx-js-style';
 import { dbStoreGet, dbStoreSet } from '../utils/dbApi';
 import { classifyGroup } from '../utils/productStatus';
+import { shouldExcludeOrder } from '../utils/statusPolicy';
 
 const STREAK_MIN = 20; // 30일 기준: 우상향·우하향 20일 이상부터 'N일째' 딱지 + 자동 펼침
 
@@ -21,7 +22,6 @@ const IMPROVE_STORE = 'improvement_items';            // [{ status, barcode, pro
 const FORECAST_CACHE_STORE = 'sales_forecast_cache'; // { [range]: { date(YYYYMMDD|null), rows, top20, overstockRows, dataDays, coverage, nameMap, seasonMap, customTags, lastUpdated } }
 const SOLDOUT_RATE_STORE = 'soldout_analysis_rate_snapshots'; // 품절현황 갱신 시 { [YYYYMMDD]: snapshot } 저장 (오늘 키 존재 = 품절현황 업데이트 완료)
 
-const EXCLUDE_KEYWORDS = ['최종마감', '품질확인서', '마감대상', '덤핑', '반출'];
 
 // 정규 시즌 태그 (R열 텍스트를 이 태그로 정규화)
 const DEFAULT_SEASON_TAGS = ['여름', '장마', '캠핑', '간절기', '가을', '겨울/눈', '웨딩', '가정의달', '어린이날', '운동회/피크닉', '새학기/개학', '야구'];
@@ -57,7 +57,7 @@ function safeNum(v) { if (v === '' || v === '-' || v == null) return 0; const n 
 function pad2(n) { return String(n).padStart(2, '0'); }
 function dateToKey(d) { return `${d.getFullYear()}${pad2(d.getMonth() + 1)}${pad2(d.getDate())}`; }
 function keyToMMDD(k) { return `${k.slice(4, 6)}/${k.slice(6, 8)}`; }
-function shouldExclude(s) { return s ? EXCLUDE_KEYWORDS.some(kw => s.includes(kw)) : false; }
+const shouldExclude = shouldExcludeOrder;
 
 // Y축 눈금: 0부터 5·10·15·20·30·40·50 등 깔끔한 정수 단위로 통일
 function niceTicks(max) {

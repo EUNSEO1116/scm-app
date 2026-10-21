@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
 import * as XLSX from 'xlsx';
 import { dbStoreGet } from '../utils/dbApi';
+import { shouldExcludeOrder } from '../utils/statusPolicy';
 
 const SHEET_ID = '1NXhW_gG0b-gXuVqrhbY9ErWi8uO_7pXIy-NTo4FbE1I';
 const GID_CALCULATOR = '1349677364';
@@ -17,11 +18,10 @@ const ALERT_CONFIG = {
   '판매없음': { emoji: '—',  cls: 'no-sales',  label: '판매없음' },
 };
 
-const EXCLUDE_KEYWORDS = ['최종마감', '품질확인서', '마감대상', '덤핑', '반출'];
 const EXCLUDE_ITEMS_KEY = 'soldout_exclude_items';
 
 function isExcluded(r) {
-  if (EXCLUDE_KEYWORDS.some(kw => (r.status || '').includes(kw))) return true;
+  if (shouldExcludeOrder(r.status)) return true;
   try {
     const items = JSON.parse(localStorage.getItem(EXCLUDE_ITEMS_KEY) || '[]');
     const today = new Date().toISOString().slice(0, 10);

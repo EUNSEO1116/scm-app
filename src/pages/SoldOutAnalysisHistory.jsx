@@ -1,9 +1,10 @@
 import { useState, useEffect, useMemo } from 'react';
 import { dbStoreGet } from '../utils/dbApi';
 import { classifyGroup, statusBadgeStyle } from '../utils/productStatus';
+import { shouldExcludeSoldout, sortStatusText } from '../utils/statusPolicy';
 
-const EXCLUDE_KEYWORDS = ['최종마감', '품질확인서', '마감대상', '덤핑', '반출'];
-function shouldExclude(s) { return s ? EXCLUDE_KEYWORDS.some(kw => s.includes(kw)) : false; }
+// 품절 분석 히스토리 = 품절현황 계열 → 품절 제외집합(SOLDOUT_EXCLUDE, 지재권·시즌OFF 포함) 사용
+const shouldExclude = shouldExcludeSoldout;
 function todayStr() { return new Date().toISOString().slice(0, 10).replace(/-/g, ''); }
 function dateToKey(d) { return `${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}`; }
 // YYYYMMDD 키를 days만큼 이동
@@ -255,7 +256,7 @@ export default function SoldOutAnalysisHistory() {
                         <span style={{
                           fontSize: 10, padding: '1px 5px', borderRadius: 4, fontWeight: 600,
                           ...statusBadgeStyle(r.status),
-                        }}>{r.status}</span>
+                        }}>{sortStatusText(r.status)}</span>
                       ) : <span style={{ color: '#ddd', fontSize: 10 }}>-</span>}
                     </td>
                     <td style={{ padding: '5px 6px', fontSize: 10, color: '#888', borderRight: '1px solid #f0f0f0' }}>{r.optionId}</td>

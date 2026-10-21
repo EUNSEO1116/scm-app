@@ -1,4 +1,5 @@
 import { dbStoreGet, dbStoreSet } from './dbApi.js';
+import { shouldExcludeSurge } from './statusPolicy';
 
 export const SURGE_SNAPSHOT_KEY = 'sales_surge_snapshot';
 
@@ -8,9 +9,8 @@ export const SURGE_SNAPSHOT_KEY = 'sales_surge_snapshot';
 const SHEET_ID = '1NXhW_gG0b-gXuVqrhbY9ErWi8uO_7pXIy-NTo4FbE1I';
 const CSV_BARCODE = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent('쿠팡바코드')}`;
 
-// 상태 제외 키워드(시트 상태 기준). 마감대상 등 제외 상태 상품은 급증에서 제외.
-const EXCLUDE_KEYWORDS = ['최종마감', '품질확인서', '마감대상', '덤핑', '반출', '지재권'];
-function shouldExclude(s) { return s ? EXCLUDE_KEYWORDS.some(kw => s.includes(kw)) : false; }
+// 상태 제외 키워드/판정은 statusPolicy 단일 소스(SURGE_EXCLUDE)를 사용.
+const shouldExclude = shouldExcludeSurge;
 
 function parseCsvRow(line) {
   const result = []; let current = ''; let inQuotes = false;

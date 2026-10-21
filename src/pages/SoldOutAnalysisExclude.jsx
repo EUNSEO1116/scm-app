@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { dbStoreGet, dbStoreSet } from '../utils/dbApi';
 import { statusBadgeStyle } from '../utils/productStatus';
+import { sortStatusText } from '../utils/statusPolicy';
 
 export default function SoldOutAnalysisExclude() {
   const [items, setItems] = useState([]);
@@ -94,7 +95,7 @@ export default function SoldOutAnalysisExclude() {
                 <td>
                   <span className="alert-badge"
                     style={{ ...statusBadgeStyle(item.status), fontSize: 10, padding: '1px 6px' }}>
-                    {item.status || '-'}
+                    {sortStatusText(item.status) || '-'}
                   </span>
                 </td>
                 <td style={{ fontSize: 11, color: '#888' }}>{item.barcode}</td>

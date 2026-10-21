@@ -10,22 +10,22 @@
 // 품절 판정(쿠팡재고=0)은 그 날짜 원천 업로드 기준이라 품절 수는 실제와 일치하고,
 // 품절률/입고예정 등 시트 의존 항목은 현재 시트 기준의 근사값이다.
 import { dbStoreGet, dbStoreSet } from './dbApi';
+import { SOLDOUT_EXCLUDE, shouldExcludeSoldout, SOLDOUT_RULE_VERSION } from './statusPolicy';
 
 const SHEET_ID = '1NXhW_gG0b-gXuVqrhbY9ErWi8uO_7pXIy-NTo4FbE1I';
 const CSV_BARCODE = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent('쿠팡바코드')}`;
 const TSV_CALC = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=tsv&gid=1349677364`;
-// 품절 집계에서 제외하는 상태 키워드(부분일치) — 정식 분석(SoldOutAnalysis.jsx)과 공유하는 단일 소스
-export const EXCLUDE_KEYWORDS = ['최종마감', '품질확인서', '마감대상', '덤핑', '반출', '지재권', '시즌OFF'];
-// 정확히 일치할 때만 제외
-export const EXCLUDE_EXACT = ['시즌'];
-// 제외 규칙 버전 — 규칙이 바뀌면 숫자를 올려, 과거 자동캐시를 조회 시 1회 재계산하게 한다
-export const EXCLUDE_RULE_VERSION = 2;
+// 품절 집계 제외 키워드/판정은 상태정책 통합모듈(statusPolicy)의 단일 소스를 사용한다.
+// (옛 EXCLUDE_EXACT=['시즌']는 폐기 — 바 '시즌' 금지, 오직 '시즌OFF'만 제외)
+export const EXCLUDE_KEYWORDS = SOLDOUT_EXCLUDE;
+// 제외 규칙 버전 — 제외집합이 바뀌면 해시가 자동 변동해 과거 자동캐시를 1회 재계산하게 한다
+export const EXCLUDE_RULE_VERSION = SOLDOUT_RULE_VERSION;
 const STORE_KEY_PREFIX = 'soldout_analysis_';
 const SOLDOUT_TRACKER_KEY = 'soldout_analysis_tracker';
 // 재고 수정(엑셀 품절이지만 실제 재고 있는 항목) 영구 저장 전역 키 — 두 페이지에서 공유
 export const SOLDOUT_CORRECTIONS_KEY = 'soldout_analysis_corrections';
 
-export function shouldExclude(s) { if (!s) return false; if (EXCLUDE_EXACT.includes(s.trim())) return true; return EXCLUDE_KEYWORDS.some(kw => s.includes(kw)); }
+export const shouldExclude = shouldExcludeSoldout;
 function safeNum(v) { if (v === '' || v === '-' || v == null) return 0; const n = Number(v); return isNaN(n) ? 0 : n; }
 function parseCsvRow(line) {
   const result = []; let current = ''; let inQuotes = false;

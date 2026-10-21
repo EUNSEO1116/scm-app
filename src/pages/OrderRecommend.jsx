@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import XLSX from 'xlsx-js-style';
 import { dbStoreGet, dbStoreSet, dbGetCaution } from '../utils/dbApi';
+import { shouldExcludeOrder, isSeasonOn, isSeasonOff } from '../utils/statusPolicy';
 
 // ───────── 상수 ─────────
 const SHEET_ID = '1NXhW_gG0b-gXuVqrhbY9ErWi8uO_7pXIy-NTo4FbE1I';
@@ -48,9 +49,8 @@ const TAG_COLORS = {
   '데이터없음': { bg: '#f1f3f4', fg: '#bdc1c6' },
 };
 
-// 판매중이 아닌 제외 대상(발주추천 안 함) — 수요예측과 동일 기준
-const EXCLUDE_KEYWORDS = ['최종마감', '품질확인서', '마감대상', '덤핑', '반출'];
-function shouldExclude(s) { return s ? EXCLUDE_KEYWORDS.some(kw => s.includes(kw)) : false; }
+// 판매중이 아닌 제외 대상(발주추천 안 함) — statusPolicy 단일 소스(ORDER_EXCLUDE) 사용
+const shouldExclude = shouldExcludeOrder;
 
 // ───────── helpers ─────────
 function safeNum(v) { if (v === '' || v === '-' || v == null) return 0; const n = Number(v); return isNaN(n) ? 0 : n; }
@@ -356,8 +356,8 @@ export default function OrderRecommend() {
             let mult = seasonMult(seasonPeriod, arrivalDate);
             // 상태 키워드가 DB 시즌기간보다 우선: '시즌ON' → 무조건 피크(×1.2), '시즌OFF' → 무조건 발주제외(×0).
             // 예) 지금 10월·DB는 8~9월이라 날짜상 시즌이 지났어도, 상태에 '시즌ON'이면 ×1.2로 추천.
-            const seasonKwOn = status.includes('시즌ON');
-            const seasonKwOff = !seasonKwOn && status.includes('시즌OFF');
+            const seasonKwOn = isSeasonOn(status);
+            const seasonKwOff = isSeasonOff(status);
             if (seasonKwOn) mult = PEAK_MULT;
             else if (seasonKwOff) mult = SEASON_OVER_MULT;
             // 사이클재고(리드+발주주기, 시즌보정) + 안전재고(가산항, 시즌·리드타임 미연동)로 분리 계산.
