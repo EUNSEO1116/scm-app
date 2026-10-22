@@ -20,6 +20,12 @@ const SAFETY_BUFFER_DAYS_HYOJA = 7; // '효자' 상태 상품은 기존 7일 유
 const HYOJA_KEYWORD = '효자';
 const DEFAULT_LEAD_DAYS = 20; // AF열 리드타임 빈칸 시 기본값
 const MAX_STOCK_WEEKS = 6; // 재고 상한: 목표재고가 최대 6주치 수요를 넘지 않게 캡(리드타임이 더 길면 파이프라인 커버 우선)
+const MIN_INSTOCK_DAYS = 7; // 품절일 제외 수요추정 최소 표본: 재고 있던 날이 이보다 적으면 과대추정 위험 → 보수적 폴백
+const MIN_HISTORY_DAYS = 14; // ① 총이력 부족 가드: 재고 있던 날이 2주 미만이면 신규·데이터부족 → 추천 보류(반짝판매 과발주 방지)
+const MIN_WEEK_INSTOCK_DAYS = 3; // ② 주간표본 부족 가드: 한 주 재고일이 이보다 적으면 정규화 안 함(1~2일 반짝을 한 주 수요로 뻥튀기 금지)
+const UPTREND_WEIGHTS = [0.5, 1, 2, 5]; // ③ 우상향 가속: 상승 추세 상품은 최신 주에 더 민감하게 반영
+const NEW_ARRIVAL_DAYS = 14; // ④ 진짜 신규 판정: 쿠팡재고가 처음 생긴 지 이보다 적으면(14일 미만) 초도 버킷 추천. 이미 재고 보유(14일 이상)는 기존 수요 로직으로 처리
+const NEW_ARRIVAL_LEAD_DAYS = 20; // 신규(14일 미만) 표준 리드: 한 번도 발주 안 해본 상품은 시트 리드(첫 입고기록, 과장될 수 있음)를 믿지 않고 20일 고정으로 계산. 14일 지나 검증되면 실제 리드 사용
 const HOLT_ALPHA = 0.3;       // 레벨 평활 계수
 const HOLT_BETA = 0.1;        // 트렌드 평활 계수
 const PEAK_MULT = 1.2;        // 시즌피크: 입고예정일이 시즌 한가운데
@@ -47,6 +53,7 @@ const TAG_COLORS = {
   '죽은재고': { bg: '#fde7e9', fg: '#a50e0e' },
   '제외': { bg: '#f1f3f4', fg: '#80868b' },
   '데이터없음': { bg: '#f1f3f4', fg: '#bdc1c6' },
+  '신규확인': { bg: '#fff0e0', fg: '#d56e0c' },
 };
 
 // 판매중이 아닌 제외 대상(발주추천 안 함) — statusPolicy 단일 소스(ORDER_EXCLUDE) 사용
@@ -213,6 +220,7 @@ export default function OrderRecommend() {
 
       // 일별 판매 (옵션id → 판매량)
       const itemsByKey = {};
+      const stockByKey = {}; // 일별 재고(coupangStock) — 품절일(재고0) 수요 제외용
       const availKeys = [];
       const appeared = new Set();
       dayList.forEach((d, i) => {
@@ -220,8 +228,10 @@ export default function OrderRecommend() {
         if (!st?.items) return;
         const key = dateToKey(d);
         const m = new Map();
-        for (const it of st.items) { m.set(it.optionId, it.salesQty || 0); appeared.add(it.optionId); }
+        const sm = new Map();
+        for (const it of st.items) { m.set(it.optionId, it.salesQty || 0); sm.set(it.optionId, Number(it.coupangStock) || 0); appeared.add(it.optionId); }
         itemsByKey[key] = m;
+        stockByKey[key] = sm;
         availKeys.push(key);
       });
       setDataDays(availKeys.length);
@@ -314,12 +324,61 @@ export default function OrderRecommend() {
           let baseF = null;
           let method = '';
           let floored = false; // C. 최근 실판매 하한 적용 여부
+          let inStockBased = false; // 품절일 제외(재고일 기준) 수요추정 적용 여부
+          let thinData = false; // ① 총이력 부족(재고일 2주 미만) — 신규·데이터부족
+          let histDays = 0;     // 재고 있던 날 총수(사유 표시용)
+          let newSeq = [];      // ④ 신규 초도 판정용 — 쿠팡재고 생긴 뒤 최근 5일 일판매
+          let isNewArr = false; // 신규도착(재고 생긴 지 14일 미만) 여부 — 표준리드 적용 판단
+          let effLead = leadDays; // 실효 리드: 신규도착이면 표준 20일, 아니면 시트 리드
           if (optionId && appeared.has(optionId)) {
-            // 보정값(corrected) 반영한 일별/주간 판매
-            const dailyVals = availKeys.map(k => corrQty(k, optionId, itemsByKey[k].get(optionId) || 0));
-            // 주간 판매 합 (음수=반품/보정은 0으로 정리)
-            const weeklyVals = useBuckets.map(ks => Math.max(0, ks.reduce((s, k) => s + corrQty(k, optionId, itemsByKey[k].get(optionId) || 0), 0)));
-            const down = computeTrend(dailyVals, 7).dir === 'down';
+            // 품절일(재고 0) 제외 — 재고 없어 '못 판' 날은 수요 하락으로 보지 않는다.
+            // 그날 스냅샷에 상품이 있고 coupangStock>0 인 날만 '판매 가능일'로 센다.
+            const inStock = (k) => itemsByKey[k].has(optionId) && (stockByKey[k]?.get(optionId) || 0) > 0;
+            const dayQty = (k) => Math.max(0, corrQty(k, optionId, itemsByKey[k].get(optionId) || 0)); // 음수(반품)는 0으로
+            const inStockDaysTotal = availKeys.filter(inStock).length;
+
+            // 주별 '재고 있던 날 일판매율 × 7' = 정규화 주간판매. 품절로 적게 팔린 주가 깎이지 않게.
+            const weeklyNorm = useBuckets.map(ks => {
+              const days = ks.filter(inStock);
+              // ② 재고일이 MIN_WEEK_INSTOCK_DAYS 미만인 주는 정규화 안 함(null→캐리) — 1~2일 반짝판매를 한 주 수요로 뻥튀기 방지
+              if (days.length < MIN_WEEK_INSTOCK_DAYS) return null;             // 완전 품절/무데이터/표본부족 주
+              return (days.reduce((s, k) => s + dayQty(k), 0) / days.length) * 7;
+            });
+            // 완전 품절 주(null)는 직전(없으면 직후) 유효 주의 값으로 캐리 — 0으로 넣지 않는다.
+            for (let i = 0, last = null; i < weeklyNorm.length; i++) { if (weeklyNorm[i] == null) weeklyNorm[i] = last; else last = weeklyNorm[i]; }
+            for (let i = weeklyNorm.length - 1, next = null; i >= 0; i--) { if (weeklyNorm[i] == null) weeklyNorm[i] = next; else next = weeklyNorm[i]; }
+
+            // 원시 주간합(품절일 포함) — 소표본 보수적 폴백용
+            const weeklyRaw = useBuckets.map(ks => Math.max(0, ks.reduce((s, k) => s + dayQty(k), 0)));
+            // 재고 있던 날이 너무 적으면(소표본) 2~3일 튄 걸로 과대추정될 수 있어 기존 방식(품절일 포함)으로 보수적 처리
+            inStockBased = inStockDaysTotal >= MIN_INSTOCK_DAYS && weeklyNorm.every(v => v != null);
+            const weeklyVals = inStockBased ? weeklyNorm : weeklyRaw;
+
+            // 추세: 정규화 사용 시 품절일 뺀 '재고 있던 날' 판매만으로 판정 — 품절 꼬리로 인한 가짜 우하향 차단
+            const trendSeries = inStockBased
+              ? availKeys.filter(inStock).map(dayQty)
+              : availKeys.map(k => corrQty(k, optionId, itemsByKey[k].get(optionId) || 0));
+            const trendDir = computeTrend(trendSeries, 7).dir;
+            const down = trendDir === 'down';
+            const up = trendDir === 'up';
+            // 이력 충분 여부: 재고 있던 날이 2주 미만이면 상승가속·품절방지하한을 신뢰하지 않음(반짝판매 과발주 방지)
+            const hasHistory = inStockDaysTotal >= MIN_HISTORY_DAYS;
+            histDays = inStockDaysTotal;
+            // ④ 진짜 신규 판정: 쿠팡재고가 "처음 생긴 날"부터 오늘까지 14일 미만이면 초도 버킷 대상.
+            //    품절이 섞여 재고일 총합이 적어도, 재고 생긴 지 14일 넘었으면(이미 보유) 기존 수요 로직을 탄다.
+            const firstStockIdx = availKeys.findIndex(inStock);
+            const daysSinceFirstStock = firstStockIdx < 0 ? 0 : availKeys.length - firstStockIdx;
+            const isNewArrival = firstStockIdx >= 0 && daysSinceFirstStock < NEW_ARRIVAL_DAYS;
+            isNewArr = isNewArrival;
+            // 신규도착(14일 미만)은 시트 리드가 '첫 입고 기록'일 뿐 실제 리드가 아닐 수 있어 표준 20일로 계산. 검증된 상품(14일+)은 시트 리드 사용.
+            effLead = isNewArrival ? NEW_ARRIVAL_LEAD_DAYS : leadDays;
+            const newSeqTmp = isNewArrival ? availKeys.filter(inStock).slice(-5).map(dayQty) : []; // ④ 최근 재고일 5일 일판매
+            const newDaily = newSeqTmp.length ? newSeqTmp.reduce((s, v) => s + v, 0) / newSeqTmp.length : 0;
+            // 총재고 방패: 신규라도 현재고가 최근 판매율 기준 '표준리드+발주주기(20+4)'를 이미 커버하면 '이미 보유' → 기존 로직.
+            //   미리 대량 매입해둔 상품을 신규 초도로 중복 발주하는 것 방지. 판매 0(newDaily=0)이면 방패 미발동(신규 관찰 유지).
+            const preStocked = newDaily > 0 && totalStock >= newDaily * (effLead + REVIEW_DAYS);
+            thinData = isNewArrival && !preStocked;
+            if (thinData) newSeq = newSeqTmp;
             const weighted = weightedCumForecast(weeklyVals);
             const isCaution = cautionSet.has(optionId);
             isCautionRow = isCaution;
@@ -332,26 +391,55 @@ export default function OrderRecommend() {
               // 우하향: Holt 예측이 평탄 가중평균을 넘지 못하게 캡 — 감소 상품 과발주 방지
               baseF = (holt == null) ? weighted : Math.min(holt, weighted);
               method = 'Holt';
+            } else if (up && hasHistory && weeklyVals.length >= 3) {
+              // ③ 우상향 가속: 이력 충분 + 상승 추세면 최신 주 가중 강화([0.5,1,2,5]) — 모멘텀 반영
+              baseF = weightedCumForecast(weeklyVals, UPTREND_WEIGHTS);
+              method = '상승가속';
             } else {
               baseF = weighted;
               method = '가중평균';
             }
-            // C. 품절 방어: 예측이 최근 14일 실판매율보다 낮으면 하한으로 끌어올림(언더오더 해소).
+            // C. 품절 방어: 예측이 최근 14일 '재고 있던 날' 실판매율보다 낮으면 하한으로 끌어올림(언더오더 해소).
             //    단, 우하향(감소) 상품은 제외 — Holt 감소 예측을 되돌려 과발주하는 것 방지.
-            if (baseF != null && !down) {
-              const last14 = availKeys.slice(-14);
-              const recent14Daily = last14.length ? last14.reduce((s, k) => s + corrQty(k, optionId, itemsByKey[k].get(optionId) || 0), 0) / last14.length : 0;
+            if (baseF != null && !down && hasHistory) {
+              const in14 = availKeys.slice(-14).filter(inStock);
+              const recent14Daily = in14.length ? in14.reduce((s, k) => s + dayQty(k), 0) / in14.length : 0;
               const floorF = recent14Daily * HORIZON_DAYS;
-              if (floorF > baseF) { baseF = floorF; floored = true; }
+              // 최근 14일 중 재고일이 MIN_INSTOCK_DAYS 미만이면 하한 미적용 — 1~2일 반짝판매가 일판매율로 뻥튀기되는 것 방지
+              if (floorF > baseF && in14.length >= MIN_INSTOCK_DAYS) { baseF = floorF; floored = true; }
             }
           }
 
           if (baseF == null) {
             tag = '데이터없음';
+          } else if (thinData) {
+            // ④ 진짜 신규(쿠팡재고 생긴 지 14일 미만): 쿠팡재고 생긴 뒤 최근 5일 일판매 패턴으로 초도 발주 판정.
+            //    평탄·반짝(지속 판매 아님)은 0으로 관찰, 상승 수준별로 30/50/100 초도 추천.
+            const sellDays = newSeq.filter(v => v > 0).length;         // 판매 발생일(지속성)
+            const recent2 = newSeq.slice(-2), early2 = newSeq.slice(0, 2);
+            const recentLevel = recent2.length ? recent2.reduce((s, v) => s + v, 0) / recent2.length : 0; // 최근 수준
+            const earlyLevel = early2.length ? early2.reduce((s, v) => s + v, 0) / early2.length : 0;
+            const rising = recentLevel > earlyLevel;                    // 꾸준한 상승(최근>초반)
+            let newRec = 0, newAlert = false;
+            if (sellDays >= 2) {                                        // 하루만 반짝(판매일 1일)이면 데이터 부족 → 0
+              if (recentLevel >= 12) { newRec = 100; newAlert = true; } // 다량·급격 → 반드시 수동확인
+              else if (recentLevel >= 5 && rising) newRec = 50;         // 급상승
+              else if (recentLevel >= 2 && rising) newRec = 30;         // 미미한 상승
+            }
+            recQty = newRec;
+            tag = '신규확인';
+            const seqTxt = `[${newSeq.join(',')}]`;
+            if (newRec > 0) {
+              reason = `신규 초도 — 최근 재고일 ${newSeq.length}일 판매 ${seqTxt} (최근수준 ${recentLevel.toFixed(1)}개/일${rising ? '·상승' : ''}) → 초도 ${newRec}개${newAlert ? ' (다량·급격, 반드시 판매량 확인)' : ''}`;
+            } else {
+              reason = `신규 — 최근 재고일 ${newSeq.length}일 판매 ${seqTxt} 지속판매 아님(반짝/평탄) → 관찰(발주 보류), 신규 판매량 확인 필요`;
+            }
+            kws.push('신규 판매량확인 필요');
+            if (newAlert) kws.push('신규급등');
           } else {
-            // 입고예정일 = 오늘 + 리드타임 → 시즌 보정에 사용
+            // 입고예정일 = 오늘 + 실효리드(신규는 표준 20일) → 시즌 보정에 사용
             const arrivalDate = new Date(now);
-            arrivalDate.setDate(arrivalDate.getDate() + leadDays);
+            arrivalDate.setDate(arrivalDate.getDate() + effLead);
             const seasonPeriod = periodOf(optionId);
             let mult = seasonMult(seasonPeriod, arrivalDate);
             // 상태 키워드가 DB 시즌기간보다 우선: '시즌ON' → 무조건 피크(×1.2), '시즌OFF' → 무조건 발주제외(×0).
@@ -365,9 +453,9 @@ export default function OrderRecommend() {
             let safetyDays = status.includes(HYOJA_KEYWORD) ? SAFETY_BUFFER_DAYS_HYOJA : SAFETY_BUFFER_DAYS;
             // B. 시즌 끝물(×0.7)·시즌밖(×0.2) 상품은 안전재고 축소 — 곧 시즌 종료라 과잉 비축 방지
             if (mult === ENDING_MULT || mult === OFFSEASON_MULT) safetyDays = Math.min(safetyDays, SAFETY_BUFFER_DAYS_HYOJA);
-            const coverDays = leadDays + REVIEW_DAYS + safetyDays; // 사유 표시용(리드+발주주기+안전)
+            const coverDays = effLead + REVIEW_DAYS + safetyDays; // 사유 표시용(리드+발주주기+안전)
             const dailyBase = baseF / HORIZON_DAYS;                 // 일 수요율(4주예측 ÷ 28)
-            const cycleDays = leadDays + REVIEW_DAYS;              // 사이클재고 대상 일수
+            const cycleDays = effLead + REVIEW_DAYS;              // 사이클재고 대상 일수
             // B안: 사이클재고만 시즌보정, 안전재고는 가산항(시즌계수·리드타임에 곱해지지 않음)
             const cycleDemand = dailyBase * cycleDays * mult;
             const safetyStock = dailyBase * safetyDays;
@@ -390,7 +478,7 @@ export default function OrderRecommend() {
             // 단, '효자' 상태 상품에만 적용 — 효자 아닌 상품은 총재고상한으로 추천 수량을 낮추지 않는다.
             let totalCapped = false;
             if (q > 0 && status.includes(HYOJA_KEYWORD)) {
-              const totalCapUnits = Math.floor(dailyBase * (leadDays + 14));
+              const totalCapUnits = Math.floor(dailyBase * (effLead + 14));
               if (totalStock + q > totalCapUnits) { q = Math.max(0, totalCapUnits - totalStock); totalCapped = true; }
             }
             const demandRound = Math.round(demand);
@@ -404,21 +492,28 @@ export default function OrderRecommend() {
                 ? `우하향 추세 ${HORIZON_WEEKS}주예측 필요재고 ${fRound}개`
                 : method === '주의민감'
                 ? `주의품목 최근1주 민감가중 ${HORIZON_WEEKS}주예측 필요재고 ${fRound}개`
+                : method === '상승가속'
+                ? `우상향 추세 최신주 가속 ${HORIZON_WEEKS}주예측 필요재고 ${fRound}개`
                 : `최근가중 ${HORIZON_WEEKS}주예측 필요재고 ${fRound}개`;
               const capTxt = wasCapped ? `·재고상한 ${MAX_STOCK_WEEKS}주캡` : '';
+              const instockTxt = inStockBased ? '·재고일기준(품절일 제외)' : '';
               const floorTxt = floored ? '·최근 실판매만큼 상향(품절방지)' : '';
               const hyojaTxt = hyojaCapped ? '·효자 2주 상한' : '';
-              const totalTxt = totalCapped ? `·총재고 리드+2주 상한(${leadDays + 14}일치)` : '';
-              reason = `${methodTxt}${floorTxt}${seasonTxt}${capTxt}${hyojaTxt}${totalTxt} → 사이클 ${cycleDays}일(리드 ${leadDays})＋안전 ${safetyDays}일 수요 ${demandRound} − 재고 ${totalStock} = ${q}`;
+              const totalTxt = totalCapped ? `·총재고 리드+2주 상한(${effLead + 14}일치)` : '';
+              const leadTxt = isNewArr ? `${effLead}·신규표준` : effLead;
+              reason = `${methodTxt}${instockTxt}${floorTxt}${seasonTxt}${capTxt}${hyojaTxt}${totalTxt} → 사이클 ${cycleDays}일(리드 ${leadTxt})＋안전 ${safetyDays}일 수요 ${demandRound} − 재고 ${totalStock} = ${q}`;
               // 엑셀 사유 키워드 — 적용된 것만 순서대로(사유1~5)
               if (method === 'Holt') kws.push('우하향');
+              if (method === '상승가속') kws.push('상승가속');
               if (mult === PEAK_MULT) kws.push('시즌피크');
               else if (mult === ENDING_MULT) kws.push('끝물');
               else if (mult === OFFSEASON_MULT) kws.push('시즌밖');
               // 시즌 입력된 상품은 시즌월을 사유에 표시(입력한 그대로)
               if (parseSeasonMonths(seasonPeriod)) kws.push(`시즌 ${seasonPeriod}월`);
-              if (leadDays > DEFAULT_LEAD_DAYS) kws.push('리드타임');
+              if (isNewArr) kws.push('신규표준리드20');
+              else if (leadDays > DEFAULT_LEAD_DAYS) kws.push('리드타임');
               if (wasCapped) kws.push('재고상한');
+              if (inStockBased) kws.push('재고일기준');
               if (isCautionRow) kws.push('주의품목');
               if (floored) kws.push('품절방지 상향');
               if (hyojaCapped) kws.push('효자2주상한');
@@ -634,6 +729,7 @@ export default function OrderRecommend() {
                 ['죽은재고', '발주 없음 + 최근 14일 실판매 3개 미만(소진/할인 대상)'],
                 ['제외', '최종마감·품질확인서 등 상태 제외'],
                 ['데이터없음', '수요예측 매칭 데이터 없음'],
+                ['신규확인', '쿠팡재고 생긴 지 14일 미만(진짜 신규) — 최근 판매패턴으로 초도만 추천, 반짝판매는 보류'],
               ].map(([t, d]) => {
                 const c = TAG_COLORS[t];
                 return (<div key={t}><span style={{ display: 'inline-block', minWidth: 78, textAlign: 'center', padding: '1px 8px', borderRadius: 10, fontSize: 11, fontWeight: 600, background: c.bg, color: c.fg, marginRight: 6 }}>{t}</span>{d}</div>);
