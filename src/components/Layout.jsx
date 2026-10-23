@@ -33,6 +33,8 @@ const navItems = [
     { label: '인증관리', path: '/issue/certification' },
   ]},
   { id: 'etc', label: '기타관리', children: [
+    { section: '출고/카톤' },
+    { label: '카톤 규격 관리', path: '/carton-spec' },
     { section: '부자재관리' },
     { label: '부자재 목록', path: '/supplies' },
     { label: '부자재 발주', path: '/supplies/order' },

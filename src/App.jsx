@@ -35,6 +35,7 @@ import ActivityLog from './pages/ActivityLog';
 import CnSettlementUpload from './pages/CnSettlementUpload';
 import CnSettlementDashboard from './pages/CnSettlementDashboard';
 import CnSettlementHistory from './pages/CnSettlementHistory';
+import CartonSpec from './pages/CartonSpec';
 import HelpAdmin from './pages/HelpAdmin';
 
 // 딥링크(주소창 직접 접속·외부 링크)로 최초 접속하면 홈으로 보냄.
@@ -92,6 +93,7 @@ function App() {
           <Route path="/issue/certification" element={<CertificationManagement />} />
           <Route path="/supplies" element={<SuppliesList />} />
           <Route path="/supplies/order" element={<SuppliesOrder />} />
+          <Route path="/carton-spec" element={<CartonSpec />} />
           <Route path="/activity-log" element={<ActivityLog />} />
           <Route path="/cn-settlement/upload" element={<CnSettlementUpload />} />
           <Route path="/cn-settlement/dashboard" element={<CnSettlementDashboard />} />
