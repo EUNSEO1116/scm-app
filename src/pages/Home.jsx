@@ -335,20 +335,50 @@ export default function Home() {
         // 구버전 캐시면 시각과 무관하게 딱 1회 강제 재계산 → 이후 정상(내일 12시) 스케줄 복귀.
         const CACHE_VERSION = 8;
 
-        // DB 캐시 확인
+        // 월 품절률(카드) + 월 품절률 요약(표)은 품절 데이터(rate_snapshots)를 단일 소스로 한다.
+        // dashboard_cache에 품절률을 "굽지 않고" 매 로드마다 rate_snapshots에서 새로 산출한다.
+        // → 품절 데이터가 바뀌면(집계 로직 변경·재캐싱·수동제외) 홈 월 품절률도 자동으로 함께 바뀐다.
+        //   (재고=가용/장기 무거운 계산만 하루 1회 캐시)
+        const computeRateView = async () => {
+          try {
+            const prefix = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}`;
+            const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+            const store = await ensureDailyRateSnapshots(`${prefix}01`, `${prefix}${String(lastDay).padStart(2, '0')}`);
+            const snaps = Object.values(store).filter(s => s.date && String(s.date).startsWith(prefix));
+            const rates = snaps.map(s => s.rate);
+            const soldoutRate = rates.length > 0 ? Math.round(rates.reduce((a, b) => a + b, 0) / rates.length * 100) / 100 : null;
+            const oppRates = snaps.map(s => s.oppRate ?? 0);
+            const avgOpp = oppRates.length > 0 ? Math.round(oppRates.reduce((a, b) => a + b, 0) / oppRates.length * 100) / 100 : null;
+            const daily = snaps.slice().sort((a, b) => String(b.date).localeCompare(String(a.date)));
+            return { soldoutRate, rateView: { avg: soldoutRate, avgOpp, dayCount: daily.length, daily } };
+          } catch { return { soldoutRate: null, rateView: { avg: null, avgOpp: null, dayCount: 0, daily: [] } }; }
+        };
+
+        // DB 캐시 확인 — 재고(가용/장기) 무거운 계산만 캐시한다.
         const cached = await dbStoreGet('dashboard_cache').catch(() => null);
         const forceRecalc = !cached || cached.version !== CACHE_VERSION;
         if (cached && !forceRecalc && cached.calculatedAt >= todayNoon) {
-          setDashboardData(cached.data);
-          if (cached.panelData) setPanelData(cached.panelData);
+          // 재고는 캐시값, 품절률은 rate_snapshots에서 항상 최신으로 합쳐 표시하고 DB에도 동기화한다.
+          const { soldoutRate, rateView } = await computeRateView();
+          const mergedData = { ...cached.data, soldoutRate };
+          const mergedPanel = { ...(cached.panelData || {}), rateView };
+          setDashboardData(mergedData);
+          setPanelData(mergedPanel);
+          await dbStoreSet('dashboard_cache', { ...cached, data: mergedData, panelData: mergedPanel }, { skipLog: true }).catch(() => {});
           return;
         }
-        // 12시 이전이면 어제 캐시라도 먼저 표시
+        // 12시 이전이면 어제 캐시(재고)라도 먼저 표시 + 품절률은 최신
         if (cached && cached.data) setDashboardData(cached.data);
         if (cached && cached.panelData) setPanelData(cached.panelData);
 
-        // 12시 이전이면 새로 계산하지 않음 (단, 구버전 강제 재계산은 예외)
-        if (!forceRecalc && now.getTime() < todayNoon) return;
+        // 12시 이전이면 재고는 새로 계산하지 않되, 품절률은 최신으로 갱신한다 (단, 구버전 강제 재계산은 예외)
+        if (!forceRecalc && now.getTime() < todayNoon) {
+          const { soldoutRate, rateView } = await computeRateView();
+          setDashboardData({ ...(cached?.data || {}), soldoutRate });
+          setPanelData({ ...(cached?.panelData || {}), rateView });
+          await dbStoreSet('dashboard_cache', { ...cached, data: { ...(cached?.data || {}), soldoutRate }, panelData: { ...(cached?.panelData || {}), rateView } }, { skipLog: true }).catch(() => {});
+          return;
+        }
 
         // 새로 계산
         const calcRes = await fetch(TSV_CALC);
@@ -419,23 +449,8 @@ export default function Home() {
         const availableCount = totalCount - longTermCount;
         const availableCost = totalCost - longTermCost;
 
-        let soldoutRate = null;
-        let rateView = { avg: null, avgOpp: null, dayCount: 0, daily: [] };
-        try {
-          // 이번 달 데이터 있는 날(평일 정식 + 주말 원천)의 "일별 품절률 평균"
-          // 영구 저장된 일 품절률 스냅샷을 읽는다(매일 12시 1회 계산·저장, 이후 읽기만).
-          // 분모 = 데이터 있는 날 수 / 제외 = 그 날짜 excludeSnapshot 그대로
-          const prefix = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}`;
-          const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-          const store = await ensureDailyRateSnapshots(`${prefix}01`, `${prefix}${String(lastDay).padStart(2, '0')}`);
-          const snaps = Object.values(store).filter(s => s.date && String(s.date).startsWith(prefix));
-          const rates = snaps.map(s => s.rate);
-          if (rates.length > 0) soldoutRate = Math.round(rates.reduce((a, b) => a + b, 0) / rates.length * 100) / 100;
-          const oppRates = snaps.map(s => s.oppRate ?? 0);
-          const avgOpp = oppRates.length > 0 ? Math.round(oppRates.reduce((a, b) => a + b, 0) / oppRates.length * 100) / 100 : null;
-          const daily = snaps.slice().sort((a, b) => String(b.date).localeCompare(String(a.date)));
-          rateView = { avg: soldoutRate, avgOpp, dayCount: daily.length, daily };
-        } catch {}
+        // 월 품절률(카드) + 요약(표): 단일 소스 rate_snapshots에서 산출 (위 computeRateView와 동일 경로)
+        const { soldoutRate, rateView } = await computeRateView();
 
         // 가용재고 요약: 일평균판매(30일합/데이터일수) 기준 그룹
         const dailyAvgOf = (oid) => (availDays > 0 ? (salesSum[oid] || 0) / availDays : 0);

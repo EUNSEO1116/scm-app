@@ -223,12 +223,13 @@ export async function ensureUploadSoldoutCache(dateKey, { force = false } = {}) 
     // 6월+ 원천은 업로드 당시 status/barcode가 동결돼 있다(hasFrozen). 이 경우 "당시 모수"를 그대로 쓰기 위해
     // 현재 시트(쿠팡바코드·재고계산기) 교차를 요구하지 않는다 → 시트가 바뀌어도 과거 모수가 흔들리지 않음(드리프트 방지).
     // status가 없는 옛 업로드만 종전처럼 현재 시트 멤버십을 요구한다.
-    const hasFrozen = item.status !== undefined;
-    if (!hasFrozen) {
-      if (!bc) continue;                 // 쿠팡바코드에 없으면 제외(옛 업로드)
-      if (!cMap[item.optionId]) continue; // 재고계산기에 없으면 제외(옛 업로드)
-    }
+    // 상품 유니버스는 평일 정식 집계(SoldOutAnalysis.jsx)와 동일하게 쿠팡바코드 ∩ 재고계산기 교차로 한정한다.
+    // status만으로는 추적대상을 가릴 수 없다 — 업로드가 비추적 행에도 status=''를 찍어서,
+    // 'status가 있으면 시트 교차 생략(hasFrozen)'으로 두면 바코드 없는 전 품목이 품절로 들어온다.
+    if (!bc) continue;                  // 쿠팡바코드 시트에 없으면 제외
+    if (!cMap[item.optionId]) continue; // 재고계산기에 없으면 제외
     // status는 그날 값(raw에 동결된 당시 status) 우선, 없으면(옛 업로드) 현재 시트값으로 폴백.
+    const hasFrozen = item.status !== undefined;
     const effStatus = hasFrozen ? (item.status || '') : bc.status;
     if (shouldExclude(effStatus)) continue;                   // 제외등급 완전 제외(그날 status 기준)
     // 신규 상품: 30일간 한 번도 재고 > 0이 된 적 없으면 제외
