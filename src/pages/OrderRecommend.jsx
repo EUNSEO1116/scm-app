@@ -32,6 +32,10 @@ const PEAK_MULT = 1.2;        // 시즌피크: 입고예정일이 시즌 한가�
 const ENDING_MULT = 0.7;      // 끝물: 입고예정일이 시즌 마지막 달
 const OFFSEASON_MULT = 0.2;   // 시즌밖 입고: 시즌 종료 후 도착 — 트리클(소량)만 채움
 const SEASON_OVER_MULT = 0;   // 시즌 종료 후 도착(입고 시점에 이미 시즌 지남) — 발주 제외
+// DB 시즌월 기반 배수(×1.2/×0.7/×0 등) 임시 비활성화 플래그.
+// false: DB 시즌월 무시(mult=1 기본) — 상태 키워드 '시즌ON'(×1.2)·'시즌OFF'(×0)만 적용.
+// 복원하려면 true로 변경하면 seasonMult(DB 시즌월) 로직이 그대로 되살아난다.
+const SEASON_MONTH_MULT_ENABLED = false;
 
 const VOC_ACTIVE_STATUS = ['처리중', '시작전'];
 const VOC_TARGET_TYPE = ['상품문제', '재수배'];
@@ -441,7 +445,8 @@ export default function OrderRecommend() {
             const arrivalDate = new Date(now);
             arrivalDate.setDate(arrivalDate.getDate() + effLead);
             const seasonPeriod = periodOf(optionId);
-            let mult = seasonMult(seasonPeriod, arrivalDate);
+            // DB 시즌월 보정은 플래그로 on/off. off면 mult=1(보정 없음) — 상태 '시즌ON/OFF'만 아래에서 적용.
+            let mult = SEASON_MONTH_MULT_ENABLED ? seasonMult(seasonPeriod, arrivalDate) : 1;
             // 상태 키워드가 DB 시즌기간보다 우선: '시즌ON' → 무조건 피크(×1.2), '시즌OFF' → 무조건 발주제외(×0).
             // 예) 지금 10월·DB는 8~9월이라 날짜상 시즌이 지났어도, 상태에 '시즌ON'이면 ×1.2로 추천.
             const seasonKwOn = isSeasonOn(status);
@@ -698,6 +703,11 @@ export default function OrderRecommend() {
                 예) 4주 전부터 <code>10·20·30·40</code>개 팔렸으면 단순평균은 25지만, 이 가중이면 <b>약 31개</b> 쪽으로 계산 → 최근 흐름을 강하게 반영.</div>
             </div></div>
           <div style={{ marginBottom: 6 }}><b>③ 시즌 보정 — "물건이 도착하는 날" 기준</b>
+            {!SEASON_MONTH_MULT_ENABLED && (
+              <div style={{ marginTop: 4, padding: '8px 12px', background: '#fef7e0', border: '1px solid #f0d58a', borderRadius: 8, color: '#9a6700', fontSize: 12 }}>
+                ⚠ 현재 <b>DB 시즌월 기반 보정(아래 ×1.2/×0.7/×0)은 임시 비활성화</b> 상태입니다. 상태 키워드 <b style={{ color: '#c5221f' }}>'시즌ON'</b>(×1.2)·<b>'시즌OFF'</b>(발주 제외)만 적용되며, 그 외 상품은 DB 시즌월과 무관하게 일반 수요로 발주 추천됩니다.
+              </div>
+            )}
             <div style={{ marginTop: 2 }}>오늘 발주분이 입고되는 날(<b>오늘 + 리드타임</b>)이 시즌의 어디에 떨어지는지로 계수를 정합니다.</div>
             <div style={{ marginTop: 6, marginLeft: 14, padding: '8px 12px', background: '#fff', border: '1px solid #e8eaed', borderRadius: 8, color: '#5f6368', fontSize: 12 }}>
               <div>• 입고가 <b>시즌 한가운데</b> → <b style={{ color: '#c5221f' }}>×1.2</b> (피크, 넉넉히)</div>
