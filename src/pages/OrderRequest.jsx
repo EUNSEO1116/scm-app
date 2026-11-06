@@ -114,9 +114,11 @@ export default function OrderRequest() {
           const cols = barcodeRows[i];
           const barcode = (cols[5] || '').trim();
           const brand = (cols[8] || '').trim();
+          const status = (cols[9] || '').trim(); // 상태(효자/기준미달/FBC 등 자유텍스트)
           const center = (cols[11] || '').trim();
+          const orderUnit = (cols[12] || '').trim(); // 발주단위
           const note = (cols[13] || '').trim(); // 비고
-          if (barcode) barcodeMap[barcode] = { brand, center, note };
+          if (barcode) barcodeMap[barcode] = { brand, status, center, orderUnit, note };
         }
       }
 
@@ -159,6 +161,18 @@ export default function OrderRequest() {
           .map(it => String(it.barcode).trim())
       );
 
+      // 카톤 규격 아카이브: SKU → 박스입수량(확정값만, 미확정값은 매칭 제외)
+      const cartonArchive = await dbStoreGet('carton_spec_archive');
+      const cartonQty = {};
+      if (cartonArchive && typeof cartonArchive === 'object' && !Array.isArray(cartonArchive)) {
+        for (const sku of Object.keys(cartonArchive)) {
+          const rec = cartonArchive[sku];
+          if (!rec) continue;
+          const q = rec.confirmedMax;
+          if (q != null && q > 0) cartonQty[sku] = q;
+        }
+      }
+
       // 재고 계산기: Q열(col16)에 수량이 있는 행만
       const rows = [];
       if (calcRes.ok) {
@@ -193,6 +207,9 @@ export default function OrderRequest() {
             orderNo,
             totalWeeks,
             note,
+            status: bcInfo.status || '',
+            orderUnit: bcInfo.orderUnit || '',
+            perBox: cartonQty[sku] || 0,
             sewing: sp.sewing || '',
             fbcItem: sp.fbcItem || '',
             oneTime: sp.oneTime || '',
@@ -238,10 +255,13 @@ export default function OrderRequest() {
   const totalQty = data ? data.reduce((s, r) => s + r.qty, 0) : 0;
 
   // 탭 구분 복사 (엑셀 붙여넣기용) — 비고 안의 줄바꿈은 제거
+  // G열=박스수(수량÷입수량, 입수량 없으면 빈칸), H열=상태에 FBC 포함 시 'FBC', I열=발주단위
   const buildTsv = (rows) => {
-    return rows.map(r =>
-      [r.orderNo, r.productName, r.sku, r.qty, (r.note || '').replace(/[\r\n]+/g, ' '), '', r.center, r.sewing || '', r.fbcItem || '', r.oneTime || ''].join('\t')
-    ).join('\n');
+    return rows.map(r => {
+      const box = (r.perBox && r.perBox > 0) ? String(Math.round((r.qty / r.perBox) * 100) / 100) : '';
+      const fbc = /fbc/i.test(r.status || '') ? 'FBC' : '';
+      return [r.orderNo, r.productName, r.sku, r.qty, (r.note || '').replace(/[\r\n]+/g, ' '), '', box, fbc, r.orderUnit || ''].join('\t');
+    }).join('\n');
   };
 
   // 복사 후 사진 있는 상품 확인 + 상품개선 재수배 매칭 → 모달 표시
