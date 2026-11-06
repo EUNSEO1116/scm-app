@@ -1,5 +1,6 @@
-import { useState, useMemo, useEffect, useCallback } from 'react';
+import { useState, useMemo, useEffect, useCallback, Fragment } from 'react';
 import { useLocation } from 'react-router-dom';
+import * as XLSX from 'xlsx';
 import { dbStoreGet, dbStoreSet } from '../utils/dbApi';
 
 const SHEET_ID = '1NXhW_gG0b-gXuVqrhbY9ErWi8uO_7pXIy-NTo4FbE1I';
@@ -75,6 +76,7 @@ const COL = {
   shipStatus: 9,    // J: 출고 현황
   cnShipDate: 10,   // K: CN 중국 출고일
   incheonDate: 11,  // L: 인천 실제 도착일
+  box: 15,          // P: 출고량예상(박스수)
   orderDate: 16,    // Q: 발주일
   colT: 19,         // T: (마지막열)
   memo: 18,         // S: 메모
@@ -227,6 +229,83 @@ function computeShipFlags(rows, stockMap) {
       currentStockInland += safeNum(row.qty);
     }
   }
+}
+
+// ===== 급한 출고 추출 (어제/오늘 비교용) =====
+// 유니버스: CN상태가 CN창고도착 / 작업대기 / 내륙운송중 인 발주
+// 급함 판정: baseStock(재고+입고예정+출고완료수량) ÷ 주판매량 < 임계값(기본 2주)
+// 예상판매주(V열)가 '-'이면 stockMap.weeklySales가 W열(총재고 예상판매주)로 폴백돼 있음
+const URGENT_THRESHOLD_DEFAULT = 2;
+const SNAPSHOT_PREFIX = 'ship_urgent_snapshot_'; // + YYYYMMDD
+
+function dateKeyStr(d) {
+  return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function isUrgentUniverse(r) {
+  return r.cnStatus.includes('CN 창고도착') || r.cnStatus.includes('작업 대기') || (r.cnStatus.includes('내륙') && r.cnStatus.includes('운송'));
+}
+
+// rows + stockMap → { items: 추천 발주 행[], universe: {key:{w,base,ws,rec}} }
+function computeUrgentShip(rows, stockMap, thresholdWeeks) {
+  const bySku = {};
+  for (const r of rows) { (bySku[r.sku] = bySku[r.sku] || []).push(r); }
+  const items = [];
+  const universe = {};
+  for (const [sku, group] of Object.entries(bySku)) {
+    const info = stockMap[sku];
+    const weeklySales = info ? info.weeklySales : 0;
+    const stock = info ? info.stock : 0;
+    const incoming = info ? info.incoming : 0;
+    const vEmpty = info ? info.weeks === null : true;
+    // 출고완료된 수량(발주장부 기준) → 곧 입고될 물량
+    let shippedQty = 0;
+    for (const r of group) {
+      if (r.cnStatus.includes('출고 완료') || r.cnStatus.includes('출고완료')) shippedQty += safeNum(r.qty);
+    }
+    const baseStock = stock + incoming + shippedQty;
+    const effWeeks = weeklySales > 0 ? Math.round(baseStock / weeklySales * 10) / 10 : null;
+    const rec = weeklySales > 0 && effWeeks !== null && effWeeks < thresholdWeeks;
+    const urgentOrders = group.filter(isUrgentUniverse);
+    for (const r of urgentOrders) {
+      const key = r.colT || r.orderNo;
+      universe[key] = { w: effWeeks, base: baseStock, ws: Math.round(weeklySales * 10) / 10, rec };
+      if (rec) {
+        items.push({ ...r, _effWeeks: effWeeks, _baseStock: baseStock, _weeklySales: weeklySales, _stock: stock, _incoming: incoming, _shippedQty: shippedQty, _vEmpty: vEmpty });
+      }
+    }
+  }
+  // 급한순(주수 오름차순) 정렬
+  items.sort((a, b) => a._effWeeks - b._effWeeks);
+  return { items, universe };
+}
+
+// 오늘 추천 사유
+function urgentReasonToday(it, threshold) {
+  const src = it._vEmpty ? ' · V열(예상판매주) 비어있어 W열(총재고 예상판매주) 기준' : '';
+  return `예상판매주 ${it._effWeeks}주 < ${threshold}주${src} / base재고 ${it._baseStock}(재고 ${it._stock} + 입고예정 ${it._incoming} + 출고완료 ${it._shippedQty}) ÷ 주판매 ${it._weeklySales.toFixed(1)}`;
+}
+
+// 어제 상태(스냅샷) 기반 미추천 사유
+function urgentReasonYesterday(ySnap, key, threshold) {
+  if (!ySnap) return '비교할 어제 스냅샷이 없음 (오늘이 첫 기준)';
+  const y = ySnap[key];
+  if (!y) return '어제는 출고 대상 상태가 아니었음 (중국 생산·발송대기 등)';
+  if (y.rec) return '어제도 추천됨';
+  if (y.w === null) return '어제는 주판매량 0(산출불가)이라 미추천';
+  return `어제 예상판매주 ${y.w}주 (${threshold}주 이상이라 미추천)`;
+}
+
+// 붙여넣은 발주번호 목록 → 중복/비중복/추천대조 분석
+function parseDupList(text, recSet) {
+  const list = text.split(/[\s,]+/).map(s => s.trim()).filter(Boolean);
+  const counts = {};
+  for (const c of list) counts[c] = (counts[c] || 0) + 1;
+  const uniq = [...new Set(list)];
+  const uniqSet = new Set(uniq);
+  const rows = uniq.map(c => ({ code: c, count: counts[c], dup: counts[c] > 1, inRec: recSet.has(c) }));
+  const missing = [...recSet].filter(c => !uniqSet.has(c)); // 추천엔 있는데 붙여넣기엔 없음
+  return { rows, missing, total: list.length, uniqCount: uniq.length };
 }
 
 // 공백 제거 정규화 ("작업 대기" == "작업대기", "CN 출고완료" == "CN출고완료")
@@ -455,6 +534,15 @@ export default function OrderBook() {
   const [bulkOpen, setBulkOpen] = useState(false);
   const [bulkText, setBulkText] = useState('');
   const [bulkParsed, setBulkParsed] = useState(null); // [{colT, reply, raw, matched}]
+  // 급한 출고 추출기
+  const [stockMap, setStockMap] = useState(null);
+  const [shipOpen, setShipOpen] = useState(false);
+  const [shipThreshold, setShipThreshold] = useState(URGENT_THRESHOLD_DEFAULT);
+  const [yesterdaySnap, setYesterdaySnap] = useState(null);
+  const [snapBaseDate, setSnapBaseDate] = useState(null);
+  const [shipExpanded, setShipExpanded] = useState(() => new Set()); // 사유 토글된 key
+  const [shipDupText, setShipDupText] = useState('');
+  const [shipDupResult, setShipDupResult] = useState(null);
 
   // DB에서 초기 데이터 로드
   useEffect(() => {
@@ -515,6 +603,97 @@ export default function OrderBook() {
     setBulkOpen(false);
     setBulkText('');
     setBulkParsed(null);
+  };
+
+  // ===== 급한 출고 추출 (화면 임계값 반영) =====
+  const urgentAll = useMemo(
+    () => (data && stockMap) ? computeUrgentShip(data, stockMap, shipThreshold) : null,
+    [data, stockMap, shipThreshold]
+  );
+
+  const isNewVsYesterday = useCallback((key) => {
+    if (!yesterdaySnap) return false;
+    const y = yesterdaySnap[key];
+    return !y || !y.rec; // 어제 스냅샷에 없었거나, 있었어도 추천 아니었음
+  }, [yesterdaySnap]);
+
+  const newItems = useMemo(() => {
+    if (!urgentAll) return [];
+    return urgentAll.items.filter(it => isNewVsYesterday(it.colT || it.orderNo));
+  }, [urgentAll, isNewVsYesterday]);
+
+  const boxTotalNonFbc = useMemo(() => {
+    if (!urgentAll) return 0;
+    let t = 0;
+    for (const it of urgentAll.items) { if (it.category !== 'FBC') t += safeNum(it.box); }
+    return Math.round(t * 10) / 10;
+  }, [urgentAll]);
+
+  const toggleShipReason = (key) => {
+    setShipExpanded(prev => {
+      const n = new Set(prev);
+      if (n.has(key)) n.delete(key); else n.add(key);
+      return n;
+    });
+  };
+
+  const copyShipList = (items) => {
+    const text = items.map(it => it.colT || it.orderNo).join('\n');
+    if (!text) { alert('복사할 발주번호가 없습니다.'); return; }
+    navigator.clipboard?.writeText(text).then(
+      () => alert(`${items.length}건 발주번호를 복사했습니다.`),
+      () => alert('복사 실패 — 브라우저 권한을 확인하세요.')
+    );
+  };
+
+  const handleShipExcel = () => {
+    if (!urgentAll || urgentAll.items.length === 0) { alert('추출된 항목이 없습니다.'); return; }
+    const header = ['발주번호', '발주번호(A열)', '상품명', 'SKU', '구분', 'CN상태', '예상판매주', '재고', '입고예정', '주판매', '수량', '박스수', '발주일', '어제대비', '오늘 사유', '어제 사유'];
+    const aoa = [header];
+    for (const it of urgentAll.items) {
+      const key = it.colT || it.orderNo;
+      aoa.push([
+        key, it.orderNo, it.productName, it.sku, it.category || '', it.cnStatus,
+        it._effWeeks, it._stock, it._incoming, Math.round(it._weeklySales * 10) / 10,
+        safeNum(it.qty), safeNum(it.box), it.orderDate, isNewVsYesterday(key) ? '신규' : '',
+        urgentReasonToday(it, shipThreshold),
+        urgentReasonYesterday(yesterdaySnap, key, URGENT_THRESHOLD_DEFAULT),
+      ]);
+    }
+    aoa.push([]);
+    aoa.push(['합계(FBC제외 박스)', '', '', '', '', '', '', '', '', '', '', boxTotalNonFbc]);
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, '급한출고');
+
+    // 중복 검증 시트 (붙여넣은 발주번호가 있을 때만)
+    if (shipDupText.trim()) {
+      const recSet = new Set(urgentAll.items.map(it => it.colT || it.orderNo));
+      const dup = parseDupList(shipDupText, recSet);
+      const dupList = dup.rows.filter(r => r.dup);   // 입력 2회 이상
+      const uniqList = dup.rows.filter(r => !r.dup); // 고유(1회) = 비중복
+      const n = Math.max(dupList.length, uniqList.length);
+      const aoa2 = [[`중복(${dupList.length}종)`, '입력횟수', '설명', '', `비중복(${uniqList.length}건)`, '추천대조', '설명']];
+      for (let i = 0; i < n; i++) {
+        const d = dupList[i], u = uniqList[i];
+        aoa2.push([
+          d ? d.code : '', d ? d.count : '', d ? '시트에 있음' : '', '',
+          u ? u.code : '', u ? (u.inRec ? '겹침(추천O)' : '추가(추천X)') : '', u ? '시트에 없었음 (찐 필요여부 확인 필요)' : '',
+        ]);
+      }
+      aoa2.push([]);
+      aoa2.push([`누락(추천엔 있는데 붙여넣기엔 없음) ${dup.missing.length}건`]);
+      for (const m of dup.missing) aoa2.push([m]);
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa2), '중복검증');
+    }
+
+    XLSX.writeFile(wb, `급한출고_${dateKeyStr(new Date())}.xlsx`);
+  };
+
+  const handleShipDupCheck = () => {
+    if (!shipDupText.trim()) { setShipDupResult(null); return; }
+    const recSet = new Set((urgentAll?.items || []).map(it => it.colT || it.orderNo));
+    setShipDupResult(parseDupList(shipDupText, recSet));
   };
 
   const fetchData = useCallback(async () => {
@@ -601,6 +780,7 @@ export default function OrderBook() {
           shipStatus: (cols[COL.shipStatus] || '').trim(),
           cnShipDate: (cols[COL.cnShipDate] || '').trim(),
           incheonDate: (cols[COL.incheonDate] || '').trim(),
+          box: (cols[COL.box] || '').trim(),
           orderDate: (cols[COL.orderDate] || '').trim(),
           colT: (cols[COL.colT] || '').trim(),
           memo: (cols[COL.memo] || '').trim(),
@@ -653,6 +833,24 @@ export default function OrderBook() {
       }
 
       setData(rows);
+      setStockMap(stockMap);
+
+      // ===== 급한 출고 스냅샷 (고정 2주 기준) — 어제/오늘 비교용 =====
+      try {
+        const { universe } = computeUrgentShip(rows, stockMap, URGENT_THRESHOLD_DEFAULT);
+        const dayKeys = [];
+        for (let i = 0; i < 8; i++) { const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - i); dayKeys.push(dateKeyStr(d)); }
+        const snaps = await Promise.all(dayKeys.map(k => dbStoreGet(SNAPSHOT_PREFIX + k).catch(() => null)));
+        // 오늘자 스냅샷이 없으면 오늘 기준선으로 1회 저장
+        if (!snaps[0]) {
+          dbStoreSet(SNAPSHOT_PREFIX + dayKeys[0], universe, { skipLog: true }).catch(() => {});
+        }
+        // 어제 = 오늘 이전 날짜 중 가장 최근 스냅샷
+        let ySnap = null, yDate = null;
+        for (let i = 1; i < dayKeys.length; i++) { if (snaps[i]) { ySnap = snaps[i]; yDate = dayKeys[i]; break; } }
+        setYesterdaySnap(ySnap);
+        setSnapBaseDate(yDate);
+      } catch { /* 스냅샷 실패해도 추출 기능은 동작 */ }
     } catch (e) {
       setError(e.message);
     }
@@ -812,6 +1010,9 @@ export default function OrderBook() {
           {filtered.length}건{data ? ` / 전체 ${data.length}건` : ''}
         </span>
         <button className="btn btn-outline btn-sm" onClick={fetchData}>🔄 새로고침</button>
+        <button className="btn btn-primary btn-sm" style={{ marginLeft: 8 }} onClick={() => setShipOpen(true)}>
+          🚚 급한 출고 추출
+        </button>
         {activeCard === 'remind' && (
           <button className="btn btn-primary btn-sm" style={{ marginLeft: 8 }} onClick={() => { setBulkOpen(true); setBulkText(''); setBulkParsed(null); }}>
             📋 답변 일괄입력
@@ -891,6 +1092,190 @@ export default function OrderBook() {
                 </button>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* 급한 출고 추출 모달 */}
+      {shipOpen && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+          onClick={() => setShipOpen(false)}>
+          <div style={{ background: '#fff', borderRadius: 12, padding: 24, width: 920, maxWidth: '96vw', maxHeight: '88vh', overflow: 'auto', boxShadow: '0 8px 32px rgba(0,0,0,0.2)', textAlign: 'center' }}
+            onClick={e => e.stopPropagation()}>
+            <h3 style={{ margin: '0 0 6px', fontSize: 17 }}>🚚 급한 출고 추출</h3>
+            <p style={{ fontSize: 12, color: '#666', margin: '0 0 14px' }}>
+              CN창고도착 · 작업대기 · 내륙운송중 발주 중, 출고완료분이 도착해도 예상판매주가 임계값 미만인 것만 추립니다.
+            </p>
+
+            {/* 임계값 + 요약 */}
+            <div style={{ display: 'flex', gap: 10, alignItems: 'center', justifyContent: 'center', flexWrap: 'wrap', marginBottom: 14 }}>
+              <label style={{ fontSize: 13 }}>임계값(주):
+                <input type="number" step="0.5" min="0.5" value={shipThreshold}
+                  onChange={e => setShipThreshold(Math.max(0.5, Number(e.target.value) || URGENT_THRESHOLD_DEFAULT))}
+                  style={{ width: 64, marginLeft: 6, padding: '4px 6px', border: '1px solid #ddd', borderRadius: 6, textAlign: 'center' }} />
+              </label>
+              <span style={{ fontSize: 13, color: '#333' }}>추출 <b>{urgentAll?.items.length || 0}</b>건</span>
+              <span style={{ fontSize: 13, color: '#333' }}>박스합계(FBC제외) <b>{boxTotalNonFbc}</b></span>
+              <span style={{ fontSize: 13, color: '#d93025' }}>어제 대비 신규 <b>{newItems.length}</b>건</span>
+            </div>
+
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap', marginBottom: 16 }}>
+              <button className="btn btn-primary btn-sm" onClick={handleShipExcel}>📥 엑셀 다운로드</button>
+              <button className="btn btn-outline btn-sm" onClick={() => copyShipList(urgentAll?.items || [])}>📋 전체 발주번호 복사</button>
+              <button className="btn btn-outline btn-sm" onClick={() => copyShipList(newItems)}>🆕 신규만 복사</button>
+              <button className="btn btn-outline btn-sm" onClick={() => setShipOpen(false)}>닫기</button>
+            </div>
+
+            {/* 어제 대비 신규 추천 */}
+            <div style={{ border: '1px solid #f3c2c0', borderRadius: 8, overflow: 'hidden', marginBottom: 18, background: '#fff8f8' }}>
+              <div style={{ padding: '8px 12px', background: '#fdecea', fontSize: 14, fontWeight: 600, color: '#c5221f' }}>
+                🆕 어제는 추천 안 했는데 오늘 추천 ({newItems.length}건)
+                <span style={{ fontWeight: 400, fontSize: 11, color: '#999', marginLeft: 8 }}>
+                  {snapBaseDate ? `비교 기준: ${snapBaseDate.slice(0, 4)}-${snapBaseDate.slice(4, 6)}-${snapBaseDate.slice(6, 8)}` : '비교할 어제 스냅샷 없음 (오늘이 첫 기준선 → 내일부터 비교 가능)'}
+                </span>
+              </div>
+              {newItems.length === 0 ? (
+                <div style={{ padding: 14, fontSize: 12, color: '#999' }}>신규 없음</div>
+              ) : (
+                <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
+                  <thead>
+                    <tr style={{ background: '#fbe3e1' }}>
+                      <th style={{ padding: '6px 6px', textAlign: 'center' }}>발주번호</th>
+                      <th style={{ padding: '6px 6px', textAlign: 'center' }}>상품명</th>
+                      <th style={{ padding: '6px 6px', textAlign: 'center' }}>구분</th>
+                      <th style={{ padding: '6px 6px', textAlign: 'center' }}>CN상태</th>
+                      <th style={{ padding: '6px 6px', textAlign: 'center' }}>예상판매주</th>
+                      <th style={{ padding: '6px 6px', textAlign: 'center' }}>박스수</th>
+                      <th style={{ padding: '6px 6px', textAlign: 'center' }}>사유</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {newItems.map((it, i) => {
+                      const key = it.colT || it.orderNo;
+                      const open = shipExpanded.has(key);
+                      return (
+                        <Fragment key={key + i}>
+                          <tr style={{ borderTop: '1px solid #f3d6d4' }}>
+                            <td style={{ padding: '6px', fontFamily: 'monospace', fontSize: 11, textAlign: 'center' }}>{key}</td>
+                            <td style={{ padding: '6px', textAlign: 'center' }}>{it.productName}</td>
+                            <td style={{ padding: '6px', textAlign: 'center' }}>{it.category || '-'}</td>
+                            <td style={{ padding: '6px', textAlign: 'center' }}>{it.cnStatus}</td>
+                            <td style={{ padding: '6px', textAlign: 'center', color: '#c5221f', fontWeight: 600 }}>{it._effWeeks}주</td>
+                            <td style={{ padding: '6px', textAlign: 'center' }}>{safeNum(it.box)}</td>
+                            <td style={{ padding: '6px', textAlign: 'center' }}>
+                              <button className="btn btn-outline btn-sm" style={{ fontSize: 10, padding: '2px 8px' }} onClick={() => toggleShipReason(key)}>
+                                {open ? '▲ 접기' : '▼ 사유'}
+                              </button>
+                            </td>
+                          </tr>
+                          {open && (
+                            <tr style={{ background: '#fffdf5' }}>
+                              <td colSpan={7} style={{ padding: '8px 12px', textAlign: 'left', fontSize: 11, lineHeight: 1.6, color: '#555' }}>
+                                <div><b style={{ color: '#c5221f' }}>오늘 추천:</b> {urgentReasonToday(it, shipThreshold)}</div>
+                                <div><b style={{ color: '#888' }}>어제 상태:</b> {urgentReasonYesterday(yesterdaySnap, key, URGENT_THRESHOLD_DEFAULT)}</div>
+                              </td>
+                            </tr>
+                          )}
+                        </Fragment>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+            </div>
+
+            {/* 전체 추출 결과 */}
+            <div style={{ border: '1px solid #e0e0e0', borderRadius: 8, overflow: 'hidden', marginBottom: 18 }}>
+              <div style={{ padding: '8px 12px', background: '#f5f5f5', fontSize: 14, fontWeight: 600 }}>
+                전체 추출 결과 ({urgentAll?.items.length || 0}건) · 박스합계(FBC제외) {boxTotalNonFbc}
+              </div>
+              <div style={{ maxHeight: 280, overflow: 'auto' }}>
+                <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
+                  <thead>
+                    <tr style={{ background: '#fafafa', position: 'sticky', top: 0 }}>
+                      <th style={{ padding: '6px', textAlign: 'center' }}>발주번호</th>
+                      <th style={{ padding: '6px', textAlign: 'center' }}>상품명</th>
+                      <th style={{ padding: '6px', textAlign: 'center' }}>구분</th>
+                      <th style={{ padding: '6px', textAlign: 'center' }}>CN상태</th>
+                      <th style={{ padding: '6px', textAlign: 'center' }}>예상판매주</th>
+                      <th style={{ padding: '6px', textAlign: 'center' }}>수량</th>
+                      <th style={{ padding: '6px', textAlign: 'center' }}>박스수</th>
+                      <th style={{ padding: '6px', textAlign: 'center' }}>신규</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(urgentAll?.items || []).map((it, i) => {
+                      const key = it.colT || it.orderNo;
+                      return (
+                        <tr key={key + i} style={{ borderTop: '1px solid #eee' }}>
+                          <td style={{ padding: '6px', fontFamily: 'monospace', fontSize: 11, textAlign: 'center' }}>{key}</td>
+                          <td style={{ padding: '6px', textAlign: 'center' }}>{it.productName}</td>
+                          <td style={{ padding: '6px', textAlign: 'center' }}>{it.category || '-'}</td>
+                          <td style={{ padding: '6px', textAlign: 'center' }}>{it.cnStatus}</td>
+                          <td style={{ padding: '6px', textAlign: 'center', fontWeight: 600 }}>{it._effWeeks}주</td>
+                          <td style={{ padding: '6px', textAlign: 'center' }}>{safeNum(it.qty)}</td>
+                          <td style={{ padding: '6px', textAlign: 'center' }}>{it.category === 'FBC' ? '-' : safeNum(it.box)}</td>
+                          <td style={{ padding: '6px', textAlign: 'center' }}>{isNewVsYesterday(key) ? <span style={{ color: '#c5221f', fontWeight: 600 }}>신규</span> : ''}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* 발주번호 중복 검증기 */}
+            <div style={{ border: '1px solid #cfe2f3', borderRadius: 8, overflow: 'hidden', background: '#f7fbff' }}>
+              <div style={{ padding: '8px 12px', background: '#e8f0fe', fontSize: 14, fontWeight: 600, color: '#1a56c4' }}>
+                🔎 발주번호 중복 검증 (추천 리스트와 대조)
+              </div>
+              <div style={{ padding: 12 }}>
+                <textarea
+                  style={{ width: '100%', height: 90, fontSize: 12, padding: 10, border: '1px solid #ddd', borderRadius: 8, resize: 'vertical', fontFamily: 'monospace', textAlign: 'left' }}
+                  placeholder={'발주번호를 붙여넣기 (줄바꿈/공백/쉼표 구분)\n예: AE-T-261102-005\nAE-HM-261102-002'}
+                  value={shipDupText}
+                  onChange={e => { setShipDupText(e.target.value); setShipDupResult(null); }}
+                />
+                <div style={{ display: 'flex', gap: 8, justifyContent: 'center', marginTop: 10 }}>
+                  <button className="btn btn-primary btn-sm" onClick={handleShipDupCheck} disabled={!shipDupText.trim()}>검증하기</button>
+                  <button className="btn btn-outline btn-sm" onClick={() => { setShipDupText(''); setShipDupResult(null); }}>지우기</button>
+                </div>
+
+                {shipDupResult && (
+                  <div style={{ marginTop: 14 }}>
+                    <div style={{ fontSize: 12, color: '#555', marginBottom: 8 }}>
+                      입력 {shipDupResult.total}개 · 고유 {shipDupResult.uniqCount}개 · 중복 {shipDupResult.rows.filter(r => r.dup).length}종
+                    </div>
+                    <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse', marginBottom: 12 }}>
+                      <thead>
+                        <tr style={{ background: '#eef4fb' }}>
+                          <th style={{ padding: '6px', textAlign: 'center' }}>발주번호</th>
+                          <th style={{ padding: '6px', textAlign: 'center' }}>입력횟수</th>
+                          <th style={{ padding: '6px', textAlign: 'center' }}>중복</th>
+                          <th style={{ padding: '6px', textAlign: 'center' }}>추천리스트 대조</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {shipDupResult.rows.map((r, i) => (
+                          <tr key={r.code + i} style={{ borderTop: '1px solid #eee' }}>
+                            <td style={{ padding: '6px', fontFamily: 'monospace', fontSize: 11, textAlign: 'center' }}>{r.code}</td>
+                            <td style={{ padding: '6px', textAlign: 'center' }}>{r.count}</td>
+                            <td style={{ padding: '6px', textAlign: 'center' }}>{r.dup ? <span style={{ color: '#d93025', fontWeight: 600 }}>중복</span> : ''}</td>
+                            <td style={{ padding: '6px', textAlign: 'center' }}>{r.inRec ? <span style={{ color: '#188038', fontWeight: 600 }}>겹침(추천O)</span> : <span style={{ color: '#999' }}>추가(추천X)</span>}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    <div style={{ fontSize: 12, textAlign: 'left', background: '#fff', border: '1px solid #e0e0e0', borderRadius: 8, padding: 10 }}>
+                      <div style={{ fontWeight: 600, color: '#c5221f', marginBottom: 4 }}>⚠ 누락 (추천엔 있는데 붙여넣기엔 없음): {shipDupResult.missing.length}건</div>
+                      <div style={{ fontFamily: 'monospace', fontSize: 11, color: '#555', lineHeight: 1.6, wordBreak: 'break-all' }}>
+                        {shipDupResult.missing.length ? shipDupResult.missing.join(', ') : '(없음)'}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
         </div>
       )}
