@@ -10,6 +10,8 @@ const TSV_CALC = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?form
 const CSV_SPECIAL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent('특별 관리 상품')}`;
 const CSV_BARCODE = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent('쿠팡바코드')}`;
 const TSV_BARCODE = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=tsv&gid=2111556061`;
+// 대시보드 캐시 버전: 패널(가용/장기/품절률 요약) + 장기재고 집계제외 포함 버전
+const DASHBOARD_CACHE_VERSION = 9;
 
 function parseCsvRow(line) {
   const result = [];
@@ -130,7 +132,9 @@ export default function Home() {
   const [dragData, setDragData] = useState(null);
   const [dragOverKey, setDragOverKey] = useState(null);
   const [dashboardData, setDashboardData] = useState({ availableCount: 0, availableCost: 0, longTermCount: 0, longTermCost: 0, soldoutRate: null });
-  const [panelData, setPanelData] = useState({ availableView: null, longtermList: [], rateView: null });
+  const [panelData, setPanelData] = useState({ availableView: null, longtermList: [], excludedList: [], rateView: null });
+  const [exclusions, setExclusions] = useState({}); // 장기재고 수동 집계제외: { [상품명]: { excludedAt } }
+  const [exclBusy, setExclBusy] = useState(false); // 제외/복원 처리 중
   const [panelView, setPanelView] = useState('menu'); // menu | calendar | rate | available | longterm
   const [expandedDate, setExpandedDate] = useState(null); // 월 품절률: 펼쳐진 날짜 키
   const [addingDay, setAddingDay] = useState(null); // 메모 추가할 날짜 키
@@ -324,8 +328,8 @@ export default function Home() {
   useEffect(() => { fetchEvents(); fetchAlerts(); }, [fetchEvents, fetchAlerts]);
 
   // 총재고원가 대시보드 데이터 로드 (하루 1회, 12시 이후 갱신)
-  useEffect(() => {
-    (async () => {
+  // force=true 이면 캐시 무시하고 즉시 재계산(제외/복원 클릭 시), exclusionsOverride 로 최신 제외목록 주입
+  const loadDashboard = useCallback(async ({ force = false, exclusionsOverride = null } = {}) => {
       try {
         // 오늘 12시 기준 타임스탬프
         const now = new Date();
@@ -333,7 +337,7 @@ export default function Home() {
 
         // 캐시 버전: 새 패널(가용/장기/품절률 요약) 데이터 포함 버전.
         // 구버전 캐시면 시각과 무관하게 딱 1회 강제 재계산 → 이후 정상(내일 12시) 스케줄 복귀.
-        const CACHE_VERSION = 8;
+        const CACHE_VERSION = DASHBOARD_CACHE_VERSION;
 
         // 월 품절률(카드) + 월 품절률 요약(표)은 품절 데이터(rate_snapshots)를 단일 소스로 한다.
         // dashboard_cache에 품절률을 "굽지 않고" 매 로드마다 rate_snapshots에서 새로 산출한다.
@@ -356,7 +360,7 @@ export default function Home() {
 
         // DB 캐시 확인 — 재고(가용/장기) 무거운 계산만 캐시한다.
         const cached = await dbStoreGet('dashboard_cache').catch(() => null);
-        const forceRecalc = !cached || cached.version !== CACHE_VERSION;
+        const forceRecalc = force || !cached || cached.version !== CACHE_VERSION;
         if (cached && !forceRecalc && cached.calculatedAt >= todayNoon) {
           // 재고는 캐시값, 품절률은 rate_snapshots에서 항상 최신으로 합쳐 표시하고 DB에도 동기화한다.
           const { soldoutRate, rateView } = await computeRateView();
@@ -435,13 +439,31 @@ export default function Home() {
           }
         } catch {}
 
-        // 장기재고 = 과재고 '판매없음'(30일 판매 0) & 총재고≥10 & 상태 '신규' 제외
+        // 장기재고 수동 집계제외 목록 로드 + 자동 해제(상품에 최근 30일 판매가 1건이라도 생기면 영구 해제)
+        const excl = exclusionsOverride || (await dbStoreGet('longterm_exclusions').catch(() => null)) || {};
+        if (availDays > 0 && Object.keys(excl).length > 0) {
+          const prodSales = {}; // 상품명 → 30일 판매합(전옵션)
+          for (const r of calcRows) {
+            const pn = nameMap[r.oid]?.productName;
+            if (pn) prodSales[pn] = (prodSales[pn] || 0) + (salesSum[r.oid] || 0);
+          }
+          let cleared = false;
+          for (const pn of Object.keys(excl)) {
+            if ((prodSales[pn] || 0) > 0) { delete excl[pn]; cleared = true; } // 판매 발생 → 영구 해제
+          }
+          if (cleared) await dbStoreSet('longterm_exclusions', excl, { logDesc: '장기재고 집계제외 자동해제(판매발생)' }).catch(() => {});
+        }
+        const exclSet = new Set(Object.keys(excl));
+        setExclusions(excl);
+
+        // 장기재고 = 과재고 '판매없음'(30일 판매 0) & 총재고≥10 & 상태 '신규' 제외 & 수동 집계제외 제외
         let longTermCount = 0, longTermCost = 0;
         if (availDays > 0) {
           for (const r of calcRows) {
             if (r.totalStock < OVERSTOCK_MIN_STOCK) continue;
             if (classifyGroup(r.status) === '신규') continue;
             if ((salesSum[r.oid] || 0) > 0) continue; // 판매 있음 → 제외
+            if (exclSet.has(nameMap[r.oid]?.productName)) continue; // 수동 집계제외
             longTermCount += r.totalStock;
             longTermCost += r.totalStock * r.unitCost;
           }
@@ -469,25 +491,78 @@ export default function Home() {
 
         // 장기재고(판매없음) 목록: 30일 판매 0 & 총재고≥10 & 상태 '신규' 제외
         const longtermList = [];
+        const excludedList = []; // 수동 집계제외된 장기재고(표시/합계용)
         if (availDays > 0) {
           for (const r of calcRows) {
             if (r.totalStock < OVERSTOCK_MIN_STOCK) continue;
             if (classifyGroup(r.status) === '신규') continue;
             if ((salesSum[r.oid] || 0) > 0) continue;
             const nm = nameMap[r.oid] || {};
-            longtermList.push({ productName: nm.productName || r.oid, optionName: nm.optionName || '', status: r.status || '', stock: r.totalStock, cost: r.totalStock * r.unitCost });
+            const pn = nm.productName || r.oid;
+            const entry = { productName: pn, optionName: nm.optionName || '', status: r.status || '', stock: r.totalStock, cost: r.totalStock * r.unitCost };
+            if (exclSet.has(pn)) { excludedList.push(entry); continue; }
+            longtermList.push(entry);
           }
           longtermList.sort((a, b) => b.cost - a.cost);
+          excludedList.sort((a, b) => b.cost - a.cost);
         }
 
         const newData = { availableCount, availableCost, longTermCount, longTermCost, soldoutRate };
-        const newPanel = { availableView, longtermList, rateView };
+        const newPanel = { availableView, longtermList, excludedList, rateView };
         setDashboardData(newData);
         setPanelData(newPanel);
         await dbStoreSet('dashboard_cache', { data: newData, panelData: newPanel, calculatedAt: Date.now(), version: CACHE_VERSION }).catch(() => {});
       } catch (e) { console.error('Dashboard data load error:', e); }
-    })();
   }, []);
+
+  useEffect(() => { loadDashboard(); }, [loadDashboard]);
+
+  // 장기재고 집계제외 목록을 UI용으로 선로드 (캐시 적중으로 재계산을 건너뛰어도 버튼 상태가 맞도록)
+  useEffect(() => { (async () => { try { setExclusions((await dbStoreGet('longterm_exclusions')) || {}); } catch {} })(); }, []);
+
+  // 장기재고 집계에서 상품(전옵션) 제외 → 로컬 즉시 가감(재fetch 없음) + DB/캐시 동기화
+  const excludeProduct = useCallback((productName) => {
+    if (!productName || exclBusy) return;
+    const moving = (panelData.longtermList || []).filter(x => x.productName === productName);
+    const dStock = moving.reduce((a, b) => a + b.stock, 0);
+    const dCost = moving.reduce((a, b) => a + b.cost, 0);
+    const newLong = (panelData.longtermList || []).filter(x => x.productName !== productName);
+    const newExcluded = [...(panelData.excludedList || []), ...moving].sort((a, b) => b.cost - a.cost);
+    const newData = { ...dashboardData,
+      longTermCount: dashboardData.longTermCount - dStock, longTermCost: dashboardData.longTermCost - dCost,
+      availableCount: dashboardData.availableCount + dStock, availableCost: dashboardData.availableCost + dCost };
+    const newPanel = { ...panelData, longtermList: newLong, excludedList: newExcluded };
+    const newExcl = { ...exclusions, [productName]: { excludedAt: Date.now() } };
+    setDashboardData(newData); setPanelData(newPanel); setExclusions(newExcl); setExclBusy(true);
+    (async () => {
+      try {
+        await dbStoreSet('longterm_exclusions', newExcl, { logDesc: `장기재고 집계제외: ${productName}` }).catch(() => {});
+        await dbStoreSet('dashboard_cache', { data: newData, panelData: newPanel, calculatedAt: Date.now(), version: DASHBOARD_CACHE_VERSION }, { skipLog: true }).catch(() => {});
+      } finally { setExclBusy(false); }
+    })();
+  }, [exclBusy, panelData, dashboardData, exclusions]);
+
+  // 집계제외 복원 → 로컬 즉시 가감 + DB/캐시 동기화
+  const restoreProduct = useCallback((productName) => {
+    if (exclBusy) return;
+    const moving = (panelData.excludedList || []).filter(x => x.productName === productName);
+    const dStock = moving.reduce((a, b) => a + b.stock, 0);
+    const dCost = moving.reduce((a, b) => a + b.cost, 0);
+    const newExcluded = (panelData.excludedList || []).filter(x => x.productName !== productName);
+    const newLong = [...(panelData.longtermList || []), ...moving].sort((a, b) => b.cost - a.cost);
+    const newData = { ...dashboardData,
+      longTermCount: dashboardData.longTermCount + dStock, longTermCost: dashboardData.longTermCost + dCost,
+      availableCount: dashboardData.availableCount - dStock, availableCost: dashboardData.availableCost - dCost };
+    const newPanel = { ...panelData, longtermList: newLong, excludedList: newExcluded };
+    const newExcl = { ...exclusions }; delete newExcl[productName];
+    setDashboardData(newData); setPanelData(newPanel); setExclusions(newExcl); setExclBusy(true);
+    (async () => {
+      try {
+        await dbStoreSet('longterm_exclusions', newExcl, { logDesc: `장기재고 집계제외 복원: ${productName}` }).catch(() => {});
+        await dbStoreSet('dashboard_cache', { data: newData, panelData: newPanel, calculatedAt: Date.now(), version: DASHBOARD_CACHE_VERSION }, { skipLog: true }).catch(() => {});
+      } finally { setExclBusy(false); }
+    })();
+  }, [exclBusy, panelData, dashboardData, exclusions]);
 
   // 대시보드 엑셀 다운로드
   const downloadDashboardExcel = useCallback(async () => {
@@ -870,7 +945,30 @@ export default function Home() {
 
           {/* 장기 재고 (판매없음) 목록 */}
           {panelView === 'longterm' && (
-            panelData.longtermList && panelData.longtermList.length > 0 ? (
+            <div>
+              {/* 집계제외 중인 상품(판매 발생 시 자동 재집계) */}
+              {Object.keys(exclusions).length > 0 && (() => {
+                const exList = panelData.excludedList || [];
+                const exStock = exList.reduce((a, b) => a + b.stock, 0);
+                const exCost = exList.reduce((a, b) => a + b.cost, 0);
+                return (
+                  <div style={{ marginBottom: 12, padding: '10px 12px', background: '#fff7ed', border: '1px solid #fed7aa', borderRadius: 8 }}>
+                    <div style={{ fontSize: 12, color: '#9a3412', fontWeight: 700, marginBottom: 8, textAlign: 'center' }}>
+                      집계 제외 중 {Object.keys(exclusions).length}개 상품 · 제외 재고 {exStock.toLocaleString()}개 · 제외 원가 {Math.round(exCost).toLocaleString()}원 <span style={{ fontWeight: 500, color: '#c2663a' }}>(판매 1건이라도 발생하면 자동 재집계)</span>
+                    </div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, justifyContent: 'center' }}>
+                      {Object.keys(exclusions).map(pn => (
+                        <button key={pn} onClick={() => restoreProduct(pn)} disabled={exclBusy}
+                          style={{ fontSize: 12, padding: '4px 10px', borderRadius: 14, border: '1px solid #fdba74', background: '#fff', color: '#9a3412', cursor: exclBusy ? 'not-allowed' : 'pointer', maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {pn} <b style={{ color: '#ea580c' }}>↩ 복원</b>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {panelData.longtermList && panelData.longtermList.length > 0 ? (
               <div>
                 <div style={{ fontSize: 13, color: '#64748b', marginBottom: 12 }}>
                   30일간 판매 없는 순수 장기재고 <b style={{ color: '#f59e0b' }}>{panelData.longtermList.length}종</b> · 총 재고 {panelData.longtermList.reduce((a, b) => a + b.stock, 0).toLocaleString()}개 · 총 원가 {Math.round(panelData.longtermList.reduce((a, b) => a + b.cost, 0)).toLocaleString()}원
@@ -878,7 +976,7 @@ export default function Home() {
                 <div style={{ maxHeight: 440, overflow: 'auto' }}>
                   <table className="home-sum-table">
                     <thead>
-                      <tr><th>상품명</th><th>옵션명</th><th>상태</th><th>재고</th><th>재고별 원가</th></tr>
+                      <tr><th>상품명</th><th>옵션명</th><th>상태</th><th>재고</th><th>재고별 원가</th><th>집계</th></tr>
                     </thead>
                     <tbody>
                       {panelData.longtermList.map((r, i) => (
@@ -888,15 +986,22 @@ export default function Home() {
                           <td style={{ textAlign: 'center' }}>{r.status || '-'}</td>
                           <td style={{ textAlign: 'center' }}>{r.stock.toLocaleString()}</td>
                           <td style={{ textAlign: 'right' }}>{Math.round(r.cost).toLocaleString()}원</td>
+                          <td style={{ textAlign: 'center' }}>
+                            <button onClick={() => excludeProduct(r.productName)} disabled={exclBusy} title="이 상품(전옵션)을 장기재고 집계에서 제외"
+                              style={{ fontSize: 11, padding: '2px 8px', borderRadius: 10, border: '1px solid #cbd5e1', background: '#f8fafc', color: '#475569', cursor: exclBusy ? 'not-allowed' : 'pointer', whiteSpace: 'nowrap' }}>
+                              제외
+                            </button>
+                          </td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
                 </div>
               </div>
-            ) : (
-              <div style={{ padding: '60px 0', textAlign: 'center', color: '#94a3b8', fontSize: 14 }}>순수 판매없음 장기재고가 없습니다. (매일 12시 이후 갱신)</div>
-            )
+              ) : (
+                <div style={{ padding: '60px 0', textAlign: 'center', color: '#94a3b8', fontSize: 14 }}>순수 판매없음 장기재고가 없습니다. (매일 12시 이후 갱신)</div>
+              )}
+            </div>
           )}
 
           {/* 달력 */}
