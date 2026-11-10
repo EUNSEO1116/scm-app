@@ -686,25 +686,29 @@ export default function OrderBook() {
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, '급한출고');
 
-    // 중복 검증 시트 (붙여넣은 발주번호가 있을 때만)
+    // 추가(추천X) 시트 (붙여넣은 발주번호가 있을 때만)
+    //  - 추천 리스트에 없는(추가/추천X) 발주번호만 추린다. 겹침(추천O)은 이미 추천 시트에 있으므로 제외.
+    //  - 박스수는 기존 급한출고 규칙과 동일하게 FBC 제외로 합산(장부에 없으면 공란).
     if (shipDupText.trim()) {
       const recSet = new Set(visibleItems.map(it => it.colT || it.orderNo));
       const dup = parseDupList(shipDupText, recSet);
-      const dupList = dup.rows.filter(r => r.dup);   // 입력 2회 이상
-      const uniqList = dup.rows.filter(r => !r.dup); // 고유(1회) = 비중복
-      const n = Math.max(dupList.length, uniqList.length);
-      const aoa2 = [[`중복(${dupList.length}종)`, '입력횟수', '설명', '', `비중복(${uniqList.length}건)`, '추천대조', '설명']];
-      for (let i = 0; i < n; i++) {
-        const d = dupList[i], u = uniqList[i];
-        aoa2.push([
-          d ? d.code : '', d ? d.count : '', d ? '시트에 있음' : '', '',
-          u ? u.code : '', u ? (u.inRec ? '겹침(추천O)' : '추가(추천X)') : '', u ? '시트에 없었음 (찐 필요여부 확인 필요)' : '',
-        ]);
+      const added = dup.rows.filter(r => !r.inRec); // 추가(추천X)만
+      const boxOf = (code) => {
+        const matches = (data || []).filter(r => (r.colT || r.orderNo) === code);
+        if (matches.length === 0) return ''; // 발주장부에 없음
+        const sum = matches.reduce((s, r) => r.category === 'FBC' ? s : s + safeNum(r.box), 0);
+        return Math.round(sum * 10) / 10;
+      };
+      const aoa2 = [['발주번호', '추천대조', '설명', '박스수']];
+      let boxSum = 0;
+      for (const r of added) {
+        const b = boxOf(r.code);
+        if (typeof b === 'number') boxSum += b;
+        aoa2.push([r.code, '추가(추천X)', '추천 리스트에 없음 (찐 필요여부 확인 필요)', b]);
       }
       aoa2.push([]);
-      aoa2.push([`누락(추천엔 있는데 붙여넣기엔 없음) ${dup.missing.length}건`]);
-      for (const m of dup.missing) aoa2.push([m]);
-      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa2), '중복검증');
+      aoa2.push(['합계(FBC제외 박스)', '', '', Math.round(boxSum * 10) / 10]);
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa2), '추가(추천X)');
     }
 
     XLSX.writeFile(wb, `급한출고_${dateKeyStr(new Date())}.xlsx`);
