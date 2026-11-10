@@ -10,6 +10,9 @@ const TSV_CALC = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?form
 const STORE_PREFIX = 'soldout_analysis_';
 const SEASONS_STORE = 'sales_forecast_seasons';
 const IMPROVE_STORE = 'improvement_items';
+// 발주추천이 산출한 주판매(=4주예측 baseF ÷ 4)를 optionId별로 DB에 저장.
+// 발주장부(급한출고·출고필요)가 이 값을 읽어 판매 기준을 통일한다. (시트 V/W열 대신 실판매 기반)
+const DEMAND_STORE = 'order_demand_weekly';
 
 const FORECAST_DAYS = 90;     // 수요예측 일별 데이터 로딩 기간
 const HORIZON_WEEKS = 4;      // 발주 커버 기간 (4주)
@@ -284,6 +287,7 @@ export default function OrderRecommend() {
       const calcText = await calcRes.text();
       const calcLines = calcText.split('\n');
       const out = [];
+      const demandMap = {}; // optionId → 주판매(4주예측÷4). 급한출고/출고필요 공유용
       // 마지막 실제 상품 행 위치(이후 빈 패딩 행은 출력 제외)
       let lastProductIdx = 0;
       for (let i = 1; i < calcLines.length; i++) {
@@ -412,6 +416,8 @@ export default function OrderRecommend() {
               // 최근 14일 중 재고일이 MIN_INSTOCK_DAYS 미만이면 하한 미적용 — 1~2일 반짝판매가 일판매율로 뻥튀기되는 것 방지
               if (floorF > baseF && in14.length >= MIN_INSTOCK_DAYS) { baseF = floorF; floored = true; }
             }
+            // 주판매 저장: 4주 예측(baseF) ÷ 4. 시즌배수는 미적용(순수 수요). 재고판단은 급한출고/출고필요가 자체 base로 처리.
+            if (optionId && baseF != null && baseF > 0) demandMap[optionId] = Math.round(baseF / HORIZON_WEEKS * 100) / 100;
           }
 
           if (baseF == null) {
@@ -597,6 +603,8 @@ export default function OrderRecommend() {
       }
 
       setRows(out);
+      // 주판매 스냅샷 저장(발주장부 급한출고·출고필요가 읽음). 실패해도 화면엔 영향 없음.
+      dbStoreSet(DEMAND_STORE, { ...demandMap, _updatedAt: Date.now() }, { skipLog: true }).catch(() => {});
       setSpikes(spikeList);
       // 아직 보정/무시 안 한 날(pending)이 하나라도 있으면 자동으로 모달 오픈
       const hasPending = spikeList.some(sp => sp.flagged.some(f => !corrections[`${f.key}_${sp.optionId}`]));

@@ -10,6 +10,10 @@ const CSV_SPECIAL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?
 
 const TARGET_WEEKS = 2.5;
 
+// 발주추천(OrderRecommend)이 산출한 주판매(=4주예측 ÷ 4)를 optionId별로 저장한 DB 스토어.
+// 급한출고·출고필요 판단을 시트 V/W열 대신 실판매 기반으로 통일하기 위해 읽는다.
+const DEMAND_STORE = 'order_demand_weekly';
+
 function safeNum(v) {
   if (!v || v === '-') return 0;
   const n = Number(String(v).replace(/,/g, ''));
@@ -175,9 +179,13 @@ function computeShipFlags(rows, stockMap) {
     const weeks = info ? info.weeks : 0;
     const weeklySales = info ? info.weeklySales : 0;
 
-    // CN 창고도착 / 작업 대기 건
+    // CN 창고도착 / 작업대기 / 출고 대기 건 (공백 정규화로 "작업 대기"=="작업대기" 버그 수정, "부분출고 대기" 제외)
     const shipOrders = allOrders
-      .filter(r => r.cnStatus.includes('CN 창고도착') || r.cnStatus.includes('작업 대기'))
+      .filter(r => {
+        const cn = normSpace(r.cnStatus);
+        const waitShip = cn.includes('출고대기') && !cn.includes('부분출고대기');
+        return cn.includes('CN창고도착') || cn.includes('작업대기') || waitShip;
+      })
       .sort((a, b) => parseOrderDateSort(a.orderDate) - parseOrderDateSort(b.orderDate));
 
     // 내륙운송중 건
@@ -244,10 +252,29 @@ function dateKeyStr(d) {
 }
 
 function isUrgentUniverse(r) {
-  return r.cnStatus.includes('CN 창고도착') || r.cnStatus.includes('작업 대기') || (r.cnStatus.includes('내륙') && r.cnStatus.includes('운송'));
+  const cn = normSpace(r.cnStatus); // 공백 정규화("작업 대기"=="작업대기" 버그 수정)
+  // "출고 대기"는 포함하되 "부분출고 대기"는 제외
+  const waitShip = cn.includes('출고대기') && !cn.includes('부분출고대기');
+  return cn.includes('CN창고도착') || cn.includes('작업대기') || waitShip || (cn.includes('내륙') && cn.includes('운송'));
+}
+
+// 먼저 올 수 있는 순서: 출고대기(0) > CN창고도착·작업대기(1) > 내륙운송중(2). 작을수록 먼저 도착.
+function urgentArrivalRank(r) {
+  const cn = normSpace(r.cnStatus);
+  if (cn.includes('출고대기') && !cn.includes('부분출고대기')) return 0;
+  if (cn.includes('CN창고도착') || cn.includes('작업대기')) return 1;
+  if (cn.includes('내륙') && cn.includes('운송')) return 2;
+  return 9;
+}
+// 우선순위(먼저 올 수 있는 순) → 같은 단계면 발주일 빠른 순
+function urgentPickCompare(a, b) {
+  const ra = urgentArrivalRank(a), rb = urgentArrivalRank(b);
+  if (ra !== rb) return ra - rb;
+  return parseOrderDateSort(a.orderDate) - parseOrderDateSort(b.orderDate);
 }
 
 // rows + stockMap → { items: 추천 발주 행[], universe: {key:{w,base,ws,rec}} }
+// SKU가 급하면 "먼저 올 수 있는" 일반 1건만 추천(과발주 방지). FBC가 급하면 FBC 1건 + 일반 1건 동반.
 function computeUrgentShip(rows, stockMap, thresholdWeeks) {
   const bySku = {};
   for (const r of rows) { (bySku[r.sku] = bySku[r.sku] || []).push(r); }
@@ -268,14 +295,39 @@ function computeUrgentShip(rows, stockMap, thresholdWeeks) {
     const baseStock = stock + incoming + shippedQty;
     const effWeeks = weeklySales > 0 ? Math.round(baseStock / weeklySales * 10) / 10 : null;
     const urgentOrders = group.filter(isUrgentUniverse);
+
+    // 임계값: 일반=화면값, FBC=고정 4주(화면값이 더 크면 그 값)
+    const generalThr = thresholdWeeks;
+    const fbcThr = Math.max(thresholdWeeks, FBC_FIXED_THRESHOLD);
+    const salesOk = weeklySales > 0 && effWeeks !== null;
+    const urgentGeneral = salesOk && effWeeks < generalThr;
+    const urgentFbc = salesOk && effWeeks < fbcThr;
+
+    // 먼저 올 수 있는 순으로 정렬 → 일반/FBC 각각 top 1 선택
+    const generals = urgentOrders.filter(r => r.category !== 'FBC').sort(urgentPickCompare);
+    const fbcs = urgentOrders.filter(r => r.category === 'FBC').sort(urgentPickCompare);
+    const generalPick = generals[0] || null;
+    const fbcPick = fbcs[0] || null;
+
+    // 선택: 일반 급하면 일반 1건. FBC 급하면 FBC 1건 + 일반 1건 동반(일반이 쿠팡 품절을 더 빨리 해소).
+    const selected = new Set(); // row 객체
+    const pairedWithFbc = new Set(); // FBC 동반으로 끌려온 일반(단독으론 안 급한 경우 사유 구분용)
+    if (urgentGeneral && generalPick) selected.add(generalPick);
+    if (urgentFbc && fbcPick) {
+      selected.add(fbcPick);
+      if (generalPick) {
+        if (!selected.has(generalPick) && !urgentGeneral) pairedWithFbc.add(generalPick);
+        selected.add(generalPick); // FBC 추천 시 항상 일반 1건 동반
+      }
+    }
+
     for (const r of urgentOrders) {
       const key = r.colT || r.orderNo;
-      // FBC는 화면 임계값과 무관하게 고정 4주 미만이면 추천(화면값이 4주보다 크면 그 값 사용)
-      const effThreshold = r.category === 'FBC' ? Math.max(thresholdWeeks, FBC_FIXED_THRESHOLD) : thresholdWeeks;
-      const rec = weeklySales > 0 && effWeeks !== null && effWeeks < effThreshold;
+      const effThreshold = r.category === 'FBC' ? fbcThr : generalThr;
+      const rec = selected.has(r);
       universe[key] = { w: effWeeks, base: baseStock, ws: Math.round(weeklySales * 10) / 10, rec, thr: effThreshold };
       if (rec) {
-        items.push({ ...r, _effWeeks: effWeeks, _baseStock: baseStock, _weeklySales: weeklySales, _stock: stock, _incoming: incoming, _shippedQty: shippedQty, _vEmpty: vEmpty, _threshold: effThreshold });
+        items.push({ ...r, _effWeeks: effWeeks, _baseStock: baseStock, _weeklySales: weeklySales, _stock: stock, _incoming: incoming, _shippedQty: shippedQty, _vEmpty: vEmpty, _threshold: effThreshold, _fbcPaired: pairedWithFbc.has(r) });
       }
     }
   }
@@ -288,7 +340,10 @@ function computeUrgentShip(rows, stockMap, thresholdWeeks) {
 function urgentReasonToday(it) {
   const src = it._vEmpty ? ' · V열(예상판매주) 비어있어 W열(총재고 예상판매주) 기준' : '';
   const fbc = it.category === 'FBC' ? ' · FBC 고정 4주 기준' : '';
-  return `예상판매주 ${it._effWeeks}주 < ${it._threshold}주${fbc}${src} / base재고 ${it._baseStock}(재고 ${it._stock} + 입고예정 ${it._incoming} + 출고완료(FBC제외) ${it._shippedQty}) ÷ 주판매 ${it._weeklySales.toFixed(1)}`;
+  const base = `base재고 ${it._baseStock}(재고 ${it._stock} + 입고예정 ${it._incoming} + 출고완료(FBC제외) ${it._shippedQty}) ÷ 주판매 ${it._weeklySales.toFixed(1)}`;
+  // FBC 동반으로 끌려온 일반(단독으론 안 급함): 품절 조기해제 목적
+  if (it._fbcPaired) return `FBC 급발주 동반 — 일반이 쿠팡 품절을 더 빨리 해소 (예상판매주 ${it._effWeeks}주) / ${base}`;
+  return `예상판매주 ${it._effWeeks}주 < ${it._threshold}주${fbc}${src} / ${base}`;
 }
 
 // 어제 상태(스냅샷) 기반 미추천 사유
@@ -724,8 +779,14 @@ export default function OrderBook() {
     setLoading(true);
     setError(null);
     try {
-      const [orderRes, calcRes, specialRes] = await Promise.all([fetch(CSV_URL), fetch(TSV_CALC), fetch(CSV_SPECIAL)]);
+      const [orderRes, calcRes, specialRes, demandRaw] = await Promise.all([
+        fetch(CSV_URL), fetch(TSV_CALC), fetch(CSV_SPECIAL),
+        dbStoreGet(DEMAND_STORE).catch(() => null),
+      ]);
       if (!orderRes.ok) throw new Error('발주장부 데이터를 불러올 수 없습니다');
+
+      // 발주추천이 저장한 optionId별 주판매(실판매 기반). 없으면 시트 V/W열로 폴백.
+      const demandMap = (demandRaw && typeof demandRaw === 'object') ? demandRaw : {};
 
       // 재고 계산기: SKU별 예상판매주, 재고, 입고예정, 주간판매량
       const stockMap = {};
@@ -736,6 +797,7 @@ export default function OrderBook() {
           const c = tsvLines[i].split('\t');
           const sku = (c[2] || '').trim();
           if (!sku) continue;
+          const optionId = (c[1] || '').trim();
           const stock = safeNum(c[6]);
           const incoming = safeNum(c[7]);
           const weeksRaw = (c[21] || '').trim();
@@ -762,6 +824,15 @@ export default function OrderBook() {
           } else {
             coupangWeeks = (c[21] || '').trim();
             adjustedWeeks = weeksRaw === '' ? null : safeNum(weeksRaw);
+          }
+          // DB 실판매 우선: optionId에 발주추천 주판매가 있으면 시트값 대신 사용(판정·예상주 모두 DB기반).
+          // 재고(분자)는 그대로 — FBC 품절(재고0)이면 예상주 0 → 즉시 급함이 정상.
+          const dbWeekly = optionId && demandMap[optionId] != null ? Number(demandMap[optionId]) : null;
+          if (dbWeekly != null && dbWeekly > 0) {
+            weeklySales = dbWeekly;
+            const totalBase = stockPlusIncoming + extraStock;
+            adjustedWeeks = totalBase > 0 ? Math.round(totalBase / weeklySales * 10) / 10 : 0;
+            coupangWeeks = String(adjustedWeeks);
           }
           stockMap[sku] = { stock, incoming, weeks: adjustedWeeks, weeklySales, totalStock, coupangWeeks };
         }
@@ -866,10 +937,9 @@ export default function OrderBook() {
         const dayKeys = [];
         for (let i = 0; i < 8; i++) { const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - i); dayKeys.push(dateKeyStr(d)); }
         const snaps = await Promise.all(dayKeys.map(k => dbStoreGet(SNAPSHOT_PREFIX + k).catch(() => null)));
-        // 오늘자 스냅샷이 없으면 오늘 기준선으로 1회 저장
-        if (!snaps[0]) {
-          dbStoreSet(SNAPSHOT_PREFIX + dayKeys[0], universe, { skipLog: true }).catch(() => {});
-        }
+        // 당일 스냅샷은 매 실행마다 덮어쓰기 → 그날 "마지막 실행"이 당일 최종본.
+        // (다음날 '어제도 추천됨' 비교가 어제 마지막 상태 기준이 됨)
+        dbStoreSet(SNAPSHOT_PREFIX + dayKeys[0], universe, { skipLog: true }).catch(() => {});
         // 어제 = 오늘 이전 날짜 중 가장 최근 스냅샷
         let ySnap = null, yDate = null;
         for (let i = 1; i < dayKeys.length; i++) { if (snaps[i]) { ySnap = snaps[i]; yDate = dayKeys[i]; break; } }
