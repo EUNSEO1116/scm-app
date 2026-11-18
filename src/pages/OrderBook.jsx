@@ -13,6 +13,9 @@ const TARGET_WEEKS = 2.5;
 // 발주추천(OrderRecommend)이 산출한 주판매(=4주예측 ÷ 4)를 optionId별로 저장한 DB 스토어.
 // 급한출고·출고필요 판단을 시트 V/W열 대신 실판매 기반으로 통일하기 위해 읽는다.
 const DEMAND_STORE = 'order_demand_weekly';
+// 발주추천이 저장한 '최근 실판매 주판매'(가장 최근 유효주). 급한출고·출고필요 분모로 우선 사용 —
+// 4주 평균은 급상승 후 급락한 상품에서 피크에 끌려 과출고를 유발하므로, 최근주로 급락에 즉시 반응한다.
+const RECENT_STORE = 'order_recent_weekly';
 
 function safeNum(v) {
   if (!v || v === '-') return 0;
@@ -137,16 +140,11 @@ function computeRemindFlags(rows, stockMap) {
 
     const targetStock = TARGET_WEEKS * weeklySales;
 
-    // 이미 출고완료된 발주 수량 합산 (곧 입고될 물량)
-    let shippedQty = 0;
-    for (const row of allOrders) {
-      if (row.cnStatus.includes('출고 완료') || row.cnStatus.includes('출고완료')) {
-        shippedQty += safeNum(row.qty);
-      }
-    }
+    // 입고완료·이미출고 수량(재고계산기 I 입고 + J 박스히어로 + K FBC출고 + L 일반출고) → 급한출고와 동일 정의로 통일
+    const extraStock = info.extraStock || 0;
 
-    // 현재 재고 + 입고예정 + 출고완료 수량으로 이미 2.5주 이상이면 스킵
-    let currentStock = info.stock + info.incoming + shippedQty;
+    // 현재 재고 + 입고예정 + 입고완료·이미출고(I/J/K/L) 수량으로 이미 2.5주 이상이면 스킵
+    let currentStock = info.stock + info.incoming + extraStock;
     if (currentStock >= targetStock) continue;
 
     // 업체발송대기 건만 발주일순 정렬
@@ -206,15 +204,9 @@ function computeShipFlags(rows, stockMap) {
     // 예상판매주 3.8주 이상이면 스킵
     if (weeks >= SHIP_THRESHOLD_WEEKS) continue;
 
-    // 출고완료된 수량 합산 (곧 입고될 물량)
-    let shippedQty = 0;
-    for (const row of allOrders) {
-      if (row.cnStatus.includes('출고 완료') || row.cnStatus.includes('출고완료')) {
-        shippedQty += safeNum(row.qty);
-      }
-    }
-
-    const baseStock = (info ? info.stock + info.incoming : 0) + shippedQty;
+    // 입고완료·이미출고 수량(재고계산기 I 입고 + J 박스히어로 + K FBC출고 + L 일반출고) → 급한출고와 동일 정의로 통일
+    const extraStock = info ? (info.extraStock || 0) : 0;
+    const baseStock = (info ? info.stock + info.incoming : 0) + extraStock;
     const targetStock = SHIP_TARGET_WEEKS * weeklySales;
 
     // 출고완료분 포함해서 이미 3.8주 이상이면 출고 안 급함
@@ -286,13 +278,10 @@ function computeUrgentShip(rows, stockMap, thresholdWeeks) {
     const stock = info ? info.stock : 0;
     const incoming = info ? info.incoming : 0;
     const vEmpty = info ? info.weeks === null : true;
-    // 출고완료된 수량(발주장부 기준) → 곧 입고될 물량.
-    // FBC 수량은 쿠팡 창고 재고가 아니라 별도 채널이므로 임계점 재고 계산에서 제외(일반 발주만 합산)
-    let shippedQty = 0;
-    for (const r of group) {
-      if ((r.cnStatus.includes('출고 완료') || r.cnStatus.includes('출고완료')) && r.category !== 'FBC') shippedQty += safeNum(r.qty);
-    }
-    const baseStock = stock + incoming + shippedQty;
+    // 입고완료·이미출고 수량(재고계산기 I 입고 + J 박스히어로 + K FBC출고 + L 일반출고) → 곧 FDC 반영/타 채널 보유분.
+    // 표시 예상판매주와 동일 정의로 통일. 발주장부 '출고완료'는 시트 K/L과 중복이라 쓰지 않는다.
+    const extraStock = info ? (info.extraStock || 0) : 0;
+    const baseStock = stock + incoming + extraStock;
     const effWeeks = weeklySales > 0 ? Math.round(baseStock / weeklySales * 10) / 10 : null;
     const urgentOrders = group.filter(isUrgentUniverse);
 
@@ -327,7 +316,7 @@ function computeUrgentShip(rows, stockMap, thresholdWeeks) {
       const rec = selected.has(r);
       universe[key] = { w: effWeeks, base: baseStock, ws: Math.round(weeklySales * 10) / 10, rec, thr: effThreshold };
       if (rec) {
-        items.push({ ...r, _effWeeks: effWeeks, _baseStock: baseStock, _weeklySales: weeklySales, _stock: stock, _incoming: incoming, _shippedQty: shippedQty, _vEmpty: vEmpty, _threshold: effThreshold, _fbcPaired: pairedWithFbc.has(r) });
+        items.push({ ...r, _effWeeks: effWeeks, _baseStock: baseStock, _weeklySales: weeklySales, _stock: stock, _incoming: incoming, _extraStock: extraStock, _vEmpty: vEmpty, _threshold: effThreshold, _fbcPaired: pairedWithFbc.has(r) });
       }
     }
   }
@@ -340,7 +329,7 @@ function computeUrgentShip(rows, stockMap, thresholdWeeks) {
 function urgentReasonToday(it) {
   const src = it._vEmpty ? ' · V열(예상판매주) 비어있어 W열(총재고 예상판매주) 기준' : '';
   const fbc = it.category === 'FBC' ? ' · FBC 고정 4주 기준' : '';
-  const base = `base재고 ${it._baseStock}(재고 ${it._stock} + 입고예정 ${it._incoming} + 출고완료(FBC제외) ${it._shippedQty}) ÷ 주판매 ${it._weeklySales.toFixed(1)}`;
+  const base = `base재고 ${it._baseStock}(재고 ${it._stock} + 입고예정 ${it._incoming} + 입고·이미출고 ${it._extraStock}[입고·박스히어로·FBC·일반]) ÷ 주판매 ${it._weeklySales.toFixed(1)}`;
   // FBC 동반으로 끌려온 일반(단독으론 안 급함): 품절 조기해제 목적
   if (it._fbcPaired) return `FBC 급발주 동반 — 일반이 쿠팡 품절을 더 빨리 해소 (예상판매주 ${it._effWeeks}주) / ${base}`;
   return `예상판매주 ${it._effWeeks}주 < ${it._threshold}주${fbc}${src} / ${base}`;
@@ -779,14 +768,17 @@ export default function OrderBook() {
     setLoading(true);
     setError(null);
     try {
-      const [orderRes, calcRes, specialRes, demandRaw] = await Promise.all([
+      const [orderRes, calcRes, specialRes, demandRaw, recentRaw] = await Promise.all([
         fetch(CSV_URL), fetch(TSV_CALC), fetch(CSV_SPECIAL),
         dbStoreGet(DEMAND_STORE).catch(() => null),
+        dbStoreGet(RECENT_STORE).catch(() => null),
       ]);
       if (!orderRes.ok) throw new Error('발주장부 데이터를 불러올 수 없습니다');
 
       // 발주추천이 저장한 optionId별 주판매(실판매 기반). 없으면 시트 V/W열로 폴백.
       const demandMap = (demandRaw && typeof demandRaw === 'object') ? demandRaw : {};
+      // 급한출고·출고필요 분모 전용: 최근 실판매 주판매(급락 즉시 반영). 있으면 4주평균(demandMap) 대신 이걸 쓴다.
+      const recentMap = (recentRaw && typeof recentRaw === 'object') ? recentRaw : {};
 
       // 재고 계산기: SKU별 예상판매주, 재고, 입고예정, 주간판매량
       const stockMap = {};
@@ -812,10 +804,11 @@ export default function OrderBook() {
               weeklySales = totalStock / totalWeeksRaw;
             }
           }
+          const received = safeNum(c[8]); // I열 입고(쿠팡 입고완료, 아직 판매가능재고 G에 미반영)
           const boxhero = safeNum(c[9]);
           const fbcOut = safeNum(c[10]);
           const generalOut = safeNum(c[11]);
-          const extraStock = boxhero + fbcOut + generalOut;
+          const extraStock = received + boxhero + fbcOut + generalOut;
           let coupangWeeks;
           let adjustedWeeks;
           if (extraStock > 0 && weeklySales > 0) {
@@ -826,15 +819,25 @@ export default function OrderBook() {
             adjustedWeeks = weeksRaw === '' ? null : safeNum(weeksRaw);
           }
           // DB 실판매 우선: optionId에 발주추천 주판매가 있으면 시트값 대신 사용(판정·예상주 모두 DB기반).
+          // 급락 과출고 방지를 위해 '최근 실판매'(recentMap, 가장 최근 유효주)를 4주평균(demandMap)보다 우선한다.
           // 재고(분자)는 그대로 — FBC 품절(재고0)이면 예상주 0 → 즉시 급함이 정상.
-          const dbWeekly = optionId && demandMap[optionId] != null ? Number(demandMap[optionId]) : null;
-          if (dbWeekly != null && dbWeekly > 0) {
+          const recentWeekly = optionId && recentMap[optionId] != null ? Number(recentMap[optionId]) : null;
+          const forecastWeekly = optionId && demandMap[optionId] != null ? Number(demandMap[optionId]) : null;
+          // 최근 실판매가 있으면(0 포함) 그걸로. 최근주 0판매 = 안 급함(과출고 방지). 없으면 4주평균으로 폴백.
+          const dbWeekly = recentWeekly != null ? recentWeekly : forecastWeekly;
+          if (dbWeekly != null) {
             weeklySales = dbWeekly;
             const totalBase = stockPlusIncoming + extraStock;
-            adjustedWeeks = totalBase > 0 ? Math.round(totalBase / weeklySales * 10) / 10 : 0;
-            coupangWeeks = String(adjustedWeeks);
+            if (weeklySales > 0 && totalBase > 0) {
+              adjustedWeeks = Math.round(totalBase / weeklySales * 10) / 10;
+              coupangWeeks = String(adjustedWeeks);
+            } else {
+              // 주판매 0(최근 무판매) → 예상주 산출불가 → 급한출고/출고필요 대상 아님
+              adjustedWeeks = null;
+              coupangWeeks = '';
+            }
           }
-          stockMap[sku] = { stock, incoming, weeks: adjustedWeeks, weeklySales, totalStock, coupangWeeks };
+          stockMap[sku] = { stock, incoming, weeks: adjustedWeeks, weeklySales, totalStock, coupangWeeks, extraStock };
         }
       }
 

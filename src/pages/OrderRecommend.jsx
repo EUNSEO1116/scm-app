@@ -13,6 +13,9 @@ const IMPROVE_STORE = 'improvement_items';
 // 발주추천이 산출한 주판매(=4주예측 baseF ÷ 4)를 optionId별로 DB에 저장.
 // 발주장부(급한출고·출고필요)가 이 값을 읽어 판매 기준을 통일한다. (시트 V/W열 대신 실판매 기반)
 const DEMAND_STORE = 'order_demand_weekly';
+// 급한출고·출고필요 전용 '최근 실판매 주판매'(가장 최근 유효주 정규화). 4주 평균(baseF)과 달리
+// 급락에 즉시 반응한다 — 피크 직후 과대추정으로 과출고되는 것 방지. 값 없으면 발주장부가 DEMAND_STORE로 폴백.
+const RECENT_STORE = 'order_recent_weekly';
 
 const FORECAST_DAYS = 90;     // 수요예측 일별 데이터 로딩 기간
 const HORIZON_WEEKS = 4;      // 발주 커버 기간 (4주)
@@ -288,6 +291,7 @@ export default function OrderRecommend() {
       const calcLines = calcText.split('\n');
       const out = [];
       const demandMap = {}; // optionId → 주판매(4주예측÷4). 급한출고/출고필요 공유용
+      const recentMap = {}; // optionId → 최근 실판매 주판매(가장 최근 유효주). 급한출고/출고필요 분모 전용
       // 마지막 실제 상품 행 위치(이후 빈 패딩 행은 출력 제외)
       let lastProductIdx = 0;
       for (let i = 1; i < calcLines.length; i++) {
@@ -418,6 +422,13 @@ export default function OrderRecommend() {
             }
             // 주판매 저장: 4주 예측(baseF) ÷ 4. 시즌배수는 미적용(순수 수요). 재고판단은 급한출고/출고필요가 자체 base로 처리.
             if (optionId && baseF != null && baseF > 0) demandMap[optionId] = Math.round(baseF / HORIZON_WEEKS * 100) / 100;
+            // 최근 실판매 주판매: 캐리 후 weeklyNorm의 마지막 원소 = 가장 최근 유효주(재고일 3일+)의 정규화 주판매.
+            // 급한출고/출고필요가 이 값을 분모로 써 급락에 즉시 반응한다(피크 직후 과출고 방지). 0도 저장(= 안 급함).
+            // 전체 재고일 표본이 부족하면(소표본) 신뢰 못 해 미저장 → 발주장부가 forecast(demandMap)로 폴백.
+            const recentValid = weeklyNorm.length ? weeklyNorm[weeklyNorm.length - 1] : null;
+            if (optionId && recentValid != null && inStockDaysTotal >= MIN_INSTOCK_DAYS) {
+              recentMap[optionId] = Math.round(recentValid * 100) / 100;
+            }
           }
 
           if (baseF == null) {
@@ -605,6 +616,8 @@ export default function OrderRecommend() {
       setRows(out);
       // 주판매 스냅샷 저장(발주장부 급한출고·출고필요가 읽음). 실패해도 화면엔 영향 없음.
       dbStoreSet(DEMAND_STORE, { ...demandMap, _updatedAt: Date.now() }, { skipLog: true }).catch(() => {});
+      // 최근 실판매 주판매 스냅샷 저장(급한출고·출고필요 분모 전용).
+      dbStoreSet(RECENT_STORE, { ...recentMap, _updatedAt: Date.now() }, { skipLog: true }).catch(() => {});
       setSpikes(spikeList);
       // 아직 보정/무시 안 한 날(pending)이 하나라도 있으면 자동으로 모달 오픈
       const hasPending = spikeList.some(sp => sp.flagged.some(f => !corrections[`${f.key}_${sp.optionId}`]));
