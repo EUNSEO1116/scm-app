@@ -17,7 +17,6 @@ const navItems = [
   { id: 'sales', label: '매출관리', badge: 'surge', children: [
     { label: '매출관리', path: '/sales', badge: 'surge' },
     { label: '수요예측', path: '/sales/forecast' },
-    { label: '소싱정보', path: '/sales/owners' },
     { label: '* 일일 매출 순위', path: '/soldout-analysis/history' },
   ]},
   { id: 'soldout-analysis', label: '품절분석', badge: 'remarket', children: [
@@ -35,8 +34,6 @@ const navItems = [
     { label: '인증관리', path: '/issue/certification' },
   ]},
   { id: 'etc', label: '기타관리', children: [
-    { section: '보고' },
-    { label: '주간 이슈 보고', path: '/report' },
     { section: '출고/카톤' },
     { label: '카톤 규격 관리', path: '/carton-spec' },
     { section: '부자재관리' },

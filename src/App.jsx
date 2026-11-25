@@ -22,7 +22,6 @@ import FbcPalletCalculator from './pages/FbcPalletCalculator';
 import Home from './pages/Home';
 import Sales from './pages/Sales';
 import SalesForecast from './pages/SalesForecast';
-import SalesOwners from './pages/SalesOwners';
 import Placeholder from './pages/Placeholder';
 import IncheonIncoming from './pages/IncheonIncoming';
 import SoldOutAnalysis from './pages/SoldOutAnalysis';
@@ -39,7 +38,6 @@ import CnSettlementDashboard from './pages/CnSettlementDashboard';
 import CnSettlementHistory from './pages/CnSettlementHistory';
 import CartonSpec from './pages/CartonSpec';
 import HelpAdmin from './pages/HelpAdmin';
-import ReportWeekly from './pages/ReportWeekly';
 
 // 딥링크(주소창 직접 접속·외부 링크)로 최초 접속하면 홈으로 보냄.
 // 단, 새로고침(reload)·뒤로/앞으로(back_forward)는 현재 페이지 유지.
@@ -80,7 +78,6 @@ function App() {
           <Route path="/fbc/pallet" element={<FbcPalletCalculator />} />
           <Route path="/sales" element={<Sales />} />
           <Route path="/sales/forecast" element={<SalesForecast />} />
-          <Route path="/sales/owners" element={<SalesOwners />} />
           <Route path="/soldout" element={<SoldOut />} />
           <Route path="/soldout/rate" element={<SoldOutRate />} />
           <Route path="/soldout/exclude" element={<SoldOutExclude />} />
@@ -103,7 +100,6 @@ function App() {
           <Route path="/cn-settlement/upload" element={<CnSettlementUpload />} />
           <Route path="/cn-settlement/dashboard" element={<CnSettlementDashboard />} />
           <Route path="/cn-settlement/history" element={<CnSettlementHistory />} />
-          <Route path="/report" element={<ReportWeekly />} />
           <Route path="/help-admin" element={<HelpAdmin />} />
         </Routes>
       </Layout>
