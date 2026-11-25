@@ -193,8 +193,7 @@ export default function OrderRequest() {
           const totalWeeks = safeNum(c[22]); // W열(col22) = 총재고 예상 판매 주
           const note = formNoteMap[sku] || bcInfo.note || '';
           const brandCode = certAeN.has(sku) ? 'AE-N' : getBrandCode(brand, center);
-          const suffix = totalWeeks < 3.5 ? '-JJ' : '';
-          const orderNo = brandCode + '-' + getDateCode() + suffix;
+          const orderNo = brandCode + '-' + getDateCode();
 
           const sp = specialMap[sku] || {};
           rows.push({
